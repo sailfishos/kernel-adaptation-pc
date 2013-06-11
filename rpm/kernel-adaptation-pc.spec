@@ -9,7 +9,7 @@ Version:    3.6.11
 Release:    8
 Group:      Kernel/Linux Kernel
 License:    GPLv2
-Source0:    linux-%{version}.tar.bz2
+Source0:    %{name}-%{version}.tar.bz2
 Source1:    %{name}.config
 Source100:  kernel-adaptation-pc.yaml
 Requires(pre): kmod
