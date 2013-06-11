@@ -11,7 +11,6 @@ Group:      Kernel/Linux Kernel
 License:    GPLv2
 Source0:    %{name}-%{version}.tar.bz2
 Source1:    %{name}.config
-Source100:  kernel-adaptation-pc.yaml
 Requires(pre): kmod
 Requires(pre): mkinitrd >= 6.0.39-1
 BuildRequires:  pkgconfig(ncurses)
