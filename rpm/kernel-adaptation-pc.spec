@@ -31,7 +31,7 @@ Devel for %{kernel_target_hw} kernel
 
 
 %prep
-%setup -q -n linux-%{version}
+%setup -q -n %{name}-%{version}/kernel
 
 # Determine the kernel arch and what we're building
 # kernel_arch: arm/mips/x86 (for now) .. the ARCH= for the kernel
