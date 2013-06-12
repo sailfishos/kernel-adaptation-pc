@@ -10,7 +10,6 @@ Release:    8
 Group:      Kernel/Linux Kernel
 License:    GPLv2
 Source0:    %{name}-%{version}.tar.bz2
-Source1:    %{name}.config
 Requires(pre): kmod
 Requires(pre): mkinitrd >= 6.0.39-1
 BuildRequires:  pkgconfig(ncurses)
@@ -57,7 +56,9 @@ else
 rpm.define("kernel_target_hw " ..  capture)
 end
 }
-cp %{SOURCE1} ./.config
+
+# The defconfigs have been patched for our use
+make defconfig
 # Verify the config meets the current Mer requirements
 #/usr/bin/mer_verify_config .config
 
