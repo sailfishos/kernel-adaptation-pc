@@ -57,8 +57,9 @@ rpm.define("kernel_target_hw " ..  capture)
 end
 }
 
-# The defconfigs have been patched for our use
-make defconfig
+# These have been installed in kernel/arch/*/configs/
+make %{_arch}_mer_defconfig
+
 # Verify the config meets the current Mer requirements
 #/usr/bin/mer_verify_config .config
 
