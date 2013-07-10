@@ -29,9 +29,9 @@
 #include "stmmac.h"
 
 #ifdef CONFIG_OF
-static int __devinit stmmac_probe_config_dt(struct platform_device *pdev,
-					    struct plat_stmmacenet_data *plat,
-					    const char **mac)
+static int stmmac_probe_config_dt(struct platform_device *pdev,
+				  struct plat_stmmacenet_data *plat,
+				  const char **mac)
 {
 	struct device_node *np = pdev->dev.of_node;
 
@@ -59,9 +59,9 @@ static int __devinit stmmac_probe_config_dt(struct platform_device *pdev,
 	return 0;
 }
 #else
-static int __devinit stmmac_probe_config_dt(struct platform_device *pdev,
-					    struct plat_stmmacenet_data *plat,
-					    const char **mac)
+static int stmmac_probe_config_dt(struct platform_device *pdev,
+				  struct plat_stmmacenet_data *plat,
+				  const char **mac)
 {
 	return -ENOSYS;
 }
@@ -74,10 +74,11 @@ static int __devinit stmmac_probe_config_dt(struct platform_device *pdev,
  * the necessary resources and invokes the main to init
  * the net device, register the mdio bus etc.
  */
-static int __devinit stmmac_pltfr_probe(struct platform_device *pdev)
+static int stmmac_pltfr_probe(struct platform_device *pdev)
 {
 	int ret = 0;
 	struct resource *res;
+	struct device *dev = &pdev->dev;
 	void __iomem *addr = NULL;
 	struct stmmac_priv *priv = NULL;
 	struct plat_stmmacenet_data *plat_dat = NULL;
@@ -87,19 +88,9 @@ static int __devinit stmmac_pltfr_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENODEV;
 
-	if (!request_mem_region(res->start, resource_size(res), pdev->name)) {
-		pr_err("%s: ERROR: memory allocation failed"
-		       "cannot get the I/O addr 0x%x\n",
-		       __func__, (unsigned int)res->start);
-		return -EBUSY;
-	}
-
-	addr = ioremap(res->start, resource_size(res));
-	if (!addr) {
-		pr_err("%s: ERROR: memory mapping failed", __func__);
-		ret = -ENOMEM;
-		goto out_release_region;
-	}
+	addr = devm_ioremap_resource(dev, res);
+	if (IS_ERR(addr))
+		return PTR_ERR(addr);
 
 	if (pdev->dev.of_node) {
 		plat_dat = devm_kzalloc(&pdev->dev,
@@ -107,14 +98,13 @@ static int __devinit stmmac_pltfr_probe(struct platform_device *pdev)
 					GFP_KERNEL);
 		if (!plat_dat) {
 			pr_err("%s: ERROR: no memory", __func__);
-			ret = -ENOMEM;
-			goto out_unmap;
+			return  -ENOMEM;
 		}
 
 		ret = stmmac_probe_config_dt(pdev, plat_dat, &mac);
 		if (ret) {
 			pr_err("%s: main dt probe failed", __func__);
-			goto out_unmap;
+			return ret;
 		}
 	} else {
 		plat_dat = pdev->dev.platform_data;
@@ -124,13 +114,13 @@ static int __devinit stmmac_pltfr_probe(struct platform_device *pdev)
 	if (plat_dat->init) {
 		ret = plat_dat->init(pdev);
 		if (unlikely(ret))
-			goto out_unmap;
+			return ret;
 	}
 
 	priv = stmmac_dvr_probe(&(pdev->dev), plat_dat, addr);
 	if (!priv) {
 		pr_err("%s: main driver probe failed", __func__);
-		goto out_unmap;
+		return -ENODEV;
 	}
 
 	/* Get MAC address if available (DT) */
@@ -142,8 +132,7 @@ static int __devinit stmmac_pltfr_probe(struct platform_device *pdev)
 	if (priv->dev->irq == -ENXIO) {
 		pr_err("%s: ERROR: MAC IRQ configuration "
 		       "information not found\n", __func__);
-		ret = -ENXIO;
-		goto out_unmap;
+		return -ENXIO;
 	}
 
 	/*
@@ -165,15 +154,6 @@ static int __devinit stmmac_pltfr_probe(struct platform_device *pdev)
 	pr_debug("STMMAC platform driver registration completed");
 
 	return 0;
-
-out_unmap:
-	iounmap(addr);
-	platform_set_drvdata(pdev, NULL);
-
-out_release_region:
-	release_mem_region(res->start, resource_size(res));
-
-	return ret;
 }
 
 /**
@@ -186,17 +166,12 @@ static int stmmac_pltfr_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
-	struct resource *res;
 	int ret = stmmac_dvr_remove(ndev);
 
 	if (priv->plat->exit)
 		priv->plat->exit(pdev);
 
 	platform_set_drvdata(pdev, NULL);
-
-	iounmap((void __force __iomem *)priv->ioaddr);
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(res->start, resource_size(res));
 
 	return ret;
 }

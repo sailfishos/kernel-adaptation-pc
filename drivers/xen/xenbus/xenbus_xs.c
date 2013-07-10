@@ -44,10 +44,10 @@
 #include <linux/rwsem.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <asm/xen/hypervisor.h>
 #include <xen/xenbus.h>
 #include <xen/xen.h>
 #include "xenbus_comms.h"
-#include <asm/xen/hypervisor.h>
 
 struct xs_stored_msg {
 	struct list_head list;
@@ -624,8 +624,9 @@ static struct xenbus_watch *find_watch(const char *token)
  * so if we are running on anything older than 4 do not attempt to read
  * control/platform-feature-xs_reset_watches.
  */
-static bool xen_strict_xenbus_quirk()
+static bool xen_strict_xenbus_quirk(void)
 {
+#ifdef CONFIG_X86
 	uint32_t eax, ebx, ecx, edx, base;
 
 	base = xen_cpuid_base();
@@ -633,6 +634,7 @@ static bool xen_strict_xenbus_quirk()
 
 	if ((eax >> 16) < 4)
 		return true;
+#endif
 	return false;
 
 }
@@ -640,7 +642,7 @@ static void xs_reset_watches(void)
 {
 	int err, supported = 0;
 
-	if (!xen_hvm_domain())
+	if (!xen_hvm_domain() || xen_initial_domain())
 		return;
 
 	if (xen_strict_xenbus_quirk())

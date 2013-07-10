@@ -20,10 +20,6 @@
 #ifndef __CSR_WIFI_HIP_UNIFI_H__
 #define __CSR_WIFI_HIP_UNIFI_H__ 1
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #ifndef CSR_WIFI_HIP_TA_DISABLE
 #include "csr_wifi_router_ctrl_prim.h"
 #include "csr_wifi_router_prim.h"
@@ -98,7 +94,6 @@ extern "C" {
 #include "csr_framework_ext.h"  /* from the synergy porting folder */
 #include "csr_sdio.h"           /* from the synergy porting folder */
 #include "csr_macro.h"          /* from the synergy porting folder */
-#include "csr_formatted_io.h"   /* from the synergy gsp folder */
 #include "csr_wifi_result.h"
 
 /* Utility MACROS. Note that UNIFI_MAC_ADDRESS_CMP returns TRUE on success */
@@ -122,9 +117,9 @@ typedef enum
     UNIFI_TRAFFIC_Q_BE,
     UNIFI_TRAFFIC_Q_VI,
     UNIFI_TRAFFIC_Q_VO,
-    UNIFI_TRAFFIC_Q_EAPOL,    /* Non existant in HIP */
-    UNIFI_TRAFFIC_Q_MAX,      /* Non existant */
-    UNIFI_TRAFFIC_Q_MLME      /* Non existant */
+    UNIFI_TRAFFIC_Q_EAPOL,    /* Non existent in HIP */
+    UNIFI_TRAFFIC_Q_MAX,      /* Non existent */
+    UNIFI_TRAFFIC_Q_MLME      /* Non existent */
 } unifi_TrafficQueue;
 
 /*
@@ -229,7 +224,7 @@ typedef struct unifi_coredump_req
     u32 chip_ver;                 /* Chip version */
     u32 fw_ver;                   /* Firmware version */
     s32  requestor;                /* Requestor: 0=auto dump, 1=manual */
-    CsrTime   timestamp;                /* time of capture by driver */
+    u32 timestamp;                /* time of capture by driver */
     u32 serial;                   /* capture serial number */
     s32  value;                    /* register value */
 } unifi_coredump_req_t;                 /* mini-coredumped reg value request */
@@ -268,7 +263,7 @@ card_t* unifi_alloc_card(CsrSdioFunction *sdiopriv, void *ospriv);
  *
  * @return \b 0 if UniFi is initialized.
  *
- * @return \b -CSR_EIO if an I/O error occured while initializing UniFi
+ * @return \b -CSR_EIO if an I/O error occurred while initializing UniFi
  *
  * @return \b -CSR_ENODEV if the card is no longer present.
  *
@@ -316,7 +311,7 @@ void unifi_cancel_pending_signals(card_t *card);
  *
  * @return \b 0 signal is sent.
  *
- * @return \b -CSR_EIO if an error occured while sending the signal
+ * @return \b -CSR_EIO if an error occurred while sending the signal
  *
  * @return \b -CSR_ENODEV if the card is no longer present.
  *
@@ -366,7 +361,7 @@ void unifi_card_info(card_t *card, card_info_t *card_info);
  *
  * @return \b 0 if the check was performed.
  *
- * @return \b -CSR_EIO if an error occured while checking the status.
+ * @return \b -CSR_EIO if an error occurred while checking the status.
  *
  * @return \b -CSR_ENODEV if the card is no longer present.
  *
@@ -388,11 +383,11 @@ CsrResult unifi_check_io_status(card_t *card, s32 *status);
  * is required. If unifi_bh() is called before the timeout expires,
  * the caller must pass in the remaining time.
  *
- * @return \b 0 if no error occured.
+ * @return \b 0 if no error occurred.
  *
  * @return \b -CSR_ENODEV if the card is no longer present.
  *
- * @return \b -CSR_E* if an error occured while running the bottom half.
+ * @return \b -CSR_E* if an error occurred while running the bottom half.
  *
  * @ingroup upperedge
  */
@@ -444,7 +439,7 @@ enum unifi_periodic_wake_mode
  *
  * @param periodic_wake_mode the Periodic Wake Mode.
  *
- * @return \b 0 if no error occured.
+ * @return \b 0 if no error occurred.
  *
  * @return \b -CSR_E* if the request failed.
  *
@@ -463,7 +458,7 @@ CsrResult unifi_configure_low_power_mode(card_t                       *card,
  *
  * @param card the HIP core lib API context.
  *
- * @return \b 0 if no error occured.
+ * @return \b 0 if no error occurred.
  *
  * @return \b -CSR_ENODEV if the card is no longer present.
  *
@@ -872,9 +867,5 @@ CsrResult unifi_coredump_capture(card_t *card, struct unifi_coredump_req *req);
 CsrResult unifi_coredump_request_at_next_reset(card_t *card, s8 enable);
 CsrResult unifi_coredump_init(card_t *card, u16 num_dump_buffers);
 void unifi_coredump_free(card_t *card);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* __CSR_WIFI_HIP_UNIFI_H__ */

@@ -143,12 +143,16 @@ static unsigned int irq_domain_legacy_revmap(struct irq_domain *domain,
  * irq_domain_add_simple() - Allocate and register a simple irq_domain.
  * @of_node: pointer to interrupt controller's device tree node.
  * @size: total number of irqs in mapping
- * @first_irq: first number of irq block assigned to the domain
+ * @first_irq: first number of irq block assigned to the domain,
+ *	pass zero to assign irqs on-the-fly. This will result in a
+ *	linear IRQ domain so it is important to use irq_create_mapping()
+ *	for each used IRQ, especially when SPARSE_IRQ is enabled.
  * @ops: map/unmap domain callbacks
  * @host_data: Controller private data pointer
  *
  * Allocates a legacy irq_domain if irq_base is positive or a linear
- * domain otherwise.
+ * domain otherwise. For the legacy domain, IRQ descriptors will also
+ * be allocated.
  *
  * This is intended to implement the expected behaviour for most
  * interrupt controllers which is that a linear mapping should
@@ -162,12 +166,35 @@ struct irq_domain *irq_domain_add_simple(struct device_node *of_node,
 					 const struct irq_domain_ops *ops,
 					 void *host_data)
 {
-	if (first_irq > 0)
-		return irq_domain_add_legacy(of_node, size, first_irq, 0,
+	if (first_irq > 0) {
+		int irq_base;
+
+		if (IS_ENABLED(CONFIG_SPARSE_IRQ)) {
+			/*
+			 * Set the descriptor allocator to search for a
+			 * 1-to-1 mapping, such as irq_alloc_desc_at().
+			 * Use of_node_to_nid() which is defined to
+			 * numa_node_id() on platforms that have no custom
+			 * implementation.
+			 */
+			irq_base = irq_alloc_descs(first_irq, first_irq, size,
+						   of_node_to_nid(of_node));
+			if (irq_base < 0) {
+				pr_info("Cannot allocate irq_descs @ IRQ%d, assuming pre-allocated\n",
+					first_irq);
+				irq_base = first_irq;
+			}
+		} else
+			irq_base = first_irq;
+
+		return irq_domain_add_legacy(of_node, size, irq_base, 0,
 					     ops, host_data);
-	else
-		return irq_domain_add_linear(of_node, size, ops, host_data);
+	}
+
+	/* A linear domain is the default */
+	return irq_domain_add_linear(of_node, size, ops, host_data);
 }
+EXPORT_SYMBOL_GPL(irq_domain_add_simple);
 
 /**
  * irq_domain_add_legacy() - Allocate and register a legacy revmap irq_domain.
@@ -374,11 +401,12 @@ static void irq_domain_disassociate_many(struct irq_domain *domain,
 	while (count--) {
 		int irq = irq_base + count;
 		struct irq_data *irq_data = irq_get_irq_data(irq);
-		irq_hw_number_t hwirq = irq_data->hwirq;
+		irq_hw_number_t hwirq;
 
 		if (WARN_ON(!irq_data || irq_data->domain != domain))
 			continue;
 
+		hwirq = irq_data->hwirq;
 		irq_set_status_flags(irq, IRQ_NOREQUEST);
 
 		/* remove chip and handler */
@@ -439,9 +467,23 @@ int irq_domain_associate_many(struct irq_domain *domain, unsigned int irq_base,
 		if (domain->ops->map) {
 			ret = domain->ops->map(domain, virq, hwirq);
 			if (ret != 0) {
-				pr_err("irq-%i==>hwirq-0x%lx mapping failed: %d\n",
-				       virq, hwirq, ret);
-				WARN_ON(1);
+				/*
+				 * If map() returns -EPERM, this interrupt is protected
+				 * by the firmware or some other service and shall not
+				 * be mapped.
+				 *
+				 * Since on some platforms we blindly try to map everything
+				 * we end up with a log full of backtraces.
+				 *
+				 * So instead, we silently fail on -EPERM, it is the
+				 * responsibility of the PIC driver to display a relevant
+				 * message if needed.
+				 */
+				if (ret != -EPERM) {
+					pr_err("irq-%i==>hwirq-0x%lx mapping failed: %d\n",
+					       virq, hwirq, ret);
+					WARN_ON(1);
+				}
 				irq_data->domain = NULL;
 				irq_data->hwirq = 0;
 				goto err_unmap;

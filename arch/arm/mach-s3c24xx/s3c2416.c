@@ -50,7 +50,6 @@
 #include <plat/gpio-core.h>
 #include <plat/gpio-cfg.h>
 #include <plat/gpio-cfg-helpers.h>
-#include <plat/s3c2416.h>
 #include <plat/devs.h>
 #include <plat/cpu.h>
 #include <plat/sdhci.h>
@@ -62,6 +61,8 @@
 #include <plat/adc-core.h>
 #include <plat/rtc-core.h>
 #include <plat/spi-core.h>
+
+#include "common.h"
 
 static struct map_desc s3c2416_iodesc[] __initdata = {
 	IODESC_ENT(WATCHDOG),
@@ -105,9 +106,9 @@ int __init s3c2416_init(void)
 
 #ifdef CONFIG_PM
 	register_syscore_ops(&s3c2416_pm_syscore_ops);
-#endif
 	register_syscore_ops(&s3c24xx_irq_syscore_ops);
 	register_syscore_ops(&s3c2416_irq_syscore_ops);
+#endif
 
 	return device_register(&s3c2416_dev);
 }

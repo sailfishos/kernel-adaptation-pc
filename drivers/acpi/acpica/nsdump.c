@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -44,6 +44,7 @@
 #include <acpi/acpi.h>
 #include "accommon.h"
 #include "acnamesp.h"
+#include <acpi/acoutput.h>
 
 #define _COMPONENT          ACPI_NAMESPACE
 ACPI_MODULE_NAME("nsdump")
@@ -77,8 +78,9 @@ void acpi_ns_print_pathname(u32 num_segments, char *pathname)
 
 	ACPI_FUNCTION_NAME(ns_print_pathname);
 
-	if (!(acpi_dbg_level & ACPI_LV_NAMES)
-	    || !(acpi_dbg_layer & ACPI_NAMESPACE)) {
+	/* Check if debug output enabled */
+
+	if (!ACPI_IS_DEBUG_ENABLED(ACPI_LV_NAMES, ACPI_NAMESPACE)) {
 		return;
 	}
 
@@ -127,7 +129,7 @@ acpi_ns_dump_pathname(acpi_handle handle, char *msg, u32 level, u32 component)
 
 	/* Do this only if the requested debug level and component are enabled */
 
-	if (!(acpi_dbg_level & level) || !(acpi_dbg_layer & component)) {
+	if (!ACPI_IS_DEBUG_ENABLED(level, component)) {
 		return_VOID;
 	}
 
@@ -209,14 +211,6 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 				      "Invalid ACPI Object Type 0x%08X", type));
 		}
 
-		if (!acpi_ut_valid_acpi_name(this_node->name.integer)) {
-			this_node->name.integer =
-			    acpi_ut_repair_name(this_node->name.ascii);
-
-			ACPI_WARNING((AE_INFO, "Invalid ACPI Name %08X",
-				      this_node->name.integer));
-		}
-
 		acpi_os_printf("%4.4s", acpi_ut_get_node_name(this_node));
 	}
 
@@ -264,7 +258,7 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 		switch (type) {
 		case ACPI_TYPE_PROCESSOR:
 
-			acpi_os_printf("ID %X Len %.4X Addr %p\n",
+			acpi_os_printf("ID %02X Len %02X Addr %p\n",
 				       obj_desc->processor.proc_id,
 				       obj_desc->processor.length,
 				       ACPI_CAST_PTR(void,
@@ -700,7 +694,7 @@ void acpi_ns_dump_entry(acpi_handle handle, u32 debug_level)
  *
  * PARAMETERS:  search_base         - Root of subtree to be dumped, or
  *                                    NS_ALL to dump the entire namespace
- *              max_depth           - Maximum depth of dump.  Use INT_MAX
+ *              max_depth           - Maximum depth of dump. Use INT_MAX
  *                                    for an effectively unlimited depth.
  *
  * RETURN:      None
@@ -737,5 +731,5 @@ void acpi_ns_dump_tables(acpi_handle search_base, u32 max_depth)
 			     ACPI_OWNER_ID_MAX, search_handle);
 	return_VOID;
 }
-#endif				/* _ACPI_ASL_COMPILER */
-#endif				/* defined(ACPI_DEBUG_OUTPUT) || defined(ACPI_DEBUGGER) */
+#endif
+#endif

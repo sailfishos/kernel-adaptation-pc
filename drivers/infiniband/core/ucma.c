@@ -145,7 +145,6 @@ static void ucma_put_ctx(struct ucma_context *ctx)
 static struct ucma_context *ucma_alloc_ctx(struct ucma_file *file)
 {
 	struct ucma_context *ctx;
-	int ret;
 
 	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
 	if (!ctx)
@@ -156,17 +155,10 @@ static struct ucma_context *ucma_alloc_ctx(struct ucma_file *file)
 	INIT_LIST_HEAD(&ctx->mc_list);
 	ctx->file = file;
 
-	do {
-		ret = idr_pre_get(&ctx_idr, GFP_KERNEL);
-		if (!ret)
-			goto error;
-
-		mutex_lock(&mut);
-		ret = idr_get_new(&ctx_idr, ctx, &ctx->id);
-		mutex_unlock(&mut);
-	} while (ret == -EAGAIN);
-
-	if (ret)
+	mutex_lock(&mut);
+	ctx->id = idr_alloc(&ctx_idr, ctx, 0, 0, GFP_KERNEL);
+	mutex_unlock(&mut);
+	if (ctx->id < 0)
 		goto error;
 
 	list_add_tail(&ctx->list, &file->ctx_list);
@@ -180,23 +172,15 @@ error:
 static struct ucma_multicast* ucma_alloc_multicast(struct ucma_context *ctx)
 {
 	struct ucma_multicast *mc;
-	int ret;
 
 	mc = kzalloc(sizeof(*mc), GFP_KERNEL);
 	if (!mc)
 		return NULL;
 
-	do {
-		ret = idr_pre_get(&multicast_idr, GFP_KERNEL);
-		if (!ret)
-			goto error;
-
-		mutex_lock(&mut);
-		ret = idr_get_new(&multicast_idr, mc, &mc->id);
-		mutex_unlock(&mut);
-	} while (ret == -EAGAIN);
-
-	if (ret)
+	mutex_lock(&mut);
+	mc->id = idr_alloc(&multicast_idr, mc, 0, 0, GFP_KERNEL);
+	mutex_unlock(&mut);
+	if (mc->id < 0)
 		goto error;
 
 	mc->ctx = ctx;
@@ -310,7 +294,6 @@ static ssize_t ucma_get_event(struct ucma_file *file, const char __user *inbuf,
 	struct rdma_ucm_get_event cmd;
 	struct ucma_event *uevent;
 	int ret = 0;
-	DEFINE_WAIT(wait);
 
 	if (out_len < sizeof uevent->resp)
 		return -ENOSPC;
@@ -1184,7 +1167,7 @@ static ssize_t ucma_migrate_id(struct ucma_file *new_file,
 	struct rdma_ucm_migrate_id cmd;
 	struct rdma_ucm_migrate_resp resp;
 	struct ucma_context *ctx;
-	struct file *filp;
+	struct fd f;
 	struct ucma_file *cur_file;
 	int ret = 0;
 
@@ -1192,12 +1175,12 @@ static ssize_t ucma_migrate_id(struct ucma_file *new_file,
 		return -EFAULT;
 
 	/* Get current fd to protect against it being closed */
-	filp = fget(cmd.fd);
-	if (!filp)
+	f = fdget(cmd.fd);
+	if (!f.file)
 		return -ENOENT;
 
 	/* Validate current fd and prevent destruction of id. */
-	ctx = ucma_get_ctx(filp->private_data, cmd.id);
+	ctx = ucma_get_ctx(f.file->private_data, cmd.id);
 	if (IS_ERR(ctx)) {
 		ret = PTR_ERR(ctx);
 		goto file_put;
@@ -1231,7 +1214,7 @@ response:
 
 	ucma_put_ctx(ctx);
 file_put:
-	fput(filp);
+	fdput(f);
 	return ret;
 }
 

@@ -41,11 +41,11 @@
 #include <asm/mach/irq.h>
 
 #include <mach/hardware.h>
-#include <mach/board.h>
-#include <mach/at91_aic.h>
 #include <mach/at91sam9_smc.h>
-#include <mach/at91_shdwc.h>
 
+#include "at91_aic.h"
+#include "at91_shdwc.h"
+#include "board.h"
 #include "sam9_smc.h"
 #include "generic.h"
 
@@ -109,14 +109,12 @@ static struct mmc_spi_platform_data at91_mmc_spi_pdata = {
  * SPI devices.
  */
 static struct spi_board_info usb_a9263_spi_devices[] = {
-#if !defined(CONFIG_MMC_AT91)
 	{	/* DataFlash chip */
 		.modalias	= "mtd_dataflash",
 		.chip_select	= 0,
 		.max_speed_hz	= 15 * 1000 * 1000,
 		.bus_num	= 0,
 	}
-#endif
 };
 
 static struct spi_board_info usb_a9g20_spi_devices[] = {
@@ -357,7 +355,7 @@ static void __init ek_board_init(void)
 
 MACHINE_START(USB_A9263, "CALAO USB_A9263")
 	/* Maintainer: calao-systems */
-	.timer		= &at91sam926x_timer,
+	.init_time	= at91sam926x_pit_init,
 	.map_io		= at91_map_io,
 	.handle_irq	= at91_aic_handle_irq,
 	.init_early	= ek_init_early,
@@ -367,7 +365,7 @@ MACHINE_END
 
 MACHINE_START(USB_A9260, "CALAO USB_A9260")
 	/* Maintainer: calao-systems */
-	.timer		= &at91sam926x_timer,
+	.init_time	= at91sam926x_pit_init,
 	.map_io		= at91_map_io,
 	.handle_irq	= at91_aic_handle_irq,
 	.init_early	= ek_init_early,
@@ -377,7 +375,7 @@ MACHINE_END
 
 MACHINE_START(USB_A9G20, "CALAO USB_A92G0")
 	/* Maintainer: Jean-Christophe PLAGNIOL-VILLARD */
-	.timer		= &at91sam926x_timer,
+	.init_time	= at91sam926x_pit_init,
 	.map_io		= at91_map_io,
 	.handle_irq	= at91_aic_handle_irq,
 	.init_early	= ek_init_early,

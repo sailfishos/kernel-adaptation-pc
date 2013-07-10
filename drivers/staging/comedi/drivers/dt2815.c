@@ -61,12 +61,6 @@ Configuration options:
 #include <linux/ioport.h>
 #include <linux/delay.h>
 
-static const struct comedi_lrange
-	range_dt2815_ao_32_current = {1, {RANGE_mA(0, 32)} };
-
-static const struct comedi_lrange
-	range_dt2815_ao_20_current = {1, {RANGE_mA(4, 20)} };
-
 #define DT2815_SIZE 2
 
 #define DT2815_DATA 0
@@ -77,8 +71,6 @@ struct dt2815_private {
 	const struct comedi_lrange *range_type_list[8];
 	unsigned int ao_readback[8];
 };
-
-#define devpriv ((struct dt2815_private *)dev->private)
 
 static int dt2815_wait_for_status(struct comedi_device *dev, int status)
 {
@@ -95,6 +87,7 @@ static int dt2815_ao_insn_read(struct comedi_device *dev,
 			       struct comedi_subdevice *s,
 			       struct comedi_insn *insn, unsigned int *data)
 {
+	struct dt2815_private *devpriv = dev->private;
 	int i;
 	int chan = CR_CHAN(insn->chanspec);
 
@@ -107,6 +100,7 @@ static int dt2815_ao_insn_read(struct comedi_device *dev,
 static int dt2815_ao_insn(struct comedi_device *dev, struct comedi_subdevice *s,
 			  struct comedi_insn *insn, unsigned int *data)
 {
+	struct dt2815_private *devpriv = dev->private;
 	int i;
 	int chan = CR_CHAN(insn->chanspec);
 	unsigned int status;
@@ -162,30 +156,26 @@ static int dt2815_ao_insn(struct comedi_device *dev, struct comedi_subdevice *s,
 
 static int dt2815_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 {
+	struct dt2815_private *devpriv;
 	struct comedi_subdevice *s;
 	int i;
 	const struct comedi_lrange *current_range_type, *voltage_range_type;
-	unsigned long iobase;
 	int ret;
 
-	iobase = it->options[0];
-	printk(KERN_INFO "comedi%d: dt2815: 0x%04lx ", dev->minor, iobase);
-	if (!request_region(iobase, DT2815_SIZE, "dt2815")) {
-		printk(KERN_WARNING "I/O port conflict\n");
-		return -EIO;
-	}
-
-	dev->iobase = iobase;
-	dev->board_name = "dt2815";
+	ret = comedi_request_region(dev, it->options[0], DT2815_SIZE);
+	if (ret)
+		return ret;
 
 	ret = comedi_alloc_subdevices(dev, 1);
 	if (ret)
 		return ret;
 
-	if (alloc_private(dev, sizeof(struct dt2815_private)) < 0)
+	devpriv = kzalloc(sizeof(*devpriv), GFP_KERNEL);
+	if (!devpriv)
 		return -ENOMEM;
+	dev->private = devpriv;
 
-	s = dev->subdevices;
+	s = &dev->subdevices[0];
 	/* ao subdevice */
 	s->type = COMEDI_SUBD_AO;
 	s->subdev_flags = SDF_WRITABLE;
@@ -196,7 +186,7 @@ static int dt2815_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 	s->range_table_list = devpriv->range_type_list;
 
 	current_range_type = (it->options[3])
-	    ? &range_dt2815_ao_20_current : &range_dt2815_ao_32_current;
+	    ? &range_4_20mA : &range_0_32mA;
 	voltage_range_type = (it->options[2])
 	    ? &range_bipolar5 : &range_unipolar5;
 	for (i = 0; i < 8; i++) {
@@ -230,17 +220,11 @@ static int dt2815_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 	return 0;
 }
 
-static void dt2815_detach(struct comedi_device *dev)
-{
-	if (dev->iobase)
-		release_region(dev->iobase, DT2815_SIZE);
-}
-
 static struct comedi_driver dt2815_driver = {
 	.driver_name	= "dt2815",
 	.module		= THIS_MODULE,
 	.attach		= dt2815_attach,
-	.detach		= dt2815_detach,
+	.detach		= comedi_legacy_detach,
 };
 module_comedi_driver(dt2815_driver);
 

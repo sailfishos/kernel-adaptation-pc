@@ -70,22 +70,21 @@ static long xenbus_alloc(domid_t domid)
 	return err;
 }
 
-static long xenbus_backend_ioctl(struct file *file, unsigned int cmd, unsigned long data)
+static long xenbus_backend_ioctl(struct file *file, unsigned int cmd,
+				 unsigned long data)
 {
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
 	switch (cmd) {
-		case IOCTL_XENBUS_BACKEND_EVTCHN:
-			if (xen_store_evtchn > 0)
-				return xen_store_evtchn;
-			return -ENODEV;
-
-		case IOCTL_XENBUS_BACKEND_SETUP:
-			return xenbus_alloc(data);
-
-		default:
-			return -ENOTTY;
+	case IOCTL_XENBUS_BACKEND_EVTCHN:
+		if (xen_store_evtchn > 0)
+			return xen_store_evtchn;
+		return -ENODEV;
+	case IOCTL_XENBUS_BACKEND_SETUP:
+		return xenbus_alloc(data);
+	default:
+		return -ENOTTY;
 	}
 }
 
@@ -107,7 +106,7 @@ static int xenbus_backend_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 
-const struct file_operations xenbus_backend_fops = {
+static const struct file_operations xenbus_backend_fops = {
 	.open = xenbus_backend_open,
 	.mmap = xenbus_backend_mmap,
 	.unlocked_ioctl = xenbus_backend_ioctl,

@@ -60,7 +60,7 @@
 
 #define ISCSI_IOV_DATA_BUFFER		5
 
-enum tpg_np_network_transport_table {
+enum iscsit_transport_type {
 	ISCSI_TCP				= 0,
 	ISCSI_SCTP_TCP				= 1,
 	ISCSI_SCTP_UDP				= 2,
@@ -239,10 +239,16 @@ struct iscsi_conn_ops {
 	u8	HeaderDigest;			/* [0,1] == [None,CRC32C] */
 	u8	DataDigest;			/* [0,1] == [None,CRC32C] */
 	u32	MaxRecvDataSegmentLength;	/* [512..2**24-1] */
+	u32	MaxXmitDataSegmentLength;	/* [512..2**24-1] */
 	u8	OFMarker;			/* [0,1] == [No,Yes] */
 	u8	IFMarker;			/* [0,1] == [No,Yes] */
 	u32	OFMarkInt;			/* [1..65535] */
 	u32	IFMarkInt;			/* [1..65535] */
+	/*
+	 * iSER specific connection parameters
+	 */
+	u32	InitiatorRecvDataSegmentLength;	/* [512..2**24-1] */
+	u32	TargetRecvDataSegmentLength;	/* [512..2**24-1] */
 };
 
 struct iscsi_sess_ops {
@@ -264,6 +270,10 @@ struct iscsi_sess_ops {
 	u8	DataSequenceInOrder;		/* [0,1] == [No,Yes] */
 	u8	ErrorRecoveryLevel;		/* [0..2] */
 	u8	SessionType;			/* [0,1] == [Normal,Discovery]*/
+	/*
+	 * iSER specific session parameters
+	 */
+	u8	RDMAExtensions;			/* [0,1] == [No,Yes] */
 };
 
 struct iscsi_queue_req {
@@ -283,6 +293,7 @@ struct iscsi_data_count {
 };
 
 struct iscsi_param_list {
+	bool			iser;
 	struct list_head	param_list;
 	struct list_head	extra_response_list;
 };
@@ -360,7 +371,7 @@ struct iscsi_cmd {
 	/* Command flags */
 	enum cmd_flags_table	cmd_flags;
 	/* Initiator Task Tag assigned from Initiator */
-	u32			init_task_tag;
+	itt_t			init_task_tag;
 	/* Target Transfer Tag assigned from Target */
 	u32			targ_xfer_tag;
 	/* CmdSN assigned from Initiator */
@@ -473,12 +484,12 @@ struct iscsi_cmd {
 	struct scatterlist	*first_data_sg;
 	u32			first_data_sg_off;
 	u32			kmapped_nents;
-
+	sense_reason_t		sense_reason;
+	void (*release_cmd)(struct iscsi_cmd *);
 }  ____cacheline_aligned;
 
 struct iscsi_tmr_req {
 	bool			task_reassign:1;
-	u32			ref_cmd_sn;
 	u32			exp_data_sn;
 	struct iscsi_cmd	*ref_cmd;
 	struct iscsi_conn_recovery *conn_recovery;
@@ -503,10 +514,11 @@ struct iscsi_conn {
 	u16			login_port;
 	u16			local_port;
 	int			net_size;
+	int			login_family;
 	u32			auth_id;
 	u32			conn_flags;
 	/* Used for iscsi_tx_login_rsp() */
-	u32			login_itt;
+	itt_t			login_itt;
 	u32			exp_statsn;
 	/* Per connection status sequence number */
 	u32			stat_sn;
@@ -562,9 +574,12 @@ struct iscsi_conn {
 	struct list_head	immed_queue_list;
 	struct list_head	response_queue_list;
 	struct iscsi_conn_ops	*conn_ops;
+	struct iscsi_login	*conn_login;
+	struct iscsit_transport *conn_transport;
 	struct iscsi_param_list	*param_list;
 	/* Used for per connection auth state machine */
 	void			*auth_protocol;
+	void			*context;
 	struct iscsi_login_thread_s *login_thread;
 	struct iscsi_portal_group *tpg;
 	/* Pointer to parent session */
@@ -579,6 +594,7 @@ struct iscsi_conn_recovery {
 	u16			cid;
 	u32			cmd_count;
 	u32			maxrecvdatasegmentlength;
+	u32			maxxmitdatasegmentlength;
 	int			ready_for_reallegiance;
 	struct list_head	conn_recovery_cmd_list;
 	spinlock_t		conn_recovery_cmd_lock;
@@ -598,7 +614,7 @@ struct iscsi_session {
 	/* state session is currently in */
 	u32			session_state;
 	/* session wide counter: initiator assigned task tag */
-	u32			init_task_tag;
+	itt_t			init_task_tag;
 	/* session wide counter: target assigned task tag */
 	u32			targ_xfer_tag;
 	u32			cmdsn_window;
@@ -662,17 +678,20 @@ struct iscsi_login {
 	u8 first_request;
 	u8 version_min;
 	u8 version_max;
+	u8 login_complete;
+	u8 login_failed;
 	char isid[6];
 	u32 cmd_sn;
-	u32 init_task_tag;
+	itt_t init_task_tag;
 	u32 initial_exp_statsn;
 	u32 rsp_length;
 	u16 cid;
 	u16 tsih;
-	char *req;
-	char *rsp;
+	char req[ISCSI_HDR_LEN];
+	char rsp[ISCSI_HDR_LEN];
 	char *req_buf;
 	char *rsp_buf;
+	struct iscsi_conn *conn;
 } ____cacheline_aligned;
 
 struct iscsi_node_attrib {
@@ -753,6 +772,8 @@ struct iscsi_np {
 	struct task_struct	*np_thread;
 	struct timer_list	np_login_timer;
 	struct iscsi_portal_group *np_login_tpg;
+	void			*np_context;
+	struct iscsit_transport *np_transport;
 	struct list_head	np_list;
 } ____cacheline_aligned;
 

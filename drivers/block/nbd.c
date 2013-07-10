@@ -78,6 +78,8 @@ static const char *ioctl_cmd_to_ascii(int cmd)
 	case NBD_SET_SOCK: return "set-sock";
 	case NBD_SET_BLKSIZE: return "set-blksize";
 	case NBD_SET_SIZE: return "set-size";
+	case NBD_SET_TIMEOUT: return "set-timeout";
+	case NBD_SET_FLAGS: return "set-flags";
 	case NBD_DO_IT: return "do-it";
 	case NBD_CLEAR_SOCK: return "clear-sock";
 	case NBD_CLEAR_QUE: return "clear-que";
@@ -96,6 +98,8 @@ static const char *nbdcmd_to_ascii(int cmd)
 	case  NBD_CMD_READ: return "read";
 	case NBD_CMD_WRITE: return "write";
 	case  NBD_CMD_DISC: return "disconnect";
+	case NBD_CMD_FLUSH: return "flush";
+	case  NBD_CMD_TRIM: return "trim/discard";
 	}
 	return "invalid";
 }
@@ -241,8 +245,15 @@ static int nbd_send_req(struct nbd_device *nbd, struct request *req)
 
 	request.magic = htonl(NBD_REQUEST_MAGIC);
 	request.type = htonl(nbd_cmd(req));
-	request.from = cpu_to_be64((u64)blk_rq_pos(req) << 9);
-	request.len = htonl(size);
+
+	if (nbd_cmd(req) == NBD_CMD_FLUSH) {
+		/* Other values are reserved for FLUSH requests.  */
+		request.from = 0;
+		request.len = 0;
+	} else {
+		request.from = cpu_to_be64((u64)blk_rq_pos(req) << 9);
+		request.len = htonl(size);
+	}
 	memcpy(request.handle, &req, sizeof(req));
 
 	dprintk(DBG_TX, "%s: request %p: sending control (%s@%llu,%uB)\n",
@@ -467,12 +478,21 @@ static void nbd_handle_req(struct nbd_device *nbd, struct request *req)
 
 	nbd_cmd(req) = NBD_CMD_READ;
 	if (rq_data_dir(req) == WRITE) {
-		nbd_cmd(req) = NBD_CMD_WRITE;
-		if (nbd->flags & NBD_READ_ONLY) {
+		if ((req->cmd_flags & REQ_DISCARD)) {
+			WARN_ON(!(nbd->flags & NBD_FLAG_SEND_TRIM));
+			nbd_cmd(req) = NBD_CMD_TRIM;
+		} else
+			nbd_cmd(req) = NBD_CMD_WRITE;
+		if (nbd->flags & NBD_FLAG_READ_ONLY) {
 			dev_err(disk_to_dev(nbd->disk),
 				"Write on read-only\n");
 			goto error_out;
 		}
+	}
+
+	if (req->cmd_flags & REQ_FLUSH) {
+		BUG_ON(unlikely(blk_rq_sectors(req)));
+		nbd_cmd(req) = NBD_CMD_FLUSH;
 	}
 
 	req->errors = 0;
@@ -544,6 +564,7 @@ static int nbd_thread(void *data)
  */
 
 static void do_nbd_request(struct request_queue *q)
+		__releases(q->queue_lock) __acquires(q->queue_lock)
 {
 	struct request *req;
 	
@@ -588,12 +609,20 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 		struct request sreq;
 
 		dev_info(disk_to_dev(nbd->disk), "NBD_DISCONNECT\n");
+		if (!nbd->sock)
+			return -EINVAL;
 
+		mutex_unlock(&nbd->tx_lock);
+		fsync_bdev(bdev);
+		mutex_lock(&nbd->tx_lock);
 		blk_rq_init(NULL, &sreq);
 		sreq.cmd_type = REQ_TYPE_SPECIAL;
 		nbd_cmd(&sreq) = NBD_CMD_DISC;
+
+		/* Check again after getting mutex back.  */
 		if (!nbd->sock)
 			return -EINVAL;
+
 		nbd_send_req(nbd, &sreq);
                 return 0;
 	}
@@ -607,6 +636,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 		nbd_clear_que(nbd);
 		BUG_ON(!list_empty(&nbd->queue_head));
 		BUG_ON(!list_empty(&nbd->waiting_queue));
+		kill_bdev(bdev);
 		if (file)
 			fput(file);
 		return 0;
@@ -618,7 +648,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 			return -EBUSY;
 		file = fget(arg);
 		if (file) {
-			struct inode *inode = file->f_path.dentry->d_inode;
+			struct inode *inode = file_inode(file);
 			if (S_ISSOCK(inode->i_mode)) {
 				nbd->file = file;
 				nbd->sock = SOCKET_I(inode);
@@ -651,6 +681,10 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 		nbd->xmit_timeout = arg * HZ;
 		return 0;
 
+	case NBD_SET_FLAGS:
+		nbd->flags = arg;
+		return 0;
+
 	case NBD_SET_SIZE_BLOCKS:
 		nbd->bytesize = ((u64) arg) * nbd->blksize;
 		bdev->bd_inode->i_size = nbd->bytesize;
@@ -670,6 +704,16 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 
 		mutex_unlock(&nbd->tx_lock);
 
+		if (nbd->flags & NBD_FLAG_READ_ONLY)
+			set_device_ro(bdev, true);
+		if (nbd->flags & NBD_FLAG_SEND_TRIM)
+			queue_flag_set_unlocked(QUEUE_FLAG_DISCARD,
+				nbd->disk->queue);
+		if (nbd->flags & NBD_FLAG_SEND_FLUSH)
+			blk_queue_flush(nbd->disk->queue, REQ_FLUSH);
+		else
+			blk_queue_flush(nbd->disk->queue, 0);
+
 		thread = kthread_create(nbd_thread, nbd, nbd->disk->disk_name);
 		if (IS_ERR(thread)) {
 			mutex_lock(&nbd->tx_lock);
@@ -687,8 +731,12 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 		nbd->file = NULL;
 		nbd_clear_que(nbd);
 		dev_warn(disk_to_dev(nbd->disk), "queue cleared\n");
+		kill_bdev(bdev);
+		queue_flag_clear_unlocked(QUEUE_FLAG_DISCARD, nbd->disk->queue);
+		set_device_ro(bdev, false);
 		if (file)
 			fput(file);
+		nbd->flags = 0;
 		nbd->bytesize = 0;
 		bdev->bd_inode->i_size = 0;
 		set_capacity(nbd->disk, 0);
@@ -805,6 +853,11 @@ static int __init nbd_init(void)
 		 * Tell the block layer that we are not a rotational device
 		 */
 		queue_flag_set_unlocked(QUEUE_FLAG_NONROT, disk->queue);
+		disk->queue->limits.discard_granularity = 512;
+		disk->queue->limits.max_discard_sectors = UINT_MAX;
+		disk->queue->limits.discard_zeroes_data = 0;
+		blk_queue_max_hw_sectors(disk->queue, 65536);
+		disk->queue->limits.max_sectors = 256;
 	}
 
 	if (register_blkdev(NBD_MAJOR, "nbd")) {

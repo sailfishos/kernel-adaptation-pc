@@ -181,10 +181,11 @@ struct neigh_table {
 };
 
 #define NEIGH_PRIV_ALIGN	sizeof(long long)
+#define NEIGH_ENTRY_SIZE(size)	ALIGN((size), NEIGH_PRIV_ALIGN)
 
 static inline void *neighbour_priv(const struct neighbour *n)
 {
-	return (char *)n + ALIGN(sizeof(*n) + n->tbl->key_len, NEIGH_PRIV_ALIGN);
+	return (char *)n + n->tbl->entry_size;
 }
 
 /* flags for neigh_update() */
@@ -334,18 +335,22 @@ static inline int neigh_hh_bridge(struct hh_cache *hh, struct sk_buff *skb)
 }
 #endif
 
-static inline int neigh_hh_output(struct hh_cache *hh, struct sk_buff *skb)
+static inline int neigh_hh_output(const struct hh_cache *hh, struct sk_buff *skb)
 {
 	unsigned int seq;
 	int hh_len;
 
 	do {
-		int hh_alen;
-
 		seq = read_seqbegin(&hh->hh_lock);
 		hh_len = hh->hh_len;
-		hh_alen = HH_DATA_ALIGN(hh_len);
-		memcpy(skb->data - hh_alen, hh->hh_data, hh_alen);
+		if (likely(hh_len <= HH_DATA_MOD)) {
+			/* this is inlined by gcc */
+			memcpy(skb->data - HH_DATA_MOD, hh->hh_data, HH_DATA_MOD);
+		} else {
+			int hh_alen = HH_DATA_ALIGN(hh_len);
+
+			memcpy(skb->data - hh_alen, hh->hh_data, hh_alen);
+		}
 	} while (read_seqretry(&hh->hh_lock, seq));
 
 	skb_push(skb, hh_len);

@@ -22,6 +22,7 @@
 #include <linux/firmware.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
+#include <linux/etherdevice.h>
 #include <linux/leds.h>
 #include <linux/slab.h>
 #include <net/mac80211.h>
@@ -331,7 +332,7 @@ struct ath_tx_stats {
 	u32 skb_success;
 	u32 skb_failed;
 	u32 cab_queued;
-	u32 queue_stats[WME_NUM_AC];
+	u32 queue_stats[IEEE80211_NUM_ACS];
 };
 
 struct ath_rx_stats {
@@ -493,7 +494,7 @@ struct ath9k_htc_priv {
 
 	int beaconq;
 	int cabq;
-	int hwq_map[WME_NUM_AC];
+	int hwq_map[IEEE80211_NUM_ACS];
 
 #ifdef CONFIG_ATH9K_BTCOEX_SUPPORT
 	struct ath_btcoex btcoex;
@@ -542,6 +543,7 @@ void ath9k_htc_stop_ani(struct ath9k_htc_priv *priv);
 
 int ath9k_tx_init(struct ath9k_htc_priv *priv);
 int ath9k_htc_tx_start(struct ath9k_htc_priv *priv,
+		       struct ieee80211_sta *sta,
 		       struct sk_buff *skb, u8 slot, bool is_cab);
 void ath9k_tx_cleanup(struct ath9k_htc_priv *priv);
 bool ath9k_htc_txq_setup(struct ath9k_htc_priv *priv, int subtype);

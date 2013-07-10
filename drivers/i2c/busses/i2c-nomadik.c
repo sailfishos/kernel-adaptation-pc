@@ -22,9 +22,11 @@
 #include <linux/err.h>
 #include <linux/clk.h>
 #include <linux/io.h>
-#include <linux/regulator/consumer.h>
 #include <linux/pm_runtime.h>
 #include <linux/platform_data/i2c-nomadik.h>
+#include <linux/of.h>
+#include <linux/of_i2c.h>
+#include <linux/pinctrl/consumer.h>
 
 #define DRIVER_NAME "nmk-i2c"
 
@@ -146,7 +148,10 @@ struct i2c_nmk_client {
  * @stop: stop condition.
  * @xfer_complete: acknowledge completion for a I2C message.
  * @result: controller propogated result.
- * @regulator: pointer to i2c regulator.
+ * @pinctrl: pinctrl handle.
+ * @pins_default: default state for the pins.
+ * @pins_idle: idle state for the pins.
+ * @pins_sleep: sleep state for the pins.
  * @busy: Busy doing transfer.
  */
 struct nmk_i2c_dev {
@@ -160,7 +165,11 @@ struct nmk_i2c_dev {
 	int				stop;
 	struct completion		xfer_complete;
 	int				result;
-	struct regulator		*regulator;
+	/* Three pin states - default, idle & sleep */
+	struct pinctrl			*pinctrl;
+	struct pinctrl_state		*pins_default;
+	struct pinctrl_state		*pins_idle;
+	struct pinctrl_state		*pins_sleep;
 	bool				busy;
 };
 
@@ -403,8 +412,7 @@ static void setup_i2c_controller(struct nmk_i2c_dev *dev)
 static int read_i2c(struct nmk_i2c_dev *dev, u16 flags)
 {
 	u32 status = 0;
-	u32 mcr;
-	u32 irq_mask = 0;
+	u32 mcr, irq_mask;
 	int timeout;
 
 	mcr = load_i2c_mcr_reg(dev, flags);
@@ -435,13 +443,6 @@ static int read_i2c(struct nmk_i2c_dev *dev, u16 flags)
 
 	timeout = wait_for_completion_timeout(
 		&dev->xfer_complete, dev->adap.timeout);
-
-	if (timeout < 0) {
-		dev_err(&dev->adev->dev,
-			"wait_for_completion_timeout "
-			"returned %d waiting for event\n", timeout);
-		status = timeout;
-	}
 
 	if (timeout == 0) {
 		/* Controller timed out */
@@ -480,8 +481,7 @@ static void fill_tx_fifo(struct nmk_i2c_dev *dev, int no_bytes)
 static int write_i2c(struct nmk_i2c_dev *dev, u16 flags)
 {
 	u32 status = 0;
-	u32 mcr;
-	u32 irq_mask = 0;
+	u32 mcr, irq_mask;
 	int timeout;
 
 	mcr = load_i2c_mcr_reg(dev, flags);
@@ -523,13 +523,6 @@ static int write_i2c(struct nmk_i2c_dev *dev, u16 flags)
 
 	timeout = wait_for_completion_timeout(
 		&dev->xfer_complete, dev->adap.timeout);
-
-	if (timeout < 0) {
-		dev_err(&dev->adev->dev,
-			"wait_for_completion_timeout "
-			"returned %d waiting for event\n", timeout);
-		status = timeout;
-	}
 
 	if (timeout == 0) {
 		/* Controller timed out */
@@ -643,11 +636,22 @@ static int nmk_i2c_xfer(struct i2c_adapter *i2c_adap,
 
 	dev->busy = true;
 
-	if (dev->regulator)
-		regulator_enable(dev->regulator);
 	pm_runtime_get_sync(&dev->adev->dev);
 
-	clk_enable(dev->clk);
+	status = clk_prepare_enable(dev->clk);
+	if (status) {
+		dev_err(&dev->adev->dev, "can't prepare_enable clock\n");
+		goto out_clk;
+	}
+
+	/* Optionaly enable pins to be muxed in and configured */
+	if (!IS_ERR(dev->pins_default)) {
+		status = pinctrl_select_state(dev->pinctrl,
+				dev->pins_default);
+		if (status)
+			dev_err(&dev->adev->dev,
+				"could not set default pins\n");
+	}
 
 	status = init_hw(dev);
 	if (status)
@@ -674,10 +678,18 @@ static int nmk_i2c_xfer(struct i2c_adapter *i2c_adap,
 	}
 
 out:
-	clk_disable(dev->clk);
+	clk_disable_unprepare(dev->clk);
+out_clk:
+	/* Optionally let pins go into idle state */
+	if (!IS_ERR(dev->pins_idle)) {
+		status = pinctrl_select_state(dev->pinctrl,
+				dev->pins_idle);
+		if (status)
+			dev_err(&dev->adev->dev,
+				"could not set pins to idle state\n");
+	}
+
 	pm_runtime_put_sync(&dev->adev->dev);
-	if (dev->regulator)
-		regulator_disable(dev->regulator);
 
 	dev->busy = false;
 
@@ -717,8 +729,7 @@ static irqreturn_t i2c_irq_handler(int irq, void *arg)
 	struct nmk_i2c_dev *dev = arg;
 	u32 tft, rft;
 	u32 count;
-	u32 misr;
-	u32 src = 0;
+	u32 misr, src;
 
 	/* load Tx FIFO and Rx FIFO threshold values */
 	tft = readl(dev->virtbase + I2C_TFTR);
@@ -871,15 +882,41 @@ static int nmk_i2c_suspend(struct device *dev)
 {
 	struct amba_device *adev = to_amba_device(dev);
 	struct nmk_i2c_dev *nmk_i2c = amba_get_drvdata(adev);
+	int ret;
 
 	if (nmk_i2c->busy)
 		return -EBUSY;
+
+	if (!IS_ERR(nmk_i2c->pins_sleep)) {
+		ret = pinctrl_select_state(nmk_i2c->pinctrl,
+				nmk_i2c->pins_sleep);
+		if (ret)
+			dev_err(dev, "could not set pins to sleep state\n");
+	}
 
 	return 0;
 }
 
 static int nmk_i2c_resume(struct device *dev)
 {
+	struct amba_device *adev = to_amba_device(dev);
+	struct nmk_i2c_dev *nmk_i2c = amba_get_drvdata(adev);
+	int ret;
+
+	/* First go to the default state */
+	if (!IS_ERR(nmk_i2c->pins_default)) {
+		ret = pinctrl_select_state(nmk_i2c->pinctrl,
+				nmk_i2c->pins_default);
+		if (ret)
+			dev_err(dev, "could not set pins to default state\n");
+	}
+	/* Then let's idle the pins until the next transfer happens */
+	if (!IS_ERR(nmk_i2c->pins_idle)) {
+		ret = pinctrl_select_state(nmk_i2c->pinctrl,
+				nmk_i2c->pins_idle);
+		if (ret)
+			dev_err(dev, "could not set pins to idle state\n");
+	}
 	return 0;
 }
 #else
@@ -920,18 +957,42 @@ static struct nmk_i2c_controller u8500_i2c = {
 	.sm             = I2C_FREQ_MODE_FAST,
 };
 
+static void nmk_i2c_of_probe(struct device_node *np,
+			struct nmk_i2c_controller *pdata)
+{
+	of_property_read_u32(np, "clock-frequency", &pdata->clk_freq);
+
+	/* This driver only supports 'standard' and 'fast' modes of operation. */
+	if (pdata->clk_freq <= 100000)
+		pdata->sm = I2C_FREQ_MODE_STANDARD;
+	else
+		pdata->sm = I2C_FREQ_MODE_FAST;
+}
+
 static atomic_t adapter_id = ATOMIC_INIT(0);
 
 static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 {
 	int ret = 0;
 	struct nmk_i2c_controller *pdata = adev->dev.platform_data;
+	struct device_node *np = adev->dev.of_node;
 	struct nmk_i2c_dev	*dev;
 	struct i2c_adapter *adap;
 
-	if (!pdata)
-		/* No i2c configuration found, using the default. */
-		pdata = &u8500_i2c;
+	if (!pdata) {
+		if (np) {
+			pdata = devm_kzalloc(&adev->dev, sizeof(*pdata), GFP_KERNEL);
+			if (!pdata) {
+				ret = -ENOMEM;
+				goto err_no_mem;
+			}
+			/* Provide the default configuration as a base. */
+			memcpy(pdata, &u8500_i2c, sizeof(struct nmk_i2c_controller));
+			nmk_i2c_of_probe(np, pdata);
+		} else
+			/* No i2c configuration found, using the default. */
+			pdata = &u8500_i2c;
+	}
 
 	dev = kzalloc(sizeof(struct nmk_i2c_dev), GFP_KERNEL);
 	if (!dev) {
@@ -942,6 +1003,40 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 	dev->busy = false;
 	dev->adev = adev;
 	amba_set_drvdata(adev, dev);
+
+	dev->pinctrl = devm_pinctrl_get(&adev->dev);
+	if (IS_ERR(dev->pinctrl)) {
+		ret = PTR_ERR(dev->pinctrl);
+		goto err_pinctrl;
+	}
+
+	dev->pins_default = pinctrl_lookup_state(dev->pinctrl,
+						 PINCTRL_STATE_DEFAULT);
+	if (IS_ERR(dev->pins_default)) {
+		dev_err(&adev->dev, "could not get default pinstate\n");
+	} else {
+		ret = pinctrl_select_state(dev->pinctrl,
+					   dev->pins_default);
+		if (ret)
+			dev_dbg(&adev->dev, "could not set default pinstate\n");
+	}
+
+	dev->pins_idle = pinctrl_lookup_state(dev->pinctrl,
+					      PINCTRL_STATE_IDLE);
+	if (IS_ERR(dev->pins_idle)) {
+		dev_dbg(&adev->dev, "could not get idle pinstate\n");
+	} else {
+		/* If possible, let's go to idle until the first transfer */
+		ret = pinctrl_select_state(dev->pinctrl,
+					   dev->pins_idle);
+		if (ret)
+			dev_dbg(&adev->dev, "could not set idle pinstate\n");
+	}
+
+	dev->pins_sleep = pinctrl_lookup_state(dev->pinctrl,
+					       PINCTRL_STATE_SLEEP);
+	if (IS_ERR(dev->pins_sleep))
+		dev_dbg(&adev->dev, "could not get sleep pinstate\n");
 
 	dev->virtbase = ioremap(adev->res.start, resource_size(&adev->res));
 	if (!dev->virtbase) {
@@ -957,12 +1052,6 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 		goto err_irq;
 	}
 
-	dev->regulator = regulator_get(&adev->dev, "v-i2c");
-	if (IS_ERR(dev->regulator)) {
-		dev_warn(&adev->dev, "could not get i2c regulator\n");
-		dev->regulator = NULL;
-	}
-
 	pm_suspend_ignore_children(&adev->dev, true);
 
 	dev->clk = clk_get(&adev->dev, NULL);
@@ -973,6 +1062,7 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 	}
 
 	adap = &dev->adap;
+	adap->dev.of_node = np;
 	adap->dev.parent = &adev->dev;
 	adap->owner	= THIS_MODULE;
 	adap->class	= I2C_CLASS_HWMON | I2C_CLASS_SPD;
@@ -1002,6 +1092,8 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 		goto err_add_adap;
 	}
 
+	of_i2c_register_devices(adap);
+
 	pm_runtime_put(&adev->dev);
 
 	return 0;
@@ -1009,14 +1101,12 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
  err_add_adap:
 	clk_put(dev->clk);
  err_no_clk:
-	if (dev->regulator)
-		regulator_put(dev->regulator);
 	free_irq(dev->irq, dev);
  err_irq:
 	iounmap(dev->virtbase);
  err_no_ioremap:
-	amba_set_drvdata(adev, NULL);
 	kfree(dev);
+ err_pinctrl:
  err_no_mem:
 
 	return ret;
@@ -1038,10 +1128,7 @@ static int nmk_i2c_remove(struct amba_device *adev)
 	if (res)
 		release_mem_region(res->start, resource_size(res));
 	clk_put(dev->clk);
-	if (dev->regulator)
-		regulator_put(dev->regulator);
 	pm_runtime_disable(&adev->dev);
-	amba_set_drvdata(adev, NULL);
 	kfree(dev);
 
 	return 0;

@@ -2499,7 +2499,7 @@ static int hme_version_printed;
  *
  * Return NULL on failure.
  */
-static struct quattro * __devinit quattro_sbus_find(struct platform_device *child)
+static struct quattro *quattro_sbus_find(struct platform_device *child)
 {
 	struct device *parent = child->dev.parent;
 	struct platform_device *op;
@@ -2580,7 +2580,7 @@ static void quattro_sbus_free_irqs(void)
 #endif /* CONFIG_SBUS */
 
 #ifdef CONFIG_PCI
-static struct quattro * __devinit quattro_pci_find(struct pci_dev *pdev)
+static struct quattro *quattro_pci_find(struct pci_dev *pdev)
 {
 	struct pci_dev *bdev = pdev->bus->self;
 	struct quattro *qp;
@@ -2623,7 +2623,7 @@ static const struct net_device_ops hme_netdev_ops = {
 };
 
 #ifdef CONFIG_SBUS
-static int __devinit happy_meal_sbus_probe_one(struct platform_device *op, int is_qfe)
+static int happy_meal_sbus_probe_one(struct platform_device *op, int is_qfe)
 {
 	struct device_node *dp = op->dev.of_node, *sbus_dp;
 	struct quattro *qp = NULL;
@@ -2752,10 +2752,8 @@ static int __devinit happy_meal_sbus_probe_one(struct platform_device *op, int i
 					     &hp->hblock_dvma,
 					     GFP_ATOMIC);
 	err = -ENOMEM;
-	if (!hp->happy_block) {
-		printk(KERN_ERR "happymeal: Cannot allocate descriptors.\n");
+	if (!hp->happy_block)
 		goto err_out_iounmap;
-	}
 
 	/* Force check of the link first time we are brought up. */
 	hp->linkcheck = 0;
@@ -2927,8 +2925,8 @@ static void get_hme_mac_nonsparc(struct pci_dev *pdev, unsigned char *dev_addr)
 }
 #endif /* !(CONFIG_SPARC) */
 
-static int __devinit happy_meal_pci_probe(struct pci_dev *pdev,
-					  const struct pci_device_id *ent)
+static int happy_meal_pci_probe(struct pci_dev *pdev,
+				const struct pci_device_id *ent)
 {
 	struct quattro *qp = NULL;
 #ifdef CONFIG_SPARC
@@ -3068,14 +3066,11 @@ static int __devinit happy_meal_pci_probe(struct pci_dev *pdev,
 	hp->happy_bursts = DMA_BURSTBITS;
 #endif
 
-	hp->happy_block = (struct hmeal_init_block *)
-		dma_alloc_coherent(&pdev->dev, PAGE_SIZE, &hp->hblock_dvma, GFP_KERNEL);
-
+	hp->happy_block = dma_alloc_coherent(&pdev->dev, PAGE_SIZE,
+					     &hp->hblock_dvma, GFP_KERNEL);
 	err = -ENODEV;
-	if (!hp->happy_block) {
-		printk(KERN_ERR "happymeal(PCI): Cannot get hme init block.\n");
+	if (!hp->happy_block)
 		goto err_out_iounmap;
-	}
 
 	hp->linkcheck = 0;
 	hp->timer_state = asleep;
@@ -3162,7 +3157,7 @@ err_out:
 	return err;
 }
 
-static void __devexit happy_meal_pci_remove(struct pci_dev *pdev)
+static void happy_meal_pci_remove(struct pci_dev *pdev)
 {
 	struct happy_meal *hp = dev_get_drvdata(&pdev->dev);
 	struct net_device *net_dev = hp->dev;
@@ -3190,7 +3185,7 @@ static struct pci_driver hme_pci_driver = {
 	.name		= "hme",
 	.id_table	= happymeal_pci_ids,
 	.probe		= happy_meal_pci_probe,
-	.remove		= __devexit_p(happy_meal_pci_remove),
+	.remove		= happy_meal_pci_remove,
 };
 
 static int __init happy_meal_pci_init(void)
@@ -3216,7 +3211,7 @@ static void happy_meal_pci_exit(void)
 
 #ifdef CONFIG_SBUS
 static const struct of_device_id hme_sbus_match[];
-static int __devinit hme_sbus_probe(struct platform_device *op)
+static int hme_sbus_probe(struct platform_device *op)
 {
 	const struct of_device_id *match;
 	struct device_node *dp = op->dev.of_node;
@@ -3234,7 +3229,7 @@ static int __devinit hme_sbus_probe(struct platform_device *op)
 	return happy_meal_sbus_probe_one(op, is_qfe);
 }
 
-static int __devexit hme_sbus_remove(struct platform_device *op)
+static int hme_sbus_remove(struct platform_device *op)
 {
 	struct happy_meal *hp = dev_get_drvdata(&op->dev);
 	struct net_device *net_dev = hp->dev;
@@ -3284,7 +3279,7 @@ static struct platform_driver hme_sbus_driver = {
 		.of_match_table = hme_sbus_match,
 	},
 	.probe		= hme_sbus_probe,
-	.remove		= __devexit_p(hme_sbus_remove),
+	.remove		= hme_sbus_remove,
 };
 
 static int __init happy_meal_sbus_init(void)

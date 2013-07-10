@@ -284,8 +284,6 @@ struct ni_private {
 
 };
 
-#define devpriv ((struct ni_private *)dev->private)
-
 /* How we access registers */
 
 #define ni_writel(a, b)		(outl((a), (b)+dev->iobase))
@@ -303,6 +301,7 @@ struct ni_private {
 
 static void ni_atmio_win_out(struct comedi_device *dev, uint16_t data, int addr)
 {
+	struct ni_private *devpriv = dev->private;
 	unsigned long flags;
 
 	spin_lock_irqsave(&devpriv->window_lock, flags);
@@ -317,6 +316,7 @@ static void ni_atmio_win_out(struct comedi_device *dev, uint16_t data, int addr)
 
 static uint16_t ni_atmio_win_in(struct comedi_device *dev, int addr)
 {
+	struct ni_private *devpriv = dev->private;
 	unsigned long flags;
 	uint16_t ret;
 
@@ -350,7 +350,7 @@ static int ni_isapnp_find_board(struct pnp_dev **dev)
 	struct pnp_dev *isapnp_dev = NULL;
 	int i;
 
-	for (i = 0; i < n_ni_boards; i++) {
+	for (i = 0; i < ARRAY_SIZE(ni_boards); i++) {
 		isapnp_dev = pnp_find_dev(NULL,
 					  ISAPNP_VENDOR('N', 'I', 'C'),
 					  ISAPNP_FUNCTION(ni_boards[i].
@@ -377,7 +377,7 @@ static int ni_isapnp_find_board(struct pnp_dev **dev)
 		}
 		break;
 	}
-	if (i == n_ni_boards)
+	if (i == ARRAY_SIZE(ni_boards))
 		return -ENODEV;
 	*dev = isapnp_dev;
 	return 0;
@@ -388,7 +388,7 @@ static int ni_getboardtype(struct comedi_device *dev)
 	int device_id = ni_read_eeprom(dev, 511);
 	int i;
 
-	for (i = 0; i < n_ni_boards; i++) {
+	for (i = 0; i < ARRAY_SIZE(ni_boards); i++) {
 		if (ni_boards[i].device_id == device_id)
 			return i;
 
@@ -406,16 +406,18 @@ static int ni_getboardtype(struct comedi_device *dev)
 static int ni_atmio_attach(struct comedi_device *dev,
 			   struct comedi_devconfig *it)
 {
+	const struct ni_board_struct *boardtype;
+	struct ni_private *devpriv;
 	struct pnp_dev *isapnp_dev;
 	int ret;
 	unsigned long iobase;
 	int board;
 	unsigned int irq;
 
-	/* allocate private area */
 	ret = ni_alloc_private(dev);
-	if (ret < 0)
+	if (ret)
 		return ret;
+	devpriv = dev->private;
 
 	devpriv->stc_writew = &ni_atmio_win_out;
 	devpriv->stc_readw = &ni_atmio_win_in;
@@ -435,15 +437,9 @@ static int ni_atmio_attach(struct comedi_device *dev,
 		devpriv->isapnp_dev = isapnp_dev;
 	}
 
-	/* reserve our I/O region */
-
-	printk("comedi%d: ni_atmio: 0x%04lx", dev->minor, iobase);
-	if (!request_region(iobase, NI_SIZE, "ni_atmio")) {
-		printk(" I/O port conflict\n");
-		return -EIO;
-	}
-
-	dev->iobase = iobase;
+	ret = comedi_request_region(dev, iobase, NI_SIZE);
+	if (ret)
+		return ret;
 
 #ifdef DEBUG
 	/* board existence sanity check */
@@ -465,9 +461,10 @@ static int ni_atmio_attach(struct comedi_device *dev,
 		return -EIO;
 
 	dev->board_ptr = ni_boards + board;
+	boardtype = comedi_board(dev);
 
-	printk(" %s", boardtype.name);
-	dev->board_name = boardtype.name;
+	printk(" %s", boardtype->name);
+	dev->board_name = boardtype->name;
 
 	/* irq stuff */
 
@@ -489,7 +486,7 @@ static int ni_atmio_attach(struct comedi_device *dev,
 
 	/* generic E series stuff in ni_mio_common.c */
 
-	ret = ni_E_init(dev, it);
+	ret = ni_E_init(dev);
 	if (ret < 0)
 		return ret;
 
@@ -499,11 +496,10 @@ static int ni_atmio_attach(struct comedi_device *dev,
 
 static void ni_atmio_detach(struct comedi_device *dev)
 {
+	struct ni_private *devpriv = dev->private;
+
 	mio_common_detach(dev);
-	if (dev->iobase)
-		release_region(dev->iobase, NI_SIZE);
-	if (dev->irq)
-		free_irq(dev->irq, dev);
+	comedi_legacy_detach(dev);
 	if (devpriv->isapnp_dev)
 		pnp_device_detach(devpriv->isapnp_dev);
 }

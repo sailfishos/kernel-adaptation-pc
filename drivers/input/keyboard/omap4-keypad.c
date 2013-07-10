@@ -211,22 +211,16 @@ static void omap4_keypad_close(struct input_dev *input)
 }
 
 #ifdef CONFIG_OF
-static int __devinit omap4_keypad_parse_dt(struct device *dev,
-					   struct omap4_keypad *keypad_data)
+static int omap4_keypad_parse_dt(struct device *dev,
+				 struct omap4_keypad *keypad_data)
 {
 	struct device_node *np = dev->of_node;
+	int err;
 
-	if (!np) {
-		dev_err(dev, "missing DT data");
-		return -EINVAL;
-	}
-
-	of_property_read_u32(np, "keypad,num-rows", &keypad_data->rows);
-	of_property_read_u32(np, "keypad,num-columns", &keypad_data->cols);
-	if (!keypad_data->rows || !keypad_data->cols) {
-		dev_err(dev, "number of keypad rows/columns not specified\n");
-		return -EINVAL;
-	}
+	err = matrix_keypad_parse_of_params(dev, &keypad_data->rows,
+					    &keypad_data->cols);
+	if (err)
+		return err;
 
 	if (of_get_property(np, "linux,input-no-autorepeat", NULL))
 		keypad_data->no_autorepeat = true;
@@ -241,7 +235,7 @@ static inline int omap4_keypad_parse_dt(struct device *dev,
 }
 #endif
 
-static int __devinit omap4_keypad_probe(struct platform_device *pdev)
+static int omap4_keypad_probe(struct platform_device *pdev)
 {
 	const struct omap4_keypad_platform_data *pdata =
 				dev_get_platdata(&pdev->dev);
@@ -406,7 +400,7 @@ err_free_keypad:
 	return error;
 }
 
-static int __devexit omap4_keypad_remove(struct platform_device *pdev)
+static int omap4_keypad_remove(struct platform_device *pdev)
 {
 	struct omap4_keypad *keypad_data = platform_get_drvdata(pdev);
 	struct resource *res;
@@ -440,7 +434,7 @@ MODULE_DEVICE_TABLE(of, omap_keypad_dt_match);
 
 static struct platform_driver omap4_keypad_driver = {
 	.probe		= omap4_keypad_probe,
-	.remove		= __devexit_p(omap4_keypad_remove),
+	.remove		= omap4_keypad_remove,
 	.driver		= {
 		.name	= "omap4-keypad",
 		.owner	= THIS_MODULE,

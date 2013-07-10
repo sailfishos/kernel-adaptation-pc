@@ -16,14 +16,20 @@ comment "Extcon Device Drivers"
 
 config EXTCON_GPIO
 	tristate "GPIO extcon support"
-	depends on GENERIC_GPIO
+	depends on GPIOLIB
 	help
 	  Say Y here to enable GPIO based extcon support. Note that GPIO
 	  extcon supports single state per extcon instance.
 
+config EXTCON_ADC_JACK
+	tristate "ADC Jack extcon support"
+	depends on IIO
+	help
+	  Say Y here to enable extcon device driver based on ADC values.
+
 config EXTCON_MAX77693
 	tristate "MAX77693 EXTCON Support"
-	depends on MFD_MAX77693
+	depends on MFD_MAX77693 && INPUT
 	select IRQ_DOMAIN
 	select REGMAP_I2C
 	help
@@ -41,7 +47,7 @@ config EXTCON_MAX8997
 
 config EXTCON_ARIZONA
 	tristate "Wolfson Arizona EXTCON support"
-	depends on MFD_ARIZONA
+	depends on MFD_ARIZONA && INPUT && SND_SOC
 	help
 	  Say Y here to enable support for external accessory detection
 	  with Wolfson Arizona devices. These are audio CODECs with

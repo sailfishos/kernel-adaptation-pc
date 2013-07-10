@@ -23,60 +23,7 @@
 #include <linux/err.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/palmas.h>
-
-static const struct resource gpadc_resource[] = {
-	{
-		.name = "EOC_SW",
-		.start = PALMAS_GPADC_EOC_SW_IRQ,
-		.end = PALMAS_GPADC_EOC_SW_IRQ,
-		.flags = IORESOURCE_IRQ,
-	}
-};
-
-static const struct resource usb_resource[] = {
-	{
-		.name = "ID",
-		.start = PALMAS_ID_OTG_IRQ,
-		.end = PALMAS_ID_OTG_IRQ,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "ID_WAKEUP",
-		.start = PALMAS_ID_IRQ,
-		.end = PALMAS_ID_IRQ,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "VBUS",
-		.start = PALMAS_VBUS_OTG_IRQ,
-		.end = PALMAS_VBUS_OTG_IRQ,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "VBUS_WAKEUP",
-		.start = PALMAS_VBUS_IRQ,
-		.end = PALMAS_VBUS_IRQ,
-		.flags = IORESOURCE_IRQ,
-	},
-};
-
-static const struct resource rtc_resource[] = {
-	{
-		.name = "RTC_ALARM",
-		.start = PALMAS_RTC_ALARM_IRQ,
-		.end = PALMAS_RTC_ALARM_IRQ,
-		.flags = IORESOURCE_IRQ,
-	},
-};
-
-static const struct resource pwron_resource[] = {
-	{
-		.name = "PWRON_BUTTON",
-		.start = PALMAS_PWRON_IRQ,
-		.end = PALMAS_PWRON_IRQ,
-		.flags = IORESOURCE_IRQ,
-	},
-};
+#include <linux/of_platform.h>
 
 enum palmas_ids {
 	PALMAS_PMIC_ID,
@@ -90,6 +37,14 @@ enum palmas_ids {
 	PALMAS_CLK_ID,
 	PALMAS_PWM_ID,
 	PALMAS_USB_ID,
+};
+
+static struct resource palmas_rtc_resources[] = {
+	{
+		.start  = PALMAS_RTC_ALARM_IRQ,
+		.end    = PALMAS_RTC_ALARM_IRQ,
+		.flags  = IORESOURCE_IRQ,
+	},
 };
 
 static const struct mfd_cell palmas_children[] = {
@@ -111,20 +66,16 @@ static const struct mfd_cell palmas_children[] = {
 	},
 	{
 		.name = "palmas-rtc",
-		.num_resources = ARRAY_SIZE(rtc_resource),
-		.resources = rtc_resource,
 		.id = PALMAS_RTC_ID,
+		.resources = &palmas_rtc_resources[0],
+		.num_resources = ARRAY_SIZE(palmas_rtc_resources),
 	},
 	{
 		.name = "palmas-pwrbutton",
-		.num_resources = ARRAY_SIZE(pwron_resource),
-		.resources = pwron_resource,
 		.id = PALMAS_PWRBUTTON_ID,
 	},
 	{
 		.name = "palmas-gpadc",
-		.num_resources = ARRAY_SIZE(gpadc_resource),
-		.resources = gpadc_resource,
 		.id = PALMAS_GPADC_ID,
 	},
 	{
@@ -141,8 +92,6 @@ static const struct mfd_cell palmas_children[] = {
 	},
 	{
 		.name = "palmas-usb",
-		.num_resources = ARRAY_SIZE(usb_resource),
-		.resources = usb_resource,
 		.id = PALMAS_USB_ID,
 	}
 };
@@ -308,17 +257,73 @@ static struct regmap_irq_chip palmas_irq_chip = {
 			PALMAS_INT1_MASK),
 };
 
-static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
+static int palmas_set_pdata_irq_flag(struct i2c_client *i2c,
+		struct palmas_platform_data *pdata)
+{
+	struct irq_data *irq_data = irq_get_irq_data(i2c->irq);
+	if (!irq_data) {
+		dev_err(&i2c->dev, "Invalid IRQ: %d\n", i2c->irq);
+		return -EINVAL;
+	}
+
+	pdata->irq_flags = irqd_get_trigger_type(irq_data);
+	dev_info(&i2c->dev, "Irq flag is 0x%08x\n", pdata->irq_flags);
+	return 0;
+}
+
+static void palmas_dt_to_pdata(struct i2c_client *i2c,
+		struct palmas_platform_data *pdata)
+{
+	struct device_node *node = i2c->dev.of_node;
+	int ret;
+	u32 prop;
+
+	ret = of_property_read_u32(node, "ti,mux-pad1", &prop);
+	if (!ret) {
+		pdata->mux_from_pdata = 1;
+		pdata->pad1 = prop;
+	}
+
+	ret = of_property_read_u32(node, "ti,mux-pad2", &prop);
+	if (!ret) {
+		pdata->mux_from_pdata = 1;
+		pdata->pad2 = prop;
+	}
+
+	/* The default for this register is all masked */
+	ret = of_property_read_u32(node, "ti,power-ctrl", &prop);
+	if (!ret)
+		pdata->power_ctrl = prop;
+	else
+		pdata->power_ctrl = PALMAS_POWER_CTRL_NSLEEP_MASK |
+					PALMAS_POWER_CTRL_ENABLE1_MASK |
+					PALMAS_POWER_CTRL_ENABLE2_MASK;
+	if (i2c->irq)
+		palmas_set_pdata_irq_flag(i2c, pdata);
+}
+
+static int palmas_i2c_probe(struct i2c_client *i2c,
 			    const struct i2c_device_id *id)
 {
 	struct palmas *palmas;
 	struct palmas_platform_data *pdata;
+	struct device_node *node = i2c->dev.of_node;
 	int ret = 0, i;
 	unsigned int reg, addr;
 	int slave;
 	struct mfd_cell *children;
 
 	pdata = dev_get_platdata(&i2c->dev);
+
+	if (node && !pdata) {
+		pdata = devm_kzalloc(&i2c->dev, sizeof(*pdata), GFP_KERNEL);
+
+		if (!pdata)
+			return -ENOMEM;
+
+		palmas_dt_to_pdata(i2c, pdata);
+	}
+
 	if (!pdata)
 		return -EINVAL;
 
@@ -344,6 +349,7 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 				ret = -ENOMEM;
 				goto err;
 			}
+			palmas->i2c_clients[i]->dev.of_node = of_node_get(node);
 		}
 		palmas->regmap[i] = devm_regmap_init_i2c(palmas->i2c_clients[i],
 				&palmas_regmap_config[i]);
@@ -356,6 +362,19 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 		}
 	}
 
+	/* Change interrupt line output polarity */
+	if (pdata->irq_flags & IRQ_TYPE_LEVEL_HIGH)
+		reg = PALMAS_POLARITY_CTRL_INT_POLARITY;
+	else
+		reg = 0;
+	ret = palmas_update_bits(palmas, PALMAS_PU_PD_OD_BASE,
+			PALMAS_POLARITY_CTRL, PALMAS_POLARITY_CTRL_INT_POLARITY,
+			reg);
+	if (ret < 0) {
+		dev_err(palmas->dev, "POLARITY_CTRL updat failed: %d\n", ret);
+		goto err;
+	}
+
 	/* Change IRQ into clear on read mode for efficiency */
 	slave = PALMAS_BASE_TO_SLAVE(PALMAS_INTERRUPT_BASE);
 	addr = PALMAS_BASE_TO_REG(PALMAS_INTERRUPT_BASE, PALMAS_INT_CTRL);
@@ -364,7 +383,7 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 	regmap_write(palmas->regmap[slave], addr, reg);
 
 	ret = regmap_add_irq_chip(palmas->regmap[slave], palmas->irq,
-			IRQF_ONESHOT | IRQF_TRIGGER_LOW, -1, &palmas_irq_chip,
+			IRQF_ONESHOT | pdata->irq_flags, 0, &palmas_irq_chip,
 			&palmas->irq_data);
 	if (ret < 0)
 		goto err;
@@ -377,11 +396,11 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 		reg = pdata->pad1;
 		ret = regmap_write(palmas->regmap[slave], addr, reg);
 		if (ret)
-			goto err;
+			goto err_irq;
 	} else {
 		ret = regmap_read(palmas->regmap[slave], addr, &reg);
 		if (ret)
-			goto err;
+			goto err_irq;
 	}
 
 	if (!(reg & PALMAS_PRIMARY_SECONDARY_PAD1_GPIO_0))
@@ -412,11 +431,11 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 		reg = pdata->pad2;
 		ret = regmap_write(palmas->regmap[slave], addr, reg);
 		if (ret)
-			goto err;
+			goto err_irq;
 	} else {
 		ret = regmap_read(palmas->regmap[slave], addr, &reg);
 		if (ret)
-			goto err;
+			goto err_irq;
 	}
 
 	if (!(reg & PALMAS_PRIMARY_SECONDARY_PAD2_GPIO_4))
@@ -439,32 +458,59 @@ static int __devinit palmas_i2c_probe(struct i2c_client *i2c,
 
 	ret = regmap_write(palmas->regmap[slave], addr, reg);
 	if (ret)
-		goto err;
+		goto err_irq;
+
+	/*
+	 * If we are probing with DT do this the DT way and return here
+	 * otherwise continue and add devices using mfd helpers.
+	 */
+	if (node) {
+		ret = of_platform_populate(node, NULL, NULL, &i2c->dev);
+		if (ret < 0)
+			goto err_irq;
+		else
+			return ret;
+	}
 
 	children = kmemdup(palmas_children, sizeof(palmas_children),
 			   GFP_KERNEL);
 	if (!children) {
 		ret = -ENOMEM;
-		goto err;
+		goto err_irq;
 	}
 
 	children[PALMAS_PMIC_ID].platform_data = pdata->pmic_pdata;
 	children[PALMAS_PMIC_ID].pdata_size = sizeof(*pdata->pmic_pdata);
 
+	children[PALMAS_GPADC_ID].platform_data = pdata->gpadc_pdata;
+	children[PALMAS_GPADC_ID].pdata_size = sizeof(*pdata->gpadc_pdata);
+
+	children[PALMAS_RESOURCE_ID].platform_data = pdata->resource_pdata;
+	children[PALMAS_RESOURCE_ID].pdata_size =
+			sizeof(*pdata->resource_pdata);
+
+	children[PALMAS_USB_ID].platform_data = pdata->usb_pdata;
+	children[PALMAS_USB_ID].pdata_size = sizeof(*pdata->usb_pdata);
+
+	children[PALMAS_CLK_ID].platform_data = pdata->clk_pdata;
+	children[PALMAS_CLK_ID].pdata_size = sizeof(*pdata->clk_pdata);
+
 	ret = mfd_add_devices(palmas->dev, -1,
 			      children, ARRAY_SIZE(palmas_children),
-			      NULL, regmap_irq_chip_get_base(palmas->irq_data),
-			      NULL);
+			      NULL, 0,
+			      regmap_irq_get_domain(palmas->irq_data));
 	kfree(children);
 
 	if (ret < 0)
-		goto err;
+		goto err_devices;
 
 	return ret;
 
-err:
+err_devices:
 	mfd_remove_devices(palmas->dev);
-	kfree(palmas);
+err_irq:
+	regmap_del_irq_chip(palmas->irq, palmas->irq_data);
+err:
 	return ret;
 }
 
@@ -487,7 +533,7 @@ static const struct i2c_device_id palmas_i2c_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, palmas_i2c_id);
 
-static struct of_device_id __devinitdata of_palmas_match_tbl[] = {
+static struct of_device_id of_palmas_match_tbl[] = {
 	{ .compatible = "ti,palmas", },
 	{ /* end */ }
 };

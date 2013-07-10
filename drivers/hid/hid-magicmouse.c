@@ -19,7 +19,6 @@
 #include <linux/input/mt.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/usb.h>
 
 #include "hid-ids.h"
 
@@ -392,7 +391,7 @@ static int magicmouse_setup_input(struct input_dev *input, struct hid_device *hd
 
 	__set_bit(EV_ABS, input->evbit);
 
-	error = input_mt_init_slots(input, 16);
+	error = input_mt_init_slots(input, 16, 0);
 	if (error)
 		return error;
 	input_set_abs_params(input, ABS_MT_TOUCH_MAJOR, 0, 255 << 2,
@@ -462,6 +461,21 @@ static int magicmouse_input_mapping(struct hid_device *hdev,
 	return 0;
 }
 
+static void magicmouse_input_configured(struct hid_device *hdev,
+		struct hid_input *hi)
+
+{
+	struct magicmouse_sc *msc = hid_get_drvdata(hdev);
+
+	int ret = magicmouse_setup_input(msc->input, hdev);
+	if (ret) {
+		hid_err(hdev, "magicmouse setup input failed (%d)\n", ret);
+		/* clean msc->input to notify probe() of the failure */
+		msc->input = NULL;
+	}
+}
+
+
 static int magicmouse_probe(struct hid_device *hdev,
 	const struct hid_device_id *id)
 {
@@ -493,15 +507,10 @@ static int magicmouse_probe(struct hid_device *hdev,
 		goto err_free;
 	}
 
-	/* We do this after hid-input is done parsing reports so that
-	 * hid-input uses the most natural button and axis IDs.
-	 */
-	if (msc->input) {
-		ret = magicmouse_setup_input(msc->input, hdev);
-		if (ret) {
-			hid_err(hdev, "magicmouse setup input failed (%d)\n", ret);
-			goto err_stop_hw;
-		}
+	if (!msc->input) {
+		hid_err(hdev, "magicmouse input not registered\n");
+		ret = -ENOMEM;
+		goto err_stop_hw;
 	}
 
 	if (id->product == USB_DEVICE_ID_APPLE_MAGICMOUSE)
@@ -568,24 +577,8 @@ static struct hid_driver magicmouse_driver = {
 	.remove = magicmouse_remove,
 	.raw_event = magicmouse_raw_event,
 	.input_mapping = magicmouse_input_mapping,
+	.input_configured = magicmouse_input_configured,
 };
+module_hid_driver(magicmouse_driver);
 
-static int __init magicmouse_init(void)
-{
-	int ret;
-
-	ret = hid_register_driver(&magicmouse_driver);
-	if (ret)
-		pr_err("can't register magicmouse driver\n");
-
-	return ret;
-}
-
-static void __exit magicmouse_exit(void)
-{
-	hid_unregister_driver(&magicmouse_driver);
-}
-
-module_init(magicmouse_init);
-module_exit(magicmouse_exit);
 MODULE_LICENSE("GPL");

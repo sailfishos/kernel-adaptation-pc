@@ -173,7 +173,7 @@ static int adf4350_set_freq(struct adf4350_state *st, unsigned long long freq)
 			} while ((st->r1_mod > ADF4350_MAX_MODULUS) && r_cnt);
 		} while (r_cnt == 0);
 
-		tmp = freq * (u64)st->r1_mod + (st->fpfd > 1);
+		tmp = freq * (u64)st->r1_mod + (st->fpfd >> 1);
 		do_div(tmp, st->fpfd); /* Div round closest (n + d/2)/d */
 		st->r0_fract = do_div(tmp, st->r1_mod);
 		st->r0_int = tmp;
@@ -212,7 +212,7 @@ static int adf4350_set_freq(struct adf4350_state *st, unsigned long long freq)
 		(pdata->r2_user_settings & (ADF4350_REG2_PD_POLARITY_POS |
 		ADF4350_REG2_LDP_6ns | ADF4350_REG2_LDF_INT_N |
 		ADF4350_REG2_CHARGE_PUMP_CURR_uA(5000) |
-		ADF4350_REG2_MUXOUT(0x7) | ADF4350_REG2_NOISE_MODE(0x9)));
+		ADF4350_REG2_MUXOUT(0x7) | ADF4350_REG2_NOISE_MODE(0x3)));
 
 	st->regs[ADF4350_REG3] = pdata->r3_user_settings &
 				 (ADF4350_REG3_12BIT_CLKDIV(0xFFF) |
@@ -355,7 +355,7 @@ static const struct iio_info adf4350_info = {
 	.driver_module = THIS_MODULE,
 };
 
-static int __devinit adf4350_probe(struct spi_device *spi)
+static int adf4350_probe(struct spi_device *spi)
 {
 	struct adf4350_platform_data *pdata = spi->dev.platform_data;
 	struct iio_dev *indio_dev;
@@ -440,7 +440,7 @@ error_put_reg:
 	return ret;
 }
 
-static int __devexit adf4350_remove(struct spi_device *spi)
+static int adf4350_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct adf4350_state *st = iio_priv(indio_dev);
@@ -476,7 +476,7 @@ static struct spi_driver adf4350_driver = {
 		.owner	= THIS_MODULE,
 	},
 	.probe		= adf4350_probe,
-	.remove		= __devexit_p(adf4350_remove),
+	.remove		= adf4350_remove,
 	.id_table	= adf4350_id,
 };
 module_spi_driver(adf4350_driver);

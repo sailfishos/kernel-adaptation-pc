@@ -83,7 +83,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-#include <asm/hardware/pl080.h>
+#include <linux/amba/pl080.h>
 
 #include "dmaengine.h"
 #include "virt-dma.h"
@@ -1096,15 +1096,9 @@ static void pl08x_free_txd_list(struct pl08x_driver_data *pl08x,
 				struct pl08x_dma_chan *plchan)
 {
 	LIST_HEAD(head);
-	struct pl08x_txd *txd;
 
 	vchan_get_all_descriptors(&plchan->vc, &head);
-
-	while (!list_empty(&head)) {
-		txd = list_first_entry(&head, struct pl08x_txd, vd.node);
-		list_del(&txd->vd.node);
-		pl08x_desc_free(&txd->vd);
-	}
+	vchan_dma_desc_free_list(&plchan->vc, &head);
 }
 
 /*
@@ -1892,6 +1886,7 @@ static int pl08x_probe(struct amba_device *adev, const struct amba_id *id)
 	pl08x->pd = dev_get_platdata(&adev->dev);
 	if (!pl08x->pd) {
 		dev_err(&adev->dev, "no platform data supplied\n");
+		ret = -EINVAL;
 		goto out_no_platdata;
 	}
 
@@ -1943,6 +1938,7 @@ static int pl08x_probe(struct amba_device *adev, const struct amba_id *id)
 		dev_err(&adev->dev, "%s failed to allocate "
 			"physical channel holders\n",
 			__func__);
+		ret = -ENOMEM;
 		goto out_no_phychans;
 	}
 

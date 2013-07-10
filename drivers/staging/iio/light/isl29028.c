@@ -391,15 +391,15 @@ static const struct attribute_group isl29108_group = {
 static const struct iio_chan_spec isl29028_channels[] = {
 	{
 		.type = IIO_LIGHT,
-		.info_mask = IIO_CHAN_INFO_PROCESSED_SEPARATE_BIT |
-		IIO_CHAN_INFO_SCALE_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_PROCESSED) |
+		BIT(IIO_CHAN_INFO_SCALE),
 	}, {
 		.type = IIO_INTENSITY,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 	}, {
 		.type = IIO_PROXIMITY,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-		IIO_CHAN_INFO_SAMP_FREQ_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+		BIT(IIO_CHAN_INFO_SAMP_FREQ),
 	}
 };
 
@@ -475,7 +475,7 @@ static const struct regmap_config isl29028_regmap_config = {
 	.cache_type = REGCACHE_RBTREE,
 };
 
-static int __devinit isl29028_probe(struct i2c_client *client,
+static int isl29028_probe(struct i2c_client *client,
 	const struct i2c_device_id *id)
 {
 	struct isl29028_chip *chip;
@@ -526,7 +526,7 @@ exit_iio_free:
 	return ret;
 }
 
-static int __devexit isl29028_remove(struct i2c_client *client)
+static int isl29028_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 
@@ -555,7 +555,7 @@ static struct i2c_driver isl29028_driver = {
 		.of_match_table = isl29028_of_match,
 	},
 	.probe	 = isl29028_probe,
-	.remove  = __devexit_p(isl29028_remove),
+	.remove  = isl29028_remove,
 	.id_table = isl29028_id,
 };
 

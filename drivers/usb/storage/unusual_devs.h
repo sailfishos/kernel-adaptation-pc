@@ -53,6 +53,14 @@
  * as opposed to devices that do something strangely or wrongly.
  */
 
+/* In-kernel mode switching is deprecated.  Do not add new devices to
+ * this list for the sole purpose of switching them to a different
+ * mode.  Existing userspace solutions are superior.
+ *
+ * New mode switching devices should instead be added to the database
+ * maintained at http://www.draisberghof.de/usb_modeswitch/
+ */
+
 #if !defined(CONFIG_USB_STORAGE_SDDR09) && \
 		!defined(CONFIG_USB_STORAGE_SDDR09_MODULE)
 #define NO_SDDR09
@@ -487,6 +495,13 @@ UNUSUAL_DEV(  0x04e8, 0x5122, 0x0000, 0x9999,
 		"YP-CP3",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_MAX_SECTORS_64 | US_FL_BULK_IGNORE_TAG),
+
+/* Added by Dmitry Artamonow <mad_soft@inbox.ru> */
+UNUSUAL_DEV(  0x04e8, 0x5136, 0x0000, 0x9999,
+		"Samsung",
+		"YP-Z3",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_MAX_SECTORS_64),
 
 /* Entry and supporting patch by Theodore Kilgore <kilgota@auburn.edu>.
  * Device uses standards-violating 32-byte Bulk Command Block Wrappers and
@@ -2044,25 +2059,25 @@ UNUSUAL_DEV( 0xed10, 0x7636, 0x0001, 0x0001,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL, US_FL_NOT_LOCKABLE ),
 
 /* Control/Bulk transport for all SubClass values */
-USUAL_DEV(USB_SC_RBC, USB_PR_CB, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_8020, USB_PR_CB, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_QIC, USB_PR_CB, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_UFI, USB_PR_CB, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_8070, USB_PR_CB, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_SCSI, USB_PR_CB, USB_US_TYPE_STOR),
+USUAL_DEV(USB_SC_RBC, USB_PR_CB),
+USUAL_DEV(USB_SC_8020, USB_PR_CB),
+USUAL_DEV(USB_SC_QIC, USB_PR_CB),
+USUAL_DEV(USB_SC_UFI, USB_PR_CB),
+USUAL_DEV(USB_SC_8070, USB_PR_CB),
+USUAL_DEV(USB_SC_SCSI, USB_PR_CB),
 
 /* Control/Bulk/Interrupt transport for all SubClass values */
-USUAL_DEV(USB_SC_RBC, USB_PR_CBI, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_8020, USB_PR_CBI, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_QIC, USB_PR_CBI, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_UFI, USB_PR_CBI, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_8070, USB_PR_CBI, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_SCSI, USB_PR_CBI, USB_US_TYPE_STOR),
+USUAL_DEV(USB_SC_RBC, USB_PR_CBI),
+USUAL_DEV(USB_SC_8020, USB_PR_CBI),
+USUAL_DEV(USB_SC_QIC, USB_PR_CBI),
+USUAL_DEV(USB_SC_UFI, USB_PR_CBI),
+USUAL_DEV(USB_SC_8070, USB_PR_CBI),
+USUAL_DEV(USB_SC_SCSI, USB_PR_CBI),
 
 /* Bulk-only transport for all SubClass values */
-USUAL_DEV(USB_SC_RBC, USB_PR_BULK, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_8020, USB_PR_BULK, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_QIC, USB_PR_BULK, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_UFI, USB_PR_BULK, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_8070, USB_PR_BULK, USB_US_TYPE_STOR),
-USUAL_DEV(USB_SC_SCSI, USB_PR_BULK, 0),
+USUAL_DEV(USB_SC_RBC, USB_PR_BULK),
+USUAL_DEV(USB_SC_8020, USB_PR_BULK),
+USUAL_DEV(USB_SC_QIC, USB_PR_BULK),
+USUAL_DEV(USB_SC_UFI, USB_PR_BULK),
+USUAL_DEV(USB_SC_8070, USB_PR_BULK),
+USUAL_DEV(USB_SC_SCSI, USB_PR_BULK),

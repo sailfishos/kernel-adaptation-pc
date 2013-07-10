@@ -250,7 +250,7 @@ static struct isci_request *isci_task_request_build(struct isci_host *ihost,
 	}
 
 	/* XXX convert to get this from task->tproto like other drivers */
-	if (dev->dev_type == SAS_END_DEV) {
+	if (dev->dev_type == SAS_END_DEVICE) {
 		isci_tmf->proto = SAS_PROTOCOL_SSP;
 		status = sci_task_request_construct_ssp(ireq);
 		if (status != SCI_SUCCESS)
@@ -532,7 +532,7 @@ int isci_task_abort_task(struct sas_task *task)
 		/* The request has already completed and there
 		* is nothing to do here other than to set the task
 		* done bit, and indicate that the task abort function
-		* was sucessful.
+		* was successful.
 		*/
 		spin_lock_irqsave(&task->task_state_lock, flags);
 		task->task_state_flags |= SAS_TASK_STATE_DONE;

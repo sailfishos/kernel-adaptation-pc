@@ -127,6 +127,18 @@ static void siena_remove_port(struct efx_nic *efx)
 	efx_nic_free_buffer(efx, &efx->stats_buffer);
 }
 
+void siena_prepare_flush(struct efx_nic *efx)
+{
+	if (efx->fc_disable++ == 0)
+		efx_mcdi_set_mac(efx);
+}
+
+void siena_finish_flush(struct efx_nic *efx)
+{
+	if (--efx->fc_disable == 0)
+		efx_mcdi_set_mac(efx);
+}
+
 static const struct efx_nic_register_test siena_register_tests[] = {
 	{ FR_AZ_ADR_REGION,
 	  EFX_OWORD32(0x0003FFFF, 0x0003FFFF, 0x0003FFFF, 0x0003FFFF) },
@@ -158,7 +170,7 @@ static const struct efx_nic_register_test siena_register_tests[] = {
 
 static int siena_test_chip(struct efx_nic *efx, struct efx_self_tests *tests)
 {
-	enum reset_type reset_method = reset_method;
+	enum reset_type reset_method = RESET_TYPE_ALL;
 	int rc, rc2;
 
 	efx_reset_down(efx, reset_method);
@@ -190,7 +202,7 @@ out:
 
 static enum reset_type siena_map_reset_reason(enum reset_type reason)
 {
-	return RESET_TYPE_ALL;
+	return RESET_TYPE_RECOVER_OR_ALL;
 }
 
 static int siena_map_reset_flags(u32 *flags)
@@ -232,6 +244,22 @@ static int siena_reset_hw(struct efx_nic *efx, enum reset_type method)
 	else
 		return efx_mcdi_reset_port(efx);
 }
+
+#ifdef CONFIG_EEH
+/* When a PCI device is isolated from the bus, a subsequent MMIO read is
+ * required for the kernel EEH mechanisms to notice. As the Solarflare driver
+ * was written to minimise MMIO read (for latency) then a periodic call to check
+ * the EEH status of the device is required so that device recovery can happen
+ * in a timely fashion.
+ */
+static void siena_monitor(struct efx_nic *efx)
+{
+	struct eeh_dev *eehdev =
+		of_node_to_eeh_dev(pci_device_to_OF_node(efx->pci_dev));
+
+	eeh_dev_check_failure(eehdev);
+}
+#endif
 
 static int siena_probe_nvconfig(struct efx_nic *efx)
 {
@@ -335,6 +363,7 @@ static int siena_probe_nic(struct efx_nic *efx)
 		goto fail5;
 
 	efx_sriov_probe(efx);
+	efx_ptp_probe(efx);
 
 	return 0;
 
@@ -385,6 +414,8 @@ static int siena_init_nic(struct efx_nic *efx)
 	EFX_SET_OWORD_FIELD(temp, FRF_BZ_RX_HASH_INSRT_HDR, 1);
 	EFX_SET_OWORD_FIELD(temp, FRF_BZ_RX_HASH_ALG, 1);
 	EFX_SET_OWORD_FIELD(temp, FRF_BZ_RX_IP_HASH, 1);
+	EFX_SET_OWORD_FIELD(temp, FRF_BZ_RX_USR_BUF_SIZE,
+			    EFX_RX_USR_BUF_SIZE >> 5);
 	efx_writeo(efx, &temp, FR_AZ_RX_CFG);
 
 	/* Set hash key for IPv4 */
@@ -652,13 +683,18 @@ const struct efx_nic_type siena_a0_nic_type = {
 	.init = siena_init_nic,
 	.dimension_resources = siena_dimension_resources,
 	.fini = efx_port_dummy_op_void,
+#ifdef CONFIG_EEH
+	.monitor = siena_monitor,
+#else
 	.monitor = NULL,
+#endif
 	.map_reset_reason = siena_map_reset_reason,
 	.map_reset_flags = siena_map_reset_flags,
 	.reset = siena_reset_hw,
 	.probe_port = siena_probe_port,
 	.remove_port = siena_remove_port,
-	.prepare_flush = efx_port_dummy_op_void,
+	.prepare_flush = siena_prepare_flush,
+	.finish_flush = siena_finish_flush,
 	.update_stats = siena_update_nic_stats,
 	.start_stats = siena_start_nic_stats,
 	.stop_stats = siena_stop_nic_stats,
@@ -684,6 +720,7 @@ const struct efx_nic_type siena_a0_nic_type = {
 	.max_dma_mask = DMA_BIT_MASK(FSF_AZ_TX_KER_BUF_ADDR_WIDTH),
 	.rx_buffer_hash_size = 0x10,
 	.rx_buffer_padding = 0,
+	.can_rx_scatter = true,
 	.max_interrupt_mode = EFX_INT_MODE_MSIX,
 	.phys_addr_channels = 32, /* Hardware limit is 64, but the legacy
 				   * interrupt handler only supports 32

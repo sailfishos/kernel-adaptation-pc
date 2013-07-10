@@ -17,6 +17,7 @@
  * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/ratelimit.h>
@@ -95,11 +96,11 @@ static inline u32 mc_readl(struct tegra30_mc *mc, u32 offs)
 
 	if (offs < 0x10)
 		val = readl(mc->regs[0] + offs);
-	if (offs < 0x1f0)
+	else if (offs < 0x1f0)
 		val = readl(mc->regs[1] + offs - 0x3c);
-	if (offs < 0x228)
+	else if (offs < 0x228)
 		val = readl(mc->regs[2] + offs - 0x200);
-	if (offs < 0x400)
+	else if (offs < 0x400)
 		val = readl(mc->regs[3] + offs - 0x284);
 
 	return val;
@@ -107,22 +108,14 @@ static inline u32 mc_readl(struct tegra30_mc *mc, u32 offs)
 
 static inline void mc_writel(struct tegra30_mc *mc, u32 val, u32 offs)
 {
-	if (offs < 0x10) {
+	if (offs < 0x10)
 		writel(val, mc->regs[0] + offs);
-		return;
-	}
-	if (offs < 0x1f0) {
+	else if (offs < 0x1f0)
 		writel(val, mc->regs[1] + offs - 0x3c);
-		return;
-	}
-	if (offs < 0x228) {
+	else if (offs < 0x228)
 		writel(val, mc->regs[2] + offs - 0x200);
-		return;
-	}
-	if (offs < 0x400) {
+	else if (offs < 0x400)
 		writel(val, mc->regs[3] + offs - 0x284);
-		return;
-	}
 }
 
 static const char * const tegra30_mc_client[] = {
@@ -275,6 +268,7 @@ static const u32 tegra30_mc_ctx[] = {
 	MC_INTMASK,
 };
 
+#ifdef CONFIG_PM
 static int tegra30_mc_suspend(struct device *dev)
 {
 	int i;
@@ -298,12 +292,13 @@ static int tegra30_mc_resume(struct device *dev)
 	mc_readl(mc, MC_TIMING_CONTROL);
 	return 0;
 }
+#endif
 
 static UNIVERSAL_DEV_PM_OPS(tegra30_mc_pm,
 			    tegra30_mc_suspend,
 			    tegra30_mc_resume, NULL);
 
-static const struct of_device_id tegra30_mc_of_match[] __devinitconst = {
+static const struct of_device_id tegra30_mc_of_match[] = {
 	{ .compatible = "nvidia,tegra30-mc", },
 	{},
 };
@@ -324,7 +319,7 @@ static irqreturn_t tegra30_mc_isr(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int __devinit tegra30_mc_probe(struct platform_device *pdev)
+static int tegra30_mc_probe(struct platform_device *pdev)
 {
 	struct resource *irq;
 	struct tegra30_mc *mc;
@@ -344,9 +339,9 @@ static int __devinit tegra30_mc_probe(struct platform_device *pdev)
 		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
 		if (!res)
 			return -ENODEV;
-		mc->regs[i] = devm_request_and_ioremap(&pdev->dev, res);
-		if (!mc->regs[i])
-			return -EBUSY;
+		mc->regs[i] = devm_ioremap_resource(&pdev->dev, res);
+		if (IS_ERR(mc->regs[i]))
+			return PTR_ERR(mc->regs[i]);
 	}
 
 	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);

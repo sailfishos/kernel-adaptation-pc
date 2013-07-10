@@ -66,7 +66,7 @@ static void build_instantiation_desc(u32 *desc)
 
 	/*
 	 * load 1 to clear written reg:
-	 * resets the done interrrupt and returns the RNG to idle.
+	 * resets the done interrupt and returns the RNG to idle.
 	 */
 	append_load_imm_u32(desc, 1, LDST_SRCDST_WORD_CLRW);
 
@@ -129,7 +129,7 @@ static int instantiate_rng(struct device *jrdev)
 
 /*
  * By default, the TRNG runs for 200 clocks per sample;
- * 800 clocks per sample generates better entropy.
+ * 1600 clocks per sample generates better entropy.
  */
 static void kick_trng(struct platform_device *pdev)
 {
@@ -144,9 +144,9 @@ static void kick_trng(struct platform_device *pdev)
 
 	/* put RNG4 into program mode */
 	setbits32(&r4tst->rtmctl, RTMCTL_PRGM);
-	/* 800 clocks per sample */
+	/* 1600 clocks per sample */
 	val = rd_reg32(&r4tst->rtsdctl);
-	val = (val & ~RTSDCTL_ENT_DLY_MASK) | (800 << RTSDCTL_ENT_DLY_SHIFT);
+	val = (val & ~RTSDCTL_ENT_DLY_MASK) | (1600 << RTSDCTL_ENT_DLY_SHIFT);
 	wr_reg32(&r4tst->rtsdctl, val);
 	/* min. freq. count */
 	wr_reg32(&r4tst->rtfrqmin, 400);
@@ -304,6 +304,9 @@ static int caam_probe(struct platform_device *pdev)
 			caam_remove(pdev);
 			return ret;
 		}
+
+		/* Enable RDB bit so that RNG works faster */
+		setbits32(&topregs->ctrl.scfgr, SCFGR_RDBENABLE);
 	}
 
 	/* NOTE: RTIC detection ought to go here, around Si time */
@@ -420,7 +423,7 @@ static struct platform_driver caam_driver = {
 		.of_match_table = caam_match,
 	},
 	.probe       = caam_probe,
-	.remove      = __devexit_p(caam_remove),
+	.remove      = caam_remove,
 };
 
 module_platform_driver(caam_driver);

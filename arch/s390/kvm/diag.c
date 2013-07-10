@@ -13,7 +13,10 @@
 
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
+#include <asm/virtio-ccw.h>
 #include "kvm-s390.h"
+#include "trace.h"
+#include "trace-s390.h"
 
 static int diag_release_pages(struct kvm_vcpu *vcpu)
 {
@@ -98,13 +101,38 @@ static int __diag_ipl_functions(struct kvm_vcpu *vcpu)
 	vcpu->run->exit_reason = KVM_EXIT_S390_RESET;
 	VCPU_EVENT(vcpu, 3, "requesting userspace resets %llx",
 	  vcpu->run->s390_reset_flags);
+	trace_kvm_s390_request_resets(vcpu->run->s390_reset_flags);
 	return -EREMOTE;
+}
+
+static int __diag_virtio_hypercall(struct kvm_vcpu *vcpu)
+{
+	int ret, idx;
+
+	/* No virtio-ccw notification? Get out quickly. */
+	if (!vcpu->kvm->arch.css_support ||
+	    (vcpu->run->s.regs.gprs[1] != KVM_S390_VIRTIO_CCW_NOTIFY))
+		return -EOPNOTSUPP;
+
+	idx = srcu_read_lock(&vcpu->kvm->srcu);
+	/*
+	 * The layout is as follows:
+	 * - gpr 2 contains the subchannel id (passed as addr)
+	 * - gpr 3 contains the virtqueue index (passed as datamatch)
+	 */
+	ret = kvm_io_bus_write(vcpu->kvm, KVM_VIRTIO_CCW_NOTIFY_BUS,
+				vcpu->run->s.regs.gprs[2],
+				8, &vcpu->run->s.regs.gprs[3]);
+	srcu_read_unlock(&vcpu->kvm->srcu, idx);
+	/* kvm_io_bus_write returns -EOPNOTSUPP if it found no match. */
+	return ret < 0 ? ret : 0;
 }
 
 int kvm_s390_handle_diag(struct kvm_vcpu *vcpu)
 {
 	int code = (vcpu->arch.sie_block->ipb & 0xfff0000) >> 16;
 
+	trace_kvm_s390_handle_diag(vcpu, code);
 	switch (code) {
 	case 0x10:
 		return diag_release_pages(vcpu);
@@ -114,6 +142,8 @@ int kvm_s390_handle_diag(struct kvm_vcpu *vcpu)
 		return __diag_time_slice_end_directed(vcpu);
 	case 0x308:
 		return __diag_ipl_functions(vcpu);
+	case 0x500:
+		return __diag_virtio_hypercall(vcpu);
 	default:
 		return -EOPNOTSUPP;
 	}

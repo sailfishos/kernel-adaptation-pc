@@ -62,7 +62,6 @@ struct pcmad_priv_struct {
 	int differential;
 	int twos_comp;
 };
-#define devpriv ((struct pcmad_priv_struct *)dev->private)
 
 #define TIMEOUT	100
 
@@ -71,6 +70,7 @@ static int pcmad_ai_insn_read(struct comedi_device *dev,
 			      struct comedi_insn *insn, unsigned int *data)
 {
 	const struct pcmad_board_struct *board = comedi_board(dev);
+	struct pcmad_priv_struct *devpriv = dev->private;
 	int i;
 	int chan;
 	int n;
@@ -104,30 +104,24 @@ static int pcmad_ai_insn_read(struct comedi_device *dev,
 static int pcmad_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 {
 	const struct pcmad_board_struct *board = comedi_board(dev);
-	int ret;
+	struct pcmad_priv_struct *devpriv;
 	struct comedi_subdevice *s;
-	unsigned long iobase;
+	int ret;
 
-	iobase = it->options[0];
-	printk(KERN_INFO "comedi%d: pcmad: 0x%04lx ", dev->minor, iobase);
-	if (!request_region(iobase, PCMAD_SIZE, "pcmad")) {
-		printk(KERN_CONT "I/O port conflict\n");
-		return -EIO;
-	}
-	printk(KERN_CONT "\n");
-	dev->iobase = iobase;
+	ret = comedi_request_region(dev, it->options[0], PCMAD_SIZE);
+	if (ret)
+		return ret;
 
 	ret = comedi_alloc_subdevices(dev, 1);
 	if (ret)
 		return ret;
 
-	ret = alloc_private(dev, sizeof(struct pcmad_priv_struct));
-	if (ret < 0)
-		return ret;
+	devpriv = kzalloc(sizeof(*devpriv), GFP_KERNEL);
+	if (!devpriv)
+		return -ENOMEM;
+	dev->private = devpriv;
 
-	dev->board_name = board->name;
-
-	s = dev->subdevices + 0;
+	s = &dev->subdevices[0];
 	s->type = COMEDI_SUBD_AI;
 	s->subdev_flags = SDF_READABLE | AREF_GROUND;
 	s->n_chan = 16;		/* XXX */
@@ -137,14 +131,6 @@ static int pcmad_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 	s->range_table = &range_unknown;
 
 	return 0;
-}
-
-static void pcmad_detach(struct comedi_device *dev)
-{
-	if (dev->irq)
-		free_irq(dev->irq, dev);
-	if (dev->iobase)
-		release_region(dev->iobase, PCMAD_SIZE);
 }
 
 static const struct pcmad_board_struct pcmad_boards[] = {
@@ -160,7 +146,7 @@ static struct comedi_driver pcmad_driver = {
 	.driver_name	= "pcmad",
 	.module		= THIS_MODULE,
 	.attach		= pcmad_attach,
-	.detach		= pcmad_detach,
+	.detach		= comedi_legacy_detach,
 	.board_name	= &pcmad_boards[0].name,
 	.num_names	= ARRAY_SIZE(pcmad_boards),
 	.offset		= sizeof(pcmad_boards[0]),

@@ -99,28 +99,20 @@ static int subdev_8255mapped_cb(int dir, int port, int data,
 static int pcl724_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 {
 	const struct pcl724_board *board = comedi_board(dev);
-	unsigned long iobase;
+	struct comedi_subdevice *s;
 	unsigned int iorange;
 	int ret, i, n_subdevices;
 #ifdef PCL724_IRQ
 	unsigned int irq;
 #endif
 
-	iobase = it->options[0];
 	iorange = board->io_range;
-	if ((board->can_have96) && ((it->options[1] == 1)
-					 || (it->options[1] == 96)))
+	if ((board->can_have96) &&
+	    ((it->options[1] == 1) || (it->options[1] == 96)))
 		iorange = PCL722_96_SIZE; /* PCL-724 in 96 DIO configuration */
-	printk(KERN_INFO "comedi%d: pcl724: board=%s, 0x%03lx ", dev->minor,
-	       board->name, iobase);
-	if (!request_region(iobase, iorange, "pcl724")) {
-		printk("I/O port conflict\n");
-		return -EIO;
-	}
-
-	dev->iobase = iobase;
-
-	dev->board_name = board->name;
+	ret = comedi_request_region(dev, it->options[0], iorange);
+	if (ret)
+		return ret;
 
 #ifdef PCL724_IRQ
 	irq = 0;
@@ -133,8 +125,8 @@ static int pcl724_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 				       "DISABLING IT", irq);
 				irq = 0;	/* Bad IRQ */
 			} else {
-				if (request_irq
-				    (irq, interrupt_pcl724, 0, "pcl724", dev)) {
+				if (request_irq(irq, interrupt_pcl724, 0,
+					        dev->board_name, dev)) {
 					printk(KERN_WARNING
 					       ", unable to allocate IRQ %u, "
 					       "DISABLING IT", irq);
@@ -161,14 +153,13 @@ static int pcl724_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 		return ret;
 
 	for (i = 0; i < dev->n_subdevices; i++) {
+		s = &dev->subdevices[i];
 		if (board->is_pet48) {
-			subdev_8255_init(dev, dev->subdevices + i,
-					 subdev_8255mapped_cb,
+			subdev_8255_init(dev, s, subdev_8255mapped_cb,
 					 (unsigned long)(dev->iobase +
 							 i * 0x1000));
 		} else
-			subdev_8255_init(dev, dev->subdevices + i,
-					 subdev_8255_cb,
+			subdev_8255_init(dev, s, subdev_8255_cb,
 					 (unsigned long)(dev->iobase +
 							 SIZE_8255 * i));
 	}
@@ -178,16 +169,11 @@ static int pcl724_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 
 static void pcl724_detach(struct comedi_device *dev)
 {
-	const struct pcl724_board *board = comedi_board(dev);
 	int i;
 
 	for (i = 0; i < dev->n_subdevices; i++)
-		subdev_8255_cleanup(dev, dev->subdevices + i);
-#ifdef PCL724_IRQ
-	if (dev->irq)
-		free_irq(dev->irq, dev);
-#endif
-	release_region(dev->iobase, board->io_range);
+		comedi_spriv_free(dev, i);
+	comedi_legacy_detach(dev);
 }
 
 static const struct pcl724_board boardtypes[] = {

@@ -419,7 +419,7 @@ static void kvm_map_magic_page(void *data)
 	in[0] = KVM_MAGIC_PAGE;
 	in[1] = KVM_MAGIC_PAGE;
 
-	kvm_hypercall(in, out, HC_VENDOR_KVM | KVM_HC_PPC_MAP_MAGIC_PAGE);
+	kvm_hypercall(in, out, KVM_HCALL_TOKEN(KVM_HC_PPC_MAP_MAGIC_PAGE));
 
 	*features = out[0];
 }
@@ -756,12 +756,7 @@ static __init void kvm_free_tmp(void)
 	end = (ulong)&kvm_tmp[ARRAY_SIZE(kvm_tmp)] & PAGE_MASK;
 
 	/* Free the tmp space we don't need */
-	for (; start < end; start += PAGE_SIZE) {
-		ClearPageReserved(virt_to_page(start));
-		init_page_count(virt_to_page(start));
-		free_page(start);
-		totalram_pages++;
-	}
+	free_reserved_area(start, end, 0, NULL);
 }
 
 static int __init kvm_guest_init(void)

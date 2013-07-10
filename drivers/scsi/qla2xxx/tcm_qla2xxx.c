@@ -237,7 +237,7 @@ static char *tcm_qla2xxx_get_fabric_wwn(struct se_portal_group *se_tpg)
 				struct tcm_qla2xxx_tpg, se_tpg);
 	struct tcm_qla2xxx_lport *lport = tpg->lport;
 
-	return &lport->lport_name[0];
+	return lport->lport_naa_name;
 }
 
 static char *tcm_qla2xxx_npiv_get_fabric_wwn(struct se_portal_group *se_tpg)
@@ -367,7 +367,7 @@ static struct se_node_acl *tcm_qla2xxx_alloc_fabric_acl(
 
 	nacl = kzalloc(sizeof(struct tcm_qla2xxx_nacl), GFP_KERNEL);
 	if (!nacl) {
-		pr_err("Unable to alocate struct tcm_qla2xxx_nacl\n");
+		pr_err("Unable to allocate struct tcm_qla2xxx_nacl\n");
 		return NULL;
 	}
 
@@ -620,8 +620,8 @@ static void tcm_qla2xxx_handle_data_work(struct work_struct *work)
 			return;
 		}
 
-		cmd->se_cmd.scsi_sense_reason = TCM_CHECK_CONDITION_ABORT_CMD;
-		transport_generic_request_failure(&cmd->se_cmd);
+		transport_generic_request_failure(&cmd->se_cmd,
+						  TCM_CHECK_CONDITION_ABORT_CMD);
 		return;
 	}
 
@@ -688,8 +688,12 @@ static int tcm_qla2xxx_queue_status(struct se_cmd *se_cmd)
 		 * For FCP_READ with CHECK_CONDITION status, clear cmd->bufflen
 		 * for qla_tgt_xmit_response LLD code
 		 */
+		if (se_cmd->se_cmd_flags & SCF_OVERFLOW_BIT) {
+			se_cmd->se_cmd_flags &= ~SCF_OVERFLOW_BIT;
+			se_cmd->residual_count = 0;
+		}
 		se_cmd->se_cmd_flags |= SCF_UNDERFLOW_BIT;
-		se_cmd->residual_count = se_cmd->data_length;
+		se_cmd->residual_count += se_cmd->data_length;
 
 		cmd->bufflen = 0;
 	}
@@ -732,17 +736,6 @@ static int tcm_qla2xxx_queue_tm_rsp(struct se_cmd *se_cmd)
 	 */
 	qlt_xmit_tm_rsp(mcmd);
 
-	return 0;
-}
-
-static u16 tcm_qla2xxx_get_fabric_sense_len(void)
-{
-	return 0;
-}
-
-static u16 tcm_qla2xxx_set_fabric_sense_len(struct se_cmd *se_cmd,
-					u32 sense_length)
-{
 	return 0;
 }
 
@@ -1381,7 +1374,7 @@ static void tcm_qla2xxx_free_session(struct qla_tgt_sess *sess)
 		dump_stack();
 		return;
 	}
-	target_wait_for_sess_cmds(se_sess, 0);
+	target_wait_for_sess_cmds(se_sess);
 
 	transport_deregister_session_configfs(sess->se_sess);
 	transport_deregister_session(sess->se_sess);
@@ -1618,6 +1611,7 @@ static struct se_wwn *tcm_qla2xxx_make_lport(
 	lport->lport_wwpn = wwpn;
 	tcm_qla2xxx_format_wwn(&lport->lport_name[0], TCM_QLA2XXX_NAMELEN,
 				wwpn);
+	sprintf(lport->lport_naa_name, "naa.%016llx", (unsigned long long) wwpn);
 
 	ret = tcm_qla2xxx_init_lport(lport);
 	if (ret != 0)
@@ -1685,6 +1679,7 @@ static struct se_wwn *tcm_qla2xxx_npiv_make_lport(
 	lport->lport_npiv_wwnn = npiv_wwnn;
 	tcm_qla2xxx_npiv_format_wwn(&lport->lport_npiv_name[0],
 			TCM_QLA2XXX_NAMELEN, npiv_wwpn, npiv_wwnn);
+	sprintf(lport->lport_naa_name, "naa.%016llx", (unsigned long long) npiv_wwpn);
 
 /* FIXME: tcm_qla2xxx_npiv_make_lport */
 	ret = -ENOSYS;
@@ -1764,8 +1759,6 @@ static struct target_core_fabric_ops tcm_qla2xxx_ops = {
 	.queue_data_in			= tcm_qla2xxx_queue_data_in,
 	.queue_status			= tcm_qla2xxx_queue_status,
 	.queue_tm_rsp			= tcm_qla2xxx_queue_tm_rsp,
-	.get_fabric_sense_len		= tcm_qla2xxx_get_fabric_sense_len,
-	.set_fabric_sense_len		= tcm_qla2xxx_set_fabric_sense_len,
 	/*
 	 * Setup function pointers for generic logic in
 	 * target_core_fabric_configfs.c
@@ -1813,8 +1806,6 @@ static struct target_core_fabric_ops tcm_qla2xxx_npiv_ops = {
 	.queue_data_in			= tcm_qla2xxx_queue_data_in,
 	.queue_status			= tcm_qla2xxx_queue_status,
 	.queue_tm_rsp			= tcm_qla2xxx_queue_tm_rsp,
-	.get_fabric_sense_len		= tcm_qla2xxx_get_fabric_sense_len,
-	.set_fabric_sense_len		= tcm_qla2xxx_set_fabric_sense_len,
 	/*
 	 * Setup function pointers for generic logic in
 	 * target_core_fabric_configfs.c

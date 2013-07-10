@@ -570,7 +570,6 @@ static int w5100_set_macaddr(struct net_device *ndev, void *addr)
 	if (!is_valid_ether_addr(sock_addr->sa_data))
 		return -EADDRNOTAVAIL;
 	memcpy(ndev->dev_addr, sock_addr->sa_data, ETH_ALEN);
-	ndev->addr_assign_type &= ~NET_ADDR_RANDOM;
 	w5100_write_macaddr(priv);
 	return 0;
 }
@@ -580,8 +579,6 @@ static int w5100_open(struct net_device *ndev)
 	struct w5100_priv *priv = netdev_priv(ndev);
 
 	netif_info(priv, ifup, ndev, "enabling\n");
-	if (!is_valid_ether_addr(ndev->dev_addr))
-		return -EINVAL;
 	w5100_hw_start(priv);
 	napi_enable(&priv->napi);
 	netif_start_queue(ndev);
@@ -623,7 +620,7 @@ static const struct net_device_ops w5100_netdev_ops = {
 	.ndo_change_mtu		= eth_change_mtu,
 };
 
-static int __devinit w5100_hw_probe(struct platform_device *pdev)
+static int w5100_hw_probe(struct platform_device *pdev)
 {
 	struct wiznet_platform_data *data = pdev->dev.platform_data;
 	struct net_device *ndev = platform_get_drvdata(pdev);
@@ -637,8 +634,7 @@ static int __devinit w5100_hw_probe(struct platform_device *pdev)
 	if (data && is_valid_ether_addr(data->mac_addr)) {
 		memcpy(ndev->dev_addr, data->mac_addr, ETH_ALEN);
 	} else {
-		eth_random_addr(ndev->dev_addr);
-		ndev->addr_assign_type |= NET_ADDR_RANDOM;
+		eth_hw_addr_random(ndev);
 	}
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -699,7 +695,7 @@ static int __devinit w5100_hw_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devinit w5100_probe(struct platform_device *pdev)
+static int w5100_probe(struct platform_device *pdev)
 {
 	struct w5100_priv *priv;
 	struct net_device *ndev;
@@ -742,7 +738,7 @@ err_register:
 	return err;
 }
 
-static int __devexit w5100_remove(struct platform_device *pdev)
+static int w5100_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct w5100_priv *priv = netdev_priv(ndev);
@@ -758,7 +754,7 @@ static int __devexit w5100_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int w5100_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -791,7 +787,7 @@ static int w5100_resume(struct device *dev)
 	}
 	return 0;
 }
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 static SIMPLE_DEV_PM_OPS(w5100_pm_ops, w5100_suspend, w5100_resume);
 
@@ -802,7 +798,7 @@ static struct platform_driver w5100_driver = {
 		.pm	= &w5100_pm_ops,
 	},
 	.probe		= w5100_probe,
-	.remove		= __devexit_p(w5100_remove),
+	.remove		= w5100_remove,
 };
 
 module_platform_driver(w5100_driver);

@@ -34,7 +34,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "drmP.h"
+#include <drm/drmP.h>
 #include <linux/poll.h>
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -123,6 +123,7 @@ int drm_open(struct inode *inode, struct file *filp)
 	int retcode = 0;
 	int need_setup = 0;
 	struct address_space *old_mapping;
+	struct address_space *old_imapping;
 
 	minor = idr_find(&drm_minors_idr, minor_id);
 	if (!minor)
@@ -137,6 +138,7 @@ int drm_open(struct inode *inode, struct file *filp)
 	if (!dev->open_count++)
 		need_setup = 1;
 	mutex_lock(&dev->struct_mutex);
+	old_imapping = inode->i_mapping;
 	old_mapping = dev->dev_mapping;
 	if (old_mapping == NULL)
 		dev->dev_mapping = &inode->i_data;
@@ -159,8 +161,8 @@ int drm_open(struct inode *inode, struct file *filp)
 
 err_undo:
 	mutex_lock(&dev->struct_mutex);
-	filp->f_mapping = old_mapping;
-	inode->i_mapping = old_mapping;
+	filp->f_mapping = old_imapping;
+	inode->i_mapping = old_imapping;
 	iput(container_of(dev->dev_mapping, struct inode, i_data));
 	dev->dev_mapping = old_mapping;
 	mutex_unlock(&dev->struct_mutex);
@@ -267,7 +269,7 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 	filp->private_data = priv;
 	priv->filp = filp;
 	priv->uid = current_euid();
-	priv->pid = task_pid_nr(current);
+	priv->pid = get_pid(task_pid(current));
 	priv->minor = idr_find(&drm_minors_idr, minor_id);
 	priv->ioctl_count = 0;
 	/* for compatibility root is always authenticated */
@@ -276,6 +278,7 @@ static int drm_open_helper(struct inode *inode, struct file *filp,
 
 	INIT_LIST_HEAD(&priv->lhead);
 	INIT_LIST_HEAD(&priv->fbs);
+	mutex_init(&priv->fbs_lock);
 	INIT_LIST_HEAD(&priv->event_list);
 	init_waitqueue_head(&priv->event_wait);
 	priv->event_space = 4096; /* set aside 4k for event buffer */
@@ -540,6 +543,7 @@ int drm_release(struct inode *inode, struct file *filp)
 	if (drm_core_check_feature(dev, DRIVER_PRIME))
 		drm_prime_destroy_file_private(&file_priv->prime);
 
+	put_pid(file_priv->pid);
 	kfree(file_priv);
 
 	/* ========================================================

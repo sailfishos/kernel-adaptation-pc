@@ -56,14 +56,14 @@ symlink_hash(unsigned int link_len, const char *link_str, u8 *md5_hash)
 	md5 = crypto_alloc_shash("md5", 0, 0);
 	if (IS_ERR(md5)) {
 		rc = PTR_ERR(md5);
-		cERROR(1, "%s: Crypto md5 allocation error %d", __func__, rc);
+		cifs_dbg(VFS, "%s: Crypto md5 allocation error %d\n",
+			 __func__, rc);
 		return rc;
 	}
 	size = sizeof(struct shash_desc) + crypto_shash_descsize(md5);
 	sdescmd5 = kmalloc(size, GFP_KERNEL);
 	if (!sdescmd5) {
 		rc = -ENOMEM;
-		cERROR(1, "%s: Memory allocation failure", __func__);
 		goto symlink_hash_err;
 	}
 	sdescmd5->shash.tfm = md5;
@@ -71,17 +71,17 @@ symlink_hash(unsigned int link_len, const char *link_str, u8 *md5_hash)
 
 	rc = crypto_shash_init(&sdescmd5->shash);
 	if (rc) {
-		cERROR(1, "%s: Could not init md5 shash", __func__);
+		cifs_dbg(VFS, "%s: Could not init md5 shash\n", __func__);
 		goto symlink_hash_err;
 	}
 	rc = crypto_shash_update(&sdescmd5->shash, link_str, link_len);
 	if (rc) {
-		cERROR(1, "%s: Could not update iwth link_str", __func__);
+		cifs_dbg(VFS, "%s: Could not update with link_str\n", __func__);
 		goto symlink_hash_err;
 	}
 	rc = crypto_shash_final(&sdescmd5->shash, md5_hash);
 	if (rc)
-		cERROR(1, "%s: Could not generate md5 hash", __func__);
+		cifs_dbg(VFS, "%s: Could not generate md5 hash\n", __func__);
 
 symlink_hash_err:
 	crypto_free_shash(md5);
@@ -115,7 +115,7 @@ CIFSParseMFSymlink(const u8 *buf,
 
 	rc = symlink_hash(link_len, link_str, md5_hash);
 	if (rc) {
-		cFYI(1, "%s: MD5 hash failure: %d", __func__, rc);
+		cifs_dbg(FYI, "%s: MD5 hash failure: %d\n", __func__, rc);
 		return rc;
 	}
 
@@ -154,7 +154,7 @@ CIFSFormatMFSymlink(u8 *buf, unsigned int buf_len, const char *link_str)
 
 	rc = symlink_hash(link_len, link_str, md5_hash);
 	if (rc) {
-		cFYI(1, "%s: MD5 hash failure: %d", __func__, rc);
+		cifs_dbg(FYI, "%s: MD5 hash failure: %d\n", __func__, rc);
 		return rc;
 	}
 
@@ -391,72 +391,86 @@ cifs_hardlink(struct dentry *old_file, struct inode *inode,
 {
 	int rc = -EACCES;
 	unsigned int xid;
-	char *fromName = NULL;
-	char *toName = NULL;
+	char *from_name = NULL;
+	char *to_name = NULL;
 	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
 	struct tcon_link *tlink;
-	struct cifs_tcon *pTcon;
+	struct cifs_tcon *tcon;
+	struct TCP_Server_Info *server;
 	struct cifsInodeInfo *cifsInode;
 
 	tlink = cifs_sb_tlink(cifs_sb);
 	if (IS_ERR(tlink))
 		return PTR_ERR(tlink);
-	pTcon = tlink_tcon(tlink);
+	tcon = tlink_tcon(tlink);
 
 	xid = get_xid();
 
-	fromName = build_path_from_dentry(old_file);
-	toName = build_path_from_dentry(direntry);
-	if ((fromName == NULL) || (toName == NULL)) {
+	from_name = build_path_from_dentry(old_file);
+	to_name = build_path_from_dentry(direntry);
+	if ((from_name == NULL) || (to_name == NULL)) {
 		rc = -ENOMEM;
 		goto cifs_hl_exit;
 	}
 
-	if (pTcon->unix_ext)
-		rc = CIFSUnixCreateHardLink(xid, pTcon, fromName, toName,
+	if (tcon->unix_ext)
+		rc = CIFSUnixCreateHardLink(xid, tcon, from_name, to_name,
 					    cifs_sb->local_nls,
 					    cifs_sb->mnt_cifs_flags &
 						CIFS_MOUNT_MAP_SPECIAL_CHR);
 	else {
-		rc = CIFSCreateHardLink(xid, pTcon, fromName, toName,
-					cifs_sb->local_nls,
-					cifs_sb->mnt_cifs_flags &
-						CIFS_MOUNT_MAP_SPECIAL_CHR);
+		server = tcon->ses->server;
+		if (!server->ops->create_hardlink)
+			return -ENOSYS;
+		rc = server->ops->create_hardlink(xid, tcon, from_name, to_name,
+						  cifs_sb);
 		if ((rc == -EIO) || (rc == -EINVAL))
 			rc = -EOPNOTSUPP;
 	}
 
 	d_drop(direntry);	/* force new lookup from server of target */
 
-	/* if source file is cached (oplocked) revalidate will not go to server
-	   until the file is closed or oplock broken so update nlinks locally */
+	/*
+	 * if source file is cached (oplocked) revalidate will not go to server
+	 * until the file is closed or oplock broken so update nlinks locally
+	 */
 	if (old_file->d_inode) {
 		cifsInode = CIFS_I(old_file->d_inode);
 		if (rc == 0) {
 			spin_lock(&old_file->d_inode->i_lock);
 			inc_nlink(old_file->d_inode);
 			spin_unlock(&old_file->d_inode->i_lock);
-/* BB should we make this contingent on superblock flag NOATIME? */
-/*			old_file->d_inode->i_ctime = CURRENT_TIME;*/
-			/* parent dir timestamps will update from srv
-			within a second, would it really be worth it
-			to set the parent dir cifs inode time to zero
-			to force revalidate (faster) for it too? */
+			/*
+			 * BB should we make this contingent on superblock flag
+			 * NOATIME?
+			 */
+			/* old_file->d_inode->i_ctime = CURRENT_TIME; */
+			/*
+			 * parent dir timestamps will update from srv within a
+			 * second, would it really be worth it to set the parent
+			 * dir cifs inode time to zero to force revalidate
+			 * (faster) for it too?
+			 */
 		}
-		/* if not oplocked will force revalidate to get info
-		   on source file from srv */
+		/*
+		 * if not oplocked will force revalidate to get info on source
+		 * file from srv
+		 */
 		cifsInode->time = 0;
 
-		/* Will update parent dir timestamps from srv within a second.
-		   Would it really be worth it to set the parent dir (cifs
-		   inode) time field to zero to force revalidate on parent
-		   directory faster ie
-			CIFS_I(inode)->time = 0;  */
+		/*
+		 * Will update parent dir timestamps from srv within a second.
+		 * Would it really be worth it to set the parent dir (cifs
+		 * inode) time field to zero to force revalidate on parent
+		 * directory faster ie
+		 *
+		 * CIFS_I(inode)->time = 0;
+		 */
 	}
 
 cifs_hl_exit:
-	kfree(fromName);
-	kfree(toName);
+	kfree(from_name);
+	kfree(to_name);
 	free_xid(xid);
 	cifs_put_tlink(tlink);
 	return rc;
@@ -507,7 +521,7 @@ cifs_follow_link(struct dentry *direntry, struct nameidata *nd)
 	if (!full_path)
 		goto out;
 
-	cFYI(1, "Full path: %s inode = 0x%p", full_path, inode);
+	cifs_dbg(FYI, "Full path: %s inode = 0x%p\n", full_path, inode);
 
 	rc = -EACCES;
 	/*
@@ -564,8 +578,8 @@ cifs_symlink(struct inode *inode, struct dentry *direntry, const char *symname)
 		goto symlink_exit;
 	}
 
-	cFYI(1, "Full path: %s", full_path);
-	cFYI(1, "symname is %s", symname);
+	cifs_dbg(FYI, "Full path: %s\n", full_path);
+	cifs_dbg(FYI, "symname is %s\n", symname);
 
 	/* BB what if DFS and this volume is on different share? BB */
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MF_SYMLINKS)
@@ -587,8 +601,8 @@ cifs_symlink(struct inode *inode, struct dentry *direntry, const char *symname)
 						 inode->i_sb, xid, NULL);
 
 		if (rc != 0) {
-			cFYI(1, "Create symlink ok, getinodeinfo fail rc = %d",
-			      rc);
+			cifs_dbg(FYI, "Create symlink ok, getinodeinfo fail rc = %d\n",
+				 rc);
 		} else {
 			d_instantiate(direntry, newinode);
 		}

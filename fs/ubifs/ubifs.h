@@ -42,16 +42,15 @@
 #define UBIFS_VERSION 1
 
 /* Normal UBIFS messages */
-#define ubifs_msg(fmt, ...) \
-		printk(KERN_NOTICE "UBIFS: " fmt "\n", ##__VA_ARGS__)
+#define ubifs_msg(fmt, ...) pr_notice("UBIFS: " fmt "\n", ##__VA_ARGS__)
 /* UBIFS error messages */
-#define ubifs_err(fmt, ...)                                                  \
-	printk(KERN_ERR "UBIFS error (pid %d): %s: " fmt "\n", current->pid, \
+#define ubifs_err(fmt, ...)                                         \
+	pr_err("UBIFS error (pid %d): %s: " fmt "\n", current->pid, \
 	       __func__, ##__VA_ARGS__)
 /* UBIFS warning messages */
-#define ubifs_warn(fmt, ...)                                         \
-	printk(KERN_WARNING "UBIFS warning (pid %d): %s: " fmt "\n", \
-	       current->pid, __func__, ##__VA_ARGS__)
+#define ubifs_warn(fmt, ...)                                        \
+	pr_warn("UBIFS warning (pid %d): %s: " fmt "\n",            \
+		current->pid, __func__, ##__VA_ARGS__)
 
 /* UBIFS file system VFS magic number */
 #define UBIFS_SUPER_MAGIC 0x24051905
@@ -905,6 +904,8 @@ struct ubifs_budget_req {
  * @dnext: next orphan to delete
  * @inum: inode number
  * @new: %1 => added since the last commit, otherwise %0
+ * @cmt: %1 => commit pending, otherwise %0
+ * @del: %1 => delete pending, otherwise %0
  */
 struct ubifs_orphan {
 	struct rb_node rb;
@@ -913,7 +914,9 @@ struct ubifs_orphan {
 	struct ubifs_orphan *cnext;
 	struct ubifs_orphan *dnext;
 	ino_t inum;
-	int new;
+	unsigned new:1;
+	unsigned cmt:1;
+	unsigned del:1;
 };
 
 /**
@@ -1429,8 +1432,8 @@ struct ubifs_info {
 
 	long long rp_size;
 	long long report_rp_size;
-	uid_t rp_uid;
-	gid_t rp_gid;
+	kuid_t rp_uid;
+	kgid_t rp_gid;
 
 	/* The below fields are used only during mounting and re-mounting */
 	unsigned int empty:1;

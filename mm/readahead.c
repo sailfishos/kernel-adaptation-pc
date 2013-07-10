@@ -576,29 +576,22 @@ do_readahead(struct address_space *mapping, struct file *filp,
 	return 0;
 }
 
-SYSCALL_DEFINE(readahead)(int fd, loff_t offset, size_t count)
+SYSCALL_DEFINE3(readahead, int, fd, loff_t, offset, size_t, count)
 {
 	ssize_t ret;
-	struct file *file;
+	struct fd f;
 
 	ret = -EBADF;
-	file = fget(fd);
-	if (file) {
-		if (file->f_mode & FMODE_READ) {
-			struct address_space *mapping = file->f_mapping;
+	f = fdget(fd);
+	if (f.file) {
+		if (f.file->f_mode & FMODE_READ) {
+			struct address_space *mapping = f.file->f_mapping;
 			pgoff_t start = offset >> PAGE_CACHE_SHIFT;
 			pgoff_t end = (offset + count - 1) >> PAGE_CACHE_SHIFT;
 			unsigned long len = end - start + 1;
-			ret = do_readahead(mapping, file, start, len);
+			ret = do_readahead(mapping, f.file, start, len);
 		}
-		fput(file);
+		fdput(f);
 	}
 	return ret;
 }
-#ifdef CONFIG_HAVE_SYSCALL_WRAPPERS
-asmlinkage long SyS_readahead(long fd, loff_t offset, long count)
-{
-	return SYSC_readahead((int) fd, offset, (size_t) count);
-}
-SYSCALL_ALIAS(sys_readahead, SyS_readahead);
-#endif

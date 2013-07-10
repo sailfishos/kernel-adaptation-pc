@@ -29,6 +29,7 @@
 #include <linux/kdev_t.h>
 #include <linux/sched.h>
 #include <linux/time.h>
+#include <linux/err.h>
 #include <acpi/acpi_drivers.h>
 #include <acpi/acpi_bus.h>
 
@@ -910,7 +911,7 @@ exit:
 	return res;
 }
 
-static int acpi_power_meter_remove(struct acpi_device *device, int type)
+static int acpi_power_meter_remove(struct acpi_device *device)
 {
 	struct acpi_power_meter_resource *resource;
 

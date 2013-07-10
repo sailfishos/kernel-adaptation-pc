@@ -11,152 +11,170 @@
  */
 
 #include <linux/clk.h>
+#include <linux/clk/mxs.h>
 #include <linux/clkdev.h>
+#include <linux/clocksource.h>
+#include <linux/can/platform/flexcan.h>
+#include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/gpio.h>
 #include <linux/init.h>
-#include <linux/init.h>
-#include <linux/irqdomain.h>
+#include <linux/irqchip.h>
+#include <linux/irqchip/mxs.h>
 #include <linux/micrel_phy.h>
-#include <linux/mxsfb.h>
-#include <linux/of_irq.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/phy.h>
+#include <linux/pinctrl/consumer.h>
 #include <asm/mach/arch.h>
+#include <asm/mach/map.h>
 #include <asm/mach/time.h>
-#include <mach/common.h>
+#include <asm/system_misc.h>
 
-static struct fb_videomode mx23evk_video_modes[] = {
-	{
-		.name		= "Samsung-LMS430HF02",
-		.refresh	= 60,
-		.xres		= 480,
-		.yres		= 272,
-		.pixclock	= 108096, /* picosecond (9.2 MHz) */
-		.left_margin	= 15,
-		.right_margin	= 8,
-		.upper_margin	= 12,
-		.lower_margin	= 4,
-		.hsync_len	= 1,
-		.vsync_len	= 1,
-		.sync		= FB_SYNC_DATA_ENABLE_HIGH_ACT |
-				  FB_SYNC_DOTCLK_FAILING_ACT,
-	},
-};
+#include "pm.h"
 
-static struct fb_videomode mx28evk_video_modes[] = {
-	{
-		.name		= "Seiko-43WVF1G",
-		.refresh	= 60,
-		.xres		= 800,
-		.yres		= 480,
-		.pixclock	= 29851, /* picosecond (33.5 MHz) */
-		.left_margin	= 89,
-		.right_margin	= 164,
-		.upper_margin	= 23,
-		.lower_margin	= 10,
-		.hsync_len	= 10,
-		.vsync_len	= 10,
-		.sync		= FB_SYNC_DATA_ENABLE_HIGH_ACT |
-				  FB_SYNC_DOTCLK_FAILING_ACT,
-	},
-};
+/* MXS DIGCTL SAIF CLKMUX */
+#define MXS_DIGCTL_SAIF_CLKMUX_DIRECT		0x0
+#define MXS_DIGCTL_SAIF_CLKMUX_CROSSINPUT	0x1
+#define MXS_DIGCTL_SAIF_CLKMUX_EXTMSTR0		0x2
+#define MXS_DIGCTL_SAIF_CLKMUX_EXTMSTR1		0x3
 
-static struct fb_videomode m28evk_video_modes[] = {
-	{
-		.name		= "Ampire AM-800480R2TMQW-T01H",
-		.refresh	= 60,
-		.xres		= 800,
-		.yres		= 480,
-		.pixclock	= 30066, /* picosecond (33.26 MHz) */
-		.left_margin	= 0,
-		.right_margin	= 256,
-		.upper_margin	= 0,
-		.lower_margin	= 45,
-		.hsync_len	= 1,
-		.vsync_len	= 1,
-		.sync		= FB_SYNC_DATA_ENABLE_HIGH_ACT,
-	},
-};
+#define MXS_GPIO_NR(bank, nr)	((bank) * 32 + (nr))
 
-static struct fb_videomode apx4devkit_video_modes[] = {
-	{
-		.name		= "HannStar PJ70112A",
-		.refresh	= 60,
-		.xres		= 800,
-		.yres		= 480,
-		.pixclock	= 33333, /* picosecond (30.00 MHz) */
-		.left_margin	= 88,
-		.right_margin	= 40,
-		.upper_margin	= 32,
-		.lower_margin	= 13,
-		.hsync_len	= 48,
-		.vsync_len	= 3,
-		.sync		= FB_SYNC_HOR_HIGH_ACT | FB_SYNC_VERT_HIGH_ACT |
-				  FB_SYNC_DATA_ENABLE_HIGH_ACT |
-				  FB_SYNC_DOTCLK_FAILING_ACT,
-	},
-};
+#define MXS_SET_ADDR		0x4
+#define MXS_CLR_ADDR		0x8
+#define MXS_TOG_ADDR		0xc
 
-static struct mxsfb_platform_data mxsfb_pdata __initdata;
+static inline void __mxs_setl(u32 mask, void __iomem *reg)
+{
+	__raw_writel(mask, reg + MXS_SET_ADDR);
+}
+
+static inline void __mxs_clrl(u32 mask, void __iomem *reg)
+{
+	__raw_writel(mask, reg + MXS_CLR_ADDR);
+}
+
+static inline void __mxs_togl(u32 mask, void __iomem *reg)
+{
+	__raw_writel(mask, reg + MXS_TOG_ADDR);
+}
+
+/*
+ * MX28EVK_FLEXCAN_SWITCH is shared between both flexcan controllers
+ */
+#define MX28EVK_FLEXCAN_SWITCH	MXS_GPIO_NR(2, 13)
+
+static int flexcan0_en, flexcan1_en;
+
+static void mx28evk_flexcan_switch(void)
+{
+	if (flexcan0_en || flexcan1_en)
+		gpio_set_value(MX28EVK_FLEXCAN_SWITCH, 1);
+	else
+		gpio_set_value(MX28EVK_FLEXCAN_SWITCH, 0);
+}
+
+static void mx28evk_flexcan0_switch(int enable)
+{
+	flexcan0_en = enable;
+	mx28evk_flexcan_switch();
+}
+
+static void mx28evk_flexcan1_switch(int enable)
+{
+	flexcan1_en = enable;
+	mx28evk_flexcan_switch();
+}
+
+static struct flexcan_platform_data flexcan_pdata[2];
 
 static struct of_dev_auxdata mxs_auxdata_lookup[] __initdata = {
-	OF_DEV_AUXDATA("fsl,imx23-lcdif", 0x80030000, NULL, &mxsfb_pdata),
-	OF_DEV_AUXDATA("fsl,imx28-lcdif", 0x80030000, NULL, &mxsfb_pdata),
+	OF_DEV_AUXDATA("fsl,imx28-flexcan", 0x80032000, NULL, &flexcan_pdata[0]),
+	OF_DEV_AUXDATA("fsl,imx28-flexcan", 0x80034000, NULL, &flexcan_pdata[1]),
 	{ /* sentinel */ }
 };
 
-static int __init mxs_icoll_add_irq_domain(struct device_node *np,
-				struct device_node *interrupt_parent)
+#define OCOTP_WORD_OFFSET		0x20
+#define OCOTP_WORD_COUNT		0x20
+
+#define BM_OCOTP_CTRL_BUSY		(1 << 8)
+#define BM_OCOTP_CTRL_ERROR		(1 << 9)
+#define BM_OCOTP_CTRL_RD_BANK_OPEN	(1 << 12)
+
+static DEFINE_MUTEX(ocotp_mutex);
+static u32 ocotp_words[OCOTP_WORD_COUNT];
+
+static const u32 *mxs_get_ocotp(void)
 {
-	irq_domain_add_legacy(np, 128, 0, 0, &irq_domain_simple_ops, NULL);
+	struct device_node *np;
+	void __iomem *ocotp_base;
+	int timeout = 0x400;
+	size_t i;
+	static int once;
 
-	return 0;
+	if (once)
+		return ocotp_words;
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,ocotp");
+	ocotp_base = of_iomap(np, 0);
+	WARN_ON(!ocotp_base);
+
+	mutex_lock(&ocotp_mutex);
+
+	/*
+	 * clk_enable(hbus_clk) for ocotp can be skipped
+	 * as it must be on when system is running.
+	 */
+
+	/* try to clear ERROR bit */
+	__mxs_clrl(BM_OCOTP_CTRL_ERROR, ocotp_base);
+
+	/* check both BUSY and ERROR cleared */
+	while ((__raw_readl(ocotp_base) &
+		(BM_OCOTP_CTRL_BUSY | BM_OCOTP_CTRL_ERROR)) && --timeout)
+		cpu_relax();
+
+	if (unlikely(!timeout))
+		goto error_unlock;
+
+	/* open OCOTP banks for read */
+	__mxs_setl(BM_OCOTP_CTRL_RD_BANK_OPEN, ocotp_base);
+
+	/* approximately wait 32 hclk cycles */
+	udelay(1);
+
+	/* poll BUSY bit becoming cleared */
+	timeout = 0x400;
+	while ((__raw_readl(ocotp_base) & BM_OCOTP_CTRL_BUSY) && --timeout)
+		cpu_relax();
+
+	if (unlikely(!timeout))
+		goto error_unlock;
+
+	for (i = 0; i < OCOTP_WORD_COUNT; i++)
+		ocotp_words[i] = __raw_readl(ocotp_base + OCOTP_WORD_OFFSET +
+						i * 0x10);
+
+	/* close banks for power saving */
+	__mxs_clrl(BM_OCOTP_CTRL_RD_BANK_OPEN, ocotp_base);
+
+	once = 1;
+
+	mutex_unlock(&ocotp_mutex);
+
+	return ocotp_words;
+
+error_unlock:
+	mutex_unlock(&ocotp_mutex);
+	pr_err("%s: timeout in reading OCOTP\n", __func__);
+	return NULL;
 }
-
-static int __init mxs_gpio_add_irq_domain(struct device_node *np,
-				struct device_node *interrupt_parent)
-{
-	static int gpio_irq_base = MXS_GPIO_IRQ_START;
-
-	irq_domain_add_legacy(np, 32, gpio_irq_base, 0, &irq_domain_simple_ops, NULL);
-	gpio_irq_base += 32;
-
-	return 0;
-}
-
-static const struct of_device_id mxs_irq_match[] __initconst = {
-	{ .compatible = "fsl,mxs-icoll", .data = mxs_icoll_add_irq_domain, },
-	{ .compatible = "fsl,mxs-gpio", .data = mxs_gpio_add_irq_domain, },
-	{ /* sentinel */ }
-};
-
-static void __init mxs_dt_init_irq(void)
-{
-	icoll_init_irq();
-	of_irq_init(mxs_irq_match);
-}
-
-static void __init imx23_timer_init(void)
-{
-	mx23_clocks_init();
-}
-
-static struct sys_timer imx23_timer = {
-	.init = imx23_timer_init,
-};
-
-static void __init imx28_timer_init(void)
-{
-	mx28_clocks_init();
-}
-
-static struct sys_timer imx28_timer = {
-	.init = imx28_timer_init,
-};
 
 enum mac_oui {
 	OUI_FSL,
 	OUI_DENX,
+	OUI_CRYSTALFONTZ,
 };
 
 static void __init update_fec_mac_prop(enum mac_oui oui)
@@ -172,7 +190,11 @@ static void __init update_fec_mac_prop(enum mac_oui oui)
 		np = of_find_compatible_node(from, NULL, "fsl,imx28-fec");
 		if (!np)
 			return;
+
 		from = np;
+
+		if (of_get_property(np, "local-mac-address", NULL))
+			continue;
 
 		newmac = kzalloc(sizeof(*newmac) + 6, GFP_KERNEL);
 		if (!newmac)
@@ -202,22 +224,19 @@ static void __init update_fec_mac_prop(enum mac_oui oui)
 			macaddr[1] = 0xe5;
 			macaddr[2] = 0x4e;
 			break;
+		case OUI_CRYSTALFONTZ:
+			macaddr[0] = 0x58;
+			macaddr[1] = 0xb9;
+			macaddr[2] = 0xe1;
+			break;
 		}
 		val = ocotp[i];
 		macaddr[3] = (val >> 16) & 0xff;
 		macaddr[4] = (val >> 8) & 0xff;
 		macaddr[5] = (val >> 0) & 0xff;
 
-		prom_update_property(np, newmac);
+		of_update_property(np, newmac);
 	}
-}
-
-static void __init imx23_evk_init(void)
-{
-	mxsfb_pdata.mode_list = mx23evk_video_modes;
-	mxsfb_pdata.mode_count = ARRAY_SIZE(mx23evk_video_modes);
-	mxsfb_pdata.default_bpp = 32;
-	mxsfb_pdata.ld_intf_width = STMLCDIF_24BIT;
 }
 
 static inline void enable_clk_enet_out(void)
@@ -230,24 +249,18 @@ static inline void enable_clk_enet_out(void)
 
 static void __init imx28_evk_init(void)
 {
-	enable_clk_enet_out();
 	update_fec_mac_prop(OUI_FSL);
 
-	mxsfb_pdata.mode_list = mx28evk_video_modes;
-	mxsfb_pdata.mode_count = ARRAY_SIZE(mx28evk_video_modes);
-	mxsfb_pdata.default_bpp = 32;
-	mxsfb_pdata.ld_intf_width = STMLCDIF_24BIT;
+	mxs_saif_clkmux_select(MXS_DIGCTL_SAIF_CLKMUX_EXTMSTR0);
 }
 
-static void __init m28evk_init(void)
+static void __init imx28_evk_post_init(void)
 {
-	enable_clk_enet_out();
-	update_fec_mac_prop(OUI_DENX);
-
-	mxsfb_pdata.mode_list = m28evk_video_modes;
-	mxsfb_pdata.mode_count = ARRAY_SIZE(m28evk_video_modes);
-	mxsfb_pdata.default_bpp = 16;
-	mxsfb_pdata.ld_intf_width = STMLCDIF_18BIT;
+	if (!gpio_request_one(MX28EVK_FLEXCAN_SWITCH, GPIOF_DIR_OUT,
+			      "flexcan-switch")) {
+		flexcan_pdata[0].transceiver_switch = mx28evk_flexcan0_switch;
+		flexcan_pdata[1].transceiver_switch = mx28evk_flexcan1_switch;
+	}
 }
 
 static int apx4devkit_phy_fixup(struct phy_device *phy)
@@ -263,60 +276,170 @@ static void __init apx4devkit_init(void)
 	if (IS_BUILTIN(CONFIG_PHYLIB))
 		phy_register_fixup_for_uid(PHY_ID_KSZ8051, MICREL_PHY_ID_MASK,
 					   apx4devkit_phy_fixup);
+}
 
-	mxsfb_pdata.mode_list = apx4devkit_video_modes;
-	mxsfb_pdata.mode_count = ARRAY_SIZE(apx4devkit_video_modes);
-	mxsfb_pdata.default_bpp = 32;
-	mxsfb_pdata.ld_intf_width = STMLCDIF_24BIT;
+#define ENET0_MDC__GPIO_4_0	MXS_GPIO_NR(4, 0)
+#define ENET0_MDIO__GPIO_4_1	MXS_GPIO_NR(4, 1)
+#define ENET0_RX_EN__GPIO_4_2	MXS_GPIO_NR(4, 2)
+#define ENET0_RXD0__GPIO_4_3	MXS_GPIO_NR(4, 3)
+#define ENET0_RXD1__GPIO_4_4	MXS_GPIO_NR(4, 4)
+#define ENET0_TX_EN__GPIO_4_6	MXS_GPIO_NR(4, 6)
+#define ENET0_TXD0__GPIO_4_7	MXS_GPIO_NR(4, 7)
+#define ENET0_TXD1__GPIO_4_8	MXS_GPIO_NR(4, 8)
+#define ENET_CLK__GPIO_4_16	MXS_GPIO_NR(4, 16)
+
+#define TX28_FEC_PHY_POWER	MXS_GPIO_NR(3, 29)
+#define TX28_FEC_PHY_RESET	MXS_GPIO_NR(4, 13)
+#define TX28_FEC_nINT		MXS_GPIO_NR(4, 5)
+
+static const struct gpio tx28_gpios[] __initconst = {
+	{ ENET0_MDC__GPIO_4_0, GPIOF_OUT_INIT_LOW, "GPIO_4_0" },
+	{ ENET0_MDIO__GPIO_4_1, GPIOF_OUT_INIT_LOW, "GPIO_4_1" },
+	{ ENET0_RX_EN__GPIO_4_2, GPIOF_OUT_INIT_LOW, "GPIO_4_2" },
+	{ ENET0_RXD0__GPIO_4_3, GPIOF_OUT_INIT_LOW, "GPIO_4_3" },
+	{ ENET0_RXD1__GPIO_4_4, GPIOF_OUT_INIT_LOW, "GPIO_4_4" },
+	{ ENET0_TX_EN__GPIO_4_6, GPIOF_OUT_INIT_LOW, "GPIO_4_6" },
+	{ ENET0_TXD0__GPIO_4_7, GPIOF_OUT_INIT_LOW, "GPIO_4_7" },
+	{ ENET0_TXD1__GPIO_4_8, GPIOF_OUT_INIT_LOW, "GPIO_4_8" },
+	{ ENET_CLK__GPIO_4_16, GPIOF_OUT_INIT_LOW, "GPIO_4_16" },
+	{ TX28_FEC_PHY_POWER, GPIOF_OUT_INIT_LOW, "fec-phy-power" },
+	{ TX28_FEC_PHY_RESET, GPIOF_OUT_INIT_LOW, "fec-phy-reset" },
+	{ TX28_FEC_nINT, GPIOF_DIR_IN, "fec-int" },
+};
+
+static void __init tx28_post_init(void)
+{
+	struct device_node *np;
+	struct platform_device *pdev;
+	struct pinctrl *pctl;
+	int ret;
+
+	enable_clk_enet_out();
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,imx28-fec");
+	pdev = of_find_device_by_node(np);
+	if (!pdev) {
+		pr_err("%s: failed to find fec device\n", __func__);
+		return;
+	}
+
+	pctl = pinctrl_get_select(&pdev->dev, "gpio_mode");
+	if (IS_ERR(pctl)) {
+		pr_err("%s: failed to get pinctrl state\n", __func__);
+		return;
+	}
+
+	ret = gpio_request_array(tx28_gpios, ARRAY_SIZE(tx28_gpios));
+	if (ret) {
+		pr_err("%s: failed to request gpios: %d\n", __func__, ret);
+		return;
+	}
+
+	/* Power up fec phy */
+	gpio_set_value(TX28_FEC_PHY_POWER, 1);
+	msleep(26); /* 25ms according to data sheet */
+
+	/* Mode strap pins */
+	gpio_set_value(ENET0_RX_EN__GPIO_4_2, 1);
+	gpio_set_value(ENET0_RXD0__GPIO_4_3, 1);
+	gpio_set_value(ENET0_RXD1__GPIO_4_4, 1);
+
+	udelay(100); /* minimum assertion time for nRST */
+
+	/* Deasserting FEC PHY RESET */
+	gpio_set_value(TX28_FEC_PHY_RESET, 1);
+
+	pinctrl_put(pctl);
+}
+
+static void __init cfa10049_init(void)
+{
+	update_fec_mac_prop(OUI_CRYSTALFONTZ);
+}
+
+static void __init cfa10037_init(void)
+{
+	update_fec_mac_prop(OUI_CRYSTALFONTZ);
 }
 
 static void __init mxs_machine_init(void)
 {
 	if (of_machine_is_compatible("fsl,imx28-evk"))
 		imx28_evk_init();
-	else if (of_machine_is_compatible("fsl,imx23-evk"))
-		imx23_evk_init();
-	else if (of_machine_is_compatible("denx,m28evk"))
-		m28evk_init();
 	else if (of_machine_is_compatible("bluegiga,apx4devkit"))
 		apx4devkit_init();
+	else if (of_machine_is_compatible("crystalfontz,cfa10037"))
+		cfa10037_init();
+	else if (of_machine_is_compatible("crystalfontz,cfa10049"))
+		cfa10049_init();
 
 	of_platform_populate(NULL, of_default_bus_match_table,
 			     mxs_auxdata_lookup, NULL);
+
+	if (of_machine_is_compatible("karo,tx28"))
+		tx28_post_init();
+
+	if (of_machine_is_compatible("fsl,imx28-evk"))
+		imx28_evk_post_init();
 }
 
-static const char *imx23_dt_compat[] __initdata = {
-	"fsl,imx23-evk",
-	"fsl,stmp378x_devb"
-	"olimex,imx23-olinuxino",
+#define MX23_CLKCTRL_RESET_OFFSET	0x120
+#define MX28_CLKCTRL_RESET_OFFSET	0x1e0
+#define MXS_CLKCTRL_RESET_CHIP		(1 << 1)
+
+/*
+ * Reset the system. It is called by machine_restart().
+ */
+static void mxs_restart(char mode, const char *cmd)
+{
+	struct device_node *np;
+	void __iomem *reset_addr;
+
+	np = of_find_compatible_node(NULL, NULL, "fsl,clkctrl");
+	reset_addr = of_iomap(np, 0);
+	if (!reset_addr)
+		goto soft;
+
+	if (of_device_is_compatible(np, "fsl,imx23-clkctrl"))
+		reset_addr += MX23_CLKCTRL_RESET_OFFSET;
+	else
+		reset_addr += MX28_CLKCTRL_RESET_OFFSET;
+
+	/* reset the chip */
+	__mxs_setl(MXS_CLKCTRL_RESET_CHIP, reset_addr);
+
+	pr_err("Failed to assert the chip reset\n");
+
+	/* Delay to allow the serial port to show the message */
+	mdelay(50);
+
+soft:
+	/* We'll take a jump through zero as a poor second */
+	soft_restart(0);
+}
+
+static void __init mxs_timer_init(void)
+{
+	if (of_machine_is_compatible("fsl,imx23"))
+		mx23_clocks_init();
+	else
+		mx28_clocks_init();
+	clocksource_of_init();
+}
+
+static const char *mxs_dt_compat[] __initdata = {
+	"fsl,imx28",
 	"fsl,imx23",
 	NULL,
 };
 
-static const char *imx28_dt_compat[] __initdata = {
-	"bluegiga,apx4devkit",
-	"crystalfontz,cfa10036",
-	"denx,m28evk",
-	"fsl,imx28-evk",
-	"karo,tx28",
-	"fsl,imx28",
-	NULL,
-};
-
-DT_MACHINE_START(IMX23, "Freescale i.MX23 (Device Tree)")
-	.map_io		= mx23_map_io,
-	.init_irq	= mxs_dt_init_irq,
-	.timer		= &imx23_timer,
+DT_MACHINE_START(MXS, "Freescale MXS (Device Tree)")
+	.map_io		= debug_ll_io_init,
+	.init_irq	= irqchip_init,
+	.handle_irq	= icoll_handle_irq,
+	.init_time	= mxs_timer_init,
 	.init_machine	= mxs_machine_init,
-	.dt_compat	= imx23_dt_compat,
-	.restart	= mxs_restart,
-MACHINE_END
-
-DT_MACHINE_START(IMX28, "Freescale i.MX28 (Device Tree)")
-	.map_io		= mx28_map_io,
-	.init_irq	= mxs_dt_init_irq,
-	.timer		= &imx28_timer,
-	.init_machine	= mxs_machine_init,
-	.dt_compat	= imx28_dt_compat,
+	.init_late      = mxs_pm_init,
+	.dt_compat	= mxs_dt_compat,
 	.restart	= mxs_restart,
 MACHINE_END

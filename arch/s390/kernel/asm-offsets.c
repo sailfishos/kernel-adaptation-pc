@@ -35,6 +35,7 @@ int main(void)
 	DEFINE(__TI_task, offsetof(struct thread_info, task));
 	DEFINE(__TI_domain, offsetof(struct thread_info, exec_domain));
 	DEFINE(__TI_flags, offsetof(struct thread_info, flags));
+	DEFINE(__TI_sysc_table, offsetof(struct thread_info, sys_call_table));
 	DEFINE(__TI_cpu, offsetof(struct thread_info, cpu));
 	DEFINE(__TI_precount, offsetof(struct thread_info, preempt_count));
 	DEFINE(__TI_user_timer, offsetof(struct thread_info, user_timer));
@@ -157,6 +158,8 @@ int main(void)
 	DEFINE(__LC_LAST_BREAK, offsetof(struct _lowcore, breaking_event_addr));
 	DEFINE(__LC_VDSO_PER_CPU, offsetof(struct _lowcore, vdso_per_cpu_data));
 	DEFINE(__LC_GMAP, offsetof(struct _lowcore, gmap));
+	DEFINE(__LC_PGM_TDB, offsetof(struct _lowcore, pgm_tdb));
+	DEFINE(__THREAD_trap_tdb, offsetof(struct task_struct, thread.trap_tdb));
 	DEFINE(__GMAP_ASCE, offsetof(struct gmap, asce));
 #endif /* CONFIG_32BIT */
 	return 0;

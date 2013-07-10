@@ -94,7 +94,7 @@ static const u32 uarts_sam9x5[] = {
 	0,
 };
 
-static inline const u32* decomp_soc_detect(u32 dbgu_base)
+static inline const u32* decomp_soc_detect(void __iomem *dbgu_base)
 {
 	u32 cidr, socid;
 
@@ -142,10 +142,10 @@ static inline void arch_decomp_setup(void)
 	int i = 0;
 	const u32* usarts;
 
-	usarts = decomp_soc_detect(AT91_BASE_DBGU0);
+	usarts = decomp_soc_detect((void __iomem *)AT91_BASE_DBGU0);
 
 	if (!usarts)
-		usarts = decomp_soc_detect(AT91_BASE_DBGU1);
+		usarts = decomp_soc_detect((void __iomem *)AT91_BASE_DBGU1);
 	if (!usarts) {
 		at91_uart = NULL;
 		return;
@@ -195,7 +195,5 @@ static inline void flush(void)
 	while (!(__raw_readl(at91_uart + ATMEL_US_CSR) & ATMEL_US_TXEMPTY))
 		barrier();
 }
-
-#define arch_decomp_wdog()
 
 #endif

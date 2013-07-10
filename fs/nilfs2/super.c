@@ -1361,6 +1361,7 @@ struct file_system_type nilfs_fs_type = {
 	.kill_sb  = kill_block_super,
 	.fs_flags = FS_REQUIRES_DEV,
 };
+MODULE_ALIAS_FS("nilfs2");
 
 static void nilfs_inode_init_once(void *obj)
 {
@@ -1382,6 +1383,12 @@ static void nilfs_segbuf_init_once(void *obj)
 
 static void nilfs_destroy_cachep(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
+
 	if (nilfs_inode_cachep)
 		kmem_cache_destroy(nilfs_inode_cachep);
 	if (nilfs_transaction_cachep)

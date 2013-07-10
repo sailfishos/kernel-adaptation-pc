@@ -23,27 +23,25 @@
 #include <linux/i2c-gpio.h>
 #include <linux/i2c/mcs.h>
 #include <linux/i2c/atmel_mxt_ts.h>
+#include <linux/platform_data/i2c-s3c2410.h>
+#include <linux/platform_data/mipi-csis.h>
 #include <linux/platform_data/s3c-hsotg.h>
 #include <drm/exynos_drm.h>
 
 #include <asm/mach/arch.h>
-#include <asm/hardware/gic.h>
 #include <asm/mach-types.h>
 
+#include <video/samsung_fimd.h>
 #include <plat/regs-serial.h>
 #include <plat/clock.h>
 #include <plat/cpu.h>
 #include <plat/devs.h>
-#include <plat/iic.h>
 #include <plat/gpio-cfg.h>
 #include <plat/fb.h>
 #include <plat/mfc.h>
 #include <plat/sdhci.h>
-#include <plat/regs-fb-v4.h>
 #include <plat/fimc-core.h>
-#include <plat/s5p-time.h>
 #include <plat/camport.h>
-#include <plat/mipi_csis.h>
 
 #include <mach/map.h>
 
@@ -98,6 +96,19 @@ static struct s3c2410_uartcfg universal_uartcfgs[] __initdata = {
 static struct regulator_consumer_supply max8952_consumer =
 	REGULATOR_SUPPLY("vdd_arm", NULL);
 
+static struct regulator_init_data universal_max8952_reg_data = {
+	.constraints	= {
+		.name		= "VARM_1.2V",
+		.min_uV		= 770000,
+		.max_uV		= 1400000,
+		.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE,
+		.always_on	= 1,
+		.boot_on	= 1,
+	},
+	.num_consumer_supplies	= 1,
+	.consumer_supplies	= &max8952_consumer,
+};
+
 static struct max8952_platform_data universal_max8952_pdata __initdata = {
 	.gpio_vid0	= EXYNOS4_GPX0(3),
 	.gpio_vid1	= EXYNOS4_GPX0(4),
@@ -106,19 +117,7 @@ static struct max8952_platform_data universal_max8952_pdata __initdata = {
 	.dvs_mode	= { 48, 32, 28, 18 }, /* 1.25, 1.20, 1.05, 0.95V */
 	.sync_freq	= 0, /* default: fastest */
 	.ramp_speed	= 0, /* default: fastest */
-
-	.reg_data	= {
-		.constraints	= {
-			.name		= "VARM_1.2V",
-			.min_uV		= 770000,
-			.max_uV		= 1400000,
-			.valid_ops_mask	= REGULATOR_CHANGE_VOLTAGE,
-			.always_on	= 1,
-			.boot_on	= 1,
-		},
-		.num_consumer_supplies	= 1,
-		.consumer_supplies	= &max8952_consumer,
-	},
+	.reg_data	= &universal_max8952_reg_data,
 };
 
 static struct regulator_consumer_supply lp3974_buck1_consumer =
@@ -209,7 +208,7 @@ static struct regulator_consumer_supply lp3974_ldo3_consumer[] = {
 	REGULATOR_SUPPLY("vusb_a", "s3c-hsotg"),
 	REGULATOR_SUPPLY("vdd", "exynos4-hdmi"),
 	REGULATOR_SUPPLY("vdd_pll", "exynos4-hdmi"),
-	REGULATOR_SUPPLY("vdd11", "s5p-mipi-csis.0"),
+	REGULATOR_SUPPLY("vddcore", "s5p-mipi-csis.0"),
 };
 
 static struct regulator_init_data lp3974_ldo3_data = {
@@ -273,7 +272,7 @@ static struct regulator_init_data lp3974_ldo6_data = {
 };
 
 static struct regulator_consumer_supply lp3974_ldo7_consumer[] = {
-	REGULATOR_SUPPLY("vdd18", "s5p-mipi-csis.0"),
+	REGULATOR_SUPPLY("vddio", "s5p-mipi-csis.0"),
 };
 
 static struct regulator_init_data lp3974_ldo7_data = {
@@ -754,7 +753,6 @@ static struct s3c_sdhci_platdata universal_hsmmc0_data __initdata = {
 	.max_width		= 8,
 	.host_caps		= (MMC_CAP_8_BIT_DATA | MMC_CAP_4_BIT_DATA |
 				MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED),
-	.host_caps2		= MMC_CAP2_BROKEN_VOLTAGE,
 	.cd_type		= S3C_SDHCI_CD_PERMANENT,
 };
 
@@ -942,9 +940,7 @@ static struct platform_device cam_s_if_fixed_reg_dev = {
 static struct s5p_platform_mipi_csis mipi_csis_platdata = {
 	.clk_rate	= 166000000UL,
 	.lanes		= 2,
-	.alignment	= 32,
 	.hs_settle	= 12,
-	.phy_enable	= s5p_csis_phy_enable,
 };
 
 #define GPIO_CAM_LEVEL_EN(n)	EXYNOS4_GPE4(n + 3)
@@ -991,12 +987,12 @@ static struct i2c_board_info m5mols_board_info = {
 	.platform_data = &m5mols_platdata,
 };
 
-static struct s5p_fimc_isp_info universal_camera_sensors[] = {
+static struct fimc_source_info universal_camera_sensors[] = {
 	{
 		.mux_id		= 0,
 		.flags		= V4L2_MBUS_PCLK_SAMPLE_FALLING |
 				  V4L2_MBUS_VSYNC_ACTIVE_LOW,
-		.bus_type	= FIMC_ITU_601,
+		.fimc_bus_type	= FIMC_BUS_TYPE_ITU_601,
 		.board_info	= &s5k6aa_board_info,
 		.i2c_bus_num	= 0,
 		.clk_frequency	= 24000000UL,
@@ -1004,16 +1000,15 @@ static struct s5p_fimc_isp_info universal_camera_sensors[] = {
 		.mux_id		= 0,
 		.flags		= V4L2_MBUS_PCLK_SAMPLE_FALLING |
 				  V4L2_MBUS_VSYNC_ACTIVE_LOW,
-		.bus_type	= FIMC_MIPI_CSI2,
+		.fimc_bus_type	= FIMC_BUS_TYPE_MIPI_CSI2,
 		.board_info	= &m5mols_board_info,
 		.i2c_bus_num	= 0,
 		.clk_frequency	= 24000000UL,
-		.csi_data_align	= 32,
 	},
 };
 
 static struct s5p_platform_fimc fimc_md_platdata = {
-	.isp_info	= universal_camera_sensors,
+	.source_info	= universal_camera_sensors,
 	.num_clients	= ARRAY_SIZE(universal_camera_sensors),
 };
 
@@ -1084,9 +1079,6 @@ static struct platform_device *universal_devices[] __initdata = {
 	&s5p_device_onenand,
 	&s5p_device_fimd0,
 	&s5p_device_jpeg,
-#ifdef CONFIG_DRM_EXYNOS
-	&exynos_device_drm,
-#endif
 	&s3c_device_usb_hsotg,
 	&s5p_device_mfc,
 	&s5p_device_mfc_l,
@@ -1100,9 +1092,10 @@ static struct platform_device *universal_devices[] __initdata = {
 static void __init universal_map_io(void)
 {
 	exynos_init_io(NULL, 0);
-	s3c24xx_init_clocks(clk_xusbxti.rate);
 	s3c24xx_init_uarts(universal_uartcfgs, ARRAY_SIZE(universal_uartcfgs));
-	s5p_set_timer_source(S5P_PWM2, S5P_PWM4);
+	exynos_set_timer_source(BIT(2) | BIT(4));
+	xxti_f = 0;
+	xusbxti_f = 24000000;
 }
 
 static void s5p_tv_setup(void)
@@ -1155,12 +1148,12 @@ static void __init universal_machine_init(void)
 MACHINE_START(UNIVERSAL_C210, "UNIVERSAL_C210")
 	/* Maintainer: Kyungmin Park <kyungmin.park@samsung.com> */
 	.atag_offset	= 0x100,
+	.smp		= smp_ops(exynos_smp_ops),
 	.init_irq	= exynos4_init_irq,
 	.map_io		= universal_map_io,
-	.handle_irq	= gic_handle_irq,
 	.init_machine	= universal_machine_init,
 	.init_late	= exynos_init_late,
-	.timer		= &s5p_timer,
+	.init_time	= exynos_init_time,
 	.reserve        = &universal_reserve,
 	.restart	= exynos4_restart,
 MACHINE_END
