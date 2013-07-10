@@ -126,9 +126,6 @@ static int s3c_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (period_ns > NS_IN_HZ || duty_ns > NS_IN_HZ)
 		return -ERANGE;
 
-	if (duty_ns > period_ns)
-		return -EINVAL;
-
 	if (period_ns == s3c->period_ns &&
 	    duty_ns == s3c->duty_ns)
 		return 0;
@@ -225,6 +222,7 @@ static int s3c_pwm_probe(struct platform_device *pdev)
 
 	/* calculate base of control bits in TCON */
 	s3c->tcon_base = id == 0 ? 0 : (id * 4) + 4;
+	s3c->pwm_id = id;
 	s3c->chip.dev = &pdev->dev;
 	s3c->chip.ops = &s3c_pwm_ops;
 	s3c->chip.base = -1;
@@ -276,7 +274,7 @@ static int s3c_pwm_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int __devexit s3c_pwm_remove(struct platform_device *pdev)
+static int s3c_pwm_remove(struct platform_device *pdev)
 {
 	struct s3c_chip *s3c = platform_get_drvdata(pdev);
 	int err;
@@ -291,10 +289,10 @@ static int __devexit s3c_pwm_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int s3c_pwm_suspend(struct platform_device *pdev, pm_message_t state)
+#ifdef CONFIG_PM_SLEEP
+static int s3c_pwm_suspend(struct device *dev)
 {
-	struct s3c_chip *s3c = platform_get_drvdata(pdev);
+	struct s3c_chip *s3c = dev_get_drvdata(dev);
 
 	/* No one preserve these values during suspend so reset them
 	 * Otherwise driver leaves PWM unconfigured if same values
@@ -306,9 +304,9 @@ static int s3c_pwm_suspend(struct platform_device *pdev, pm_message_t state)
 	return 0;
 }
 
-static int s3c_pwm_resume(struct platform_device *pdev)
+static int s3c_pwm_resume(struct device *dev)
 {
-	struct s3c_chip *s3c = platform_get_drvdata(pdev);
+	struct s3c_chip *s3c = dev_get_drvdata(dev);
 	unsigned long tcon;
 
 	/* Restore invertion */
@@ -318,21 +316,19 @@ static int s3c_pwm_resume(struct platform_device *pdev)
 
 	return 0;
 }
-
-#else
-#define s3c_pwm_suspend NULL
-#define s3c_pwm_resume NULL
 #endif
+
+static SIMPLE_DEV_PM_OPS(s3c_pwm_pm_ops, s3c_pwm_suspend,
+			s3c_pwm_resume);
 
 static struct platform_driver s3c_pwm_driver = {
 	.driver		= {
 		.name	= "s3c24xx-pwm",
 		.owner	= THIS_MODULE,
+		.pm	= &s3c_pwm_pm_ops,
 	},
 	.probe		= s3c_pwm_probe,
-	.remove		= __devexit_p(s3c_pwm_remove),
-	.suspend	= s3c_pwm_suspend,
-	.resume		= s3c_pwm_resume,
+	.remove		= s3c_pwm_remove,
 };
 
 static int __init pwm_init(void)

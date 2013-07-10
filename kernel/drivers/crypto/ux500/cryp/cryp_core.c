@@ -23,6 +23,7 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/semaphore.h>
+#include <linux/platform_data/dma-ste-dma40.h>
 
 #include <crypto/aes.h>
 #include <crypto/algapi.h>
@@ -30,10 +31,7 @@
 #include <crypto/des.h>
 #include <crypto/scatterwalk.h>
 
-#include <plat/ste_dma40.h>
-
-#include <mach/crypto-ux500.h>
-#include <mach/hardware.h>
+#include <linux/platform_data/crypto-ux500.h>
 
 #include "cryp_p.h"
 #include "cryp.h"
@@ -1486,6 +1484,7 @@ static int ux500_cryp_probe(struct platform_device *pdev)
 	if (!res_irq) {
 		dev_err(dev, "[%s]: IORESOURCE_IRQ unavailable",
 			__func__);
+		ret = -ENODEV;
 		goto out_power;
 	}
 
@@ -1750,7 +1749,7 @@ static struct platform_driver cryp_driver = {
 	.shutdown = ux500_cryp_shutdown,
 	.driver = {
 		.owner = THIS_MODULE,
-		.name  = "cryp1"
+		.name  = "cryp1",
 		.pm    = &ux500_cryp_pm,
 	}
 };

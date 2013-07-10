@@ -1,6 +1,6 @@
 /*
  * QLogic Fibre Channel HBA Driver
- * Copyright (c)  2003-2011 QLogic Corporation
+ * Copyright (c)  2003-2013 QLogic Corporation
  *
  * See LICENSE.qla2xxx for copyright and licensing details.
  */
@@ -542,14 +542,15 @@
 #define QLA82XX_CRB_DRV_IDC_VERSION  (QLA82XX_CAM_RAM(0x174))
 
 /* Every driver should use these Device State */
-#define QLA82XX_DEV_COLD		1
-#define QLA82XX_DEV_INITIALIZING	2
-#define QLA82XX_DEV_READY		3
-#define QLA82XX_DEV_NEED_RESET		4
-#define QLA82XX_DEV_NEED_QUIESCENT	5
-#define QLA82XX_DEV_FAILED		6
-#define QLA82XX_DEV_QUIESCENT		7
+#define QLA8XXX_DEV_COLD		1
+#define QLA8XXX_DEV_INITIALIZING	2
+#define QLA8XXX_DEV_READY		3
+#define QLA8XXX_DEV_NEED_RESET		4
+#define QLA8XXX_DEV_NEED_QUIESCENT	5
+#define QLA8XXX_DEV_FAILED		6
+#define QLA8XXX_DEV_QUIESCENT		7
 #define	MAX_STATES			8 /* Increment if new state added */
+#define QLA8XXX_BAD_VALUE		0xbad0bad0
 
 #define QLA82XX_IDC_VERSION			1
 #define QLA82XX_ROM_DEV_INIT_TIMEOUT		30
@@ -896,7 +897,7 @@ struct ct6_dsd {
 #define FLT_REG_BOOT_CODE_82XX	0x78
 #define FLT_REG_FW_82XX		0x74
 #define FLT_REG_GOLD_FW_82XX	0x75
-#define FLT_REG_VPD_82XX	0x81
+#define FLT_REG_VPD_8XXX	0x81
 
 #define	FA_VPD_SIZE_82XX	0x400
 

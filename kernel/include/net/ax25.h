@@ -157,12 +157,12 @@ enum {
 typedef struct ax25_uid_assoc {
 	struct hlist_node	uid_node;
 	atomic_t		refcount;
-	uid_t			uid;
+	kuid_t			uid;
 	ax25_address		call;
 } ax25_uid_assoc;
 
-#define ax25_uid_for_each(__ax25, node, list) \
-	hlist_for_each_entry(__ax25, node, list, uid_node)
+#define ax25_uid_for_each(__ax25, list) \
+	hlist_for_each_entry(__ax25, list, uid_node)
 
 #define ax25_uid_hold(ax25) \
 	atomic_inc(&((ax25)->refcount))
@@ -247,8 +247,8 @@ typedef struct ax25_cb {
 
 #define ax25_sk(__sk) ((ax25_cb *)(__sk)->sk_protinfo)
 
-#define ax25_for_each(__ax25, node, list) \
-	hlist_for_each_entry(__ax25, node, list, ax25_node)
+#define ax25_for_each(__ax25, list) \
+	hlist_for_each_entry(__ax25, list, ax25_node)
 
 #define ax25_cb_hold(__ax25) \
 	atomic_inc(&((__ax25)->refcount))
@@ -434,7 +434,7 @@ extern unsigned long ax25_display_timer(struct timer_list *);
 
 /* ax25_uid.c */
 extern int  ax25_uid_policy;
-extern ax25_uid_assoc *ax25_findbyuid(uid_t);
+extern ax25_uid_assoc *ax25_findbyuid(kuid_t);
 extern int __must_check ax25_uid_ioctl(int, struct sockaddr_ax25 *);
 extern const struct file_operations ax25_uid_fops;
 extern void ax25_uid_free(void);

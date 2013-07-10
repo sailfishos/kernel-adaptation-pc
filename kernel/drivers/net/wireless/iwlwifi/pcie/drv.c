@@ -5,7 +5,7 @@
  *
  * GPL LICENSE SUMMARY
  *
- * Copyright(c) 2007 - 2012 Intel Corporation. All rights reserved.
+ * Copyright(c) 2007 - 2013 Intel Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -22,7 +22,7 @@
  * USA
  *
  * The full GNU General Public License is included in this distribution
- * in the file called LICENSE.GPL.
+ * in the file called COPYING.
  *
  * Contact Information:
  *  Intel Linux Wireless <ilw@linux.intel.com>
@@ -30,7 +30,7 @@
  *
  * BSD LICENSE
  *
- * Copyright(c) 2005 - 2012 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2013 Intel Corporation. All rights reserved.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -69,9 +69,6 @@
 
 #include "iwl-trans.h"
 #include "iwl-drv.h"
-#include "iwl-trans.h"
-
-#include "cfg.h"
 #include "internal.h"
 
 #define IWL_PCI_DEVICE(dev, subdev, cfg) \
@@ -244,6 +241,7 @@ static DEFINE_PCI_DEVICE_TABLE(iwl_hw_card_ids) = {
 	{IWL_PCI_DEVICE(0x088F, 0x4260, iwl6035_2agn_cfg)},
 	{IWL_PCI_DEVICE(0x088E, 0x4460, iwl6035_2agn_cfg)},
 	{IWL_PCI_DEVICE(0x088E, 0x4860, iwl6035_2agn_cfg)},
+	{IWL_PCI_DEVICE(0x088F, 0x5260, iwl6035_2agn_cfg)},
 
 /* 105 Series */
 	{IWL_PCI_DEVICE(0x0894, 0x0022, iwl105_bgn_cfg)},
@@ -256,6 +254,13 @@ static DEFINE_PCI_DEVICE_TABLE(iwl_hw_card_ids) = {
 	{IWL_PCI_DEVICE(0x0893, 0x0262, iwl135_bgn_cfg)},
 	{IWL_PCI_DEVICE(0x0892, 0x0462, iwl135_bgn_cfg)},
 
+/* 7000 Series */
+	{IWL_PCI_DEVICE(0x08B1, 0x4070, iwl7260_2ac_cfg)},
+	{IWL_PCI_DEVICE(0x08B1, 0x4062, iwl7260_2ac_cfg)},
+	{IWL_PCI_DEVICE(0x08B1, 0xC070, iwl7260_2ac_cfg)},
+	{IWL_PCI_DEVICE(0x08B3, 0x0070, iwl3160_ac_cfg)},
+	{IWL_PCI_DEVICE(0x08B3, 0x8070, iwl3160_ac_cfg)},
+
 	{0}
 };
 MODULE_DEVICE_TABLE(pci, iwl_hw_card_ids);
@@ -263,13 +268,12 @@ MODULE_DEVICE_TABLE(pci, iwl_hw_card_ids);
 /* PCI registers */
 #define PCI_CFG_RETRY_TIMEOUT	0x041
 
-#ifndef CONFIG_IWLWIFI_IDI
-
 static int iwl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	const struct iwl_cfg *cfg = (struct iwl_cfg *)(ent->driver_data);
 	struct iwl_trans *iwl_trans;
 	struct iwl_trans_pcie *trans_pcie;
+	int ret;
 
 	iwl_trans = iwl_trans_pcie_alloc(pdev, ent, cfg);
 	if (iwl_trans == NULL)
@@ -279,18 +283,28 @@ static int iwl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	trans_pcie = IWL_TRANS_GET_PCIE_TRANS(iwl_trans);
 	trans_pcie->drv = iwl_drv_start(iwl_trans, cfg);
-	if (!trans_pcie->drv)
+
+	if (IS_ERR_OR_NULL(trans_pcie->drv)) {
+		ret = PTR_ERR(trans_pcie->drv);
 		goto out_free_trans;
+	}
+
+	/* register transport layer debugfs here */
+	ret = iwl_trans_dbgfs_register(iwl_trans, iwl_trans->dbgfs_dir);
+	if (ret)
+		goto out_free_drv;
 
 	return 0;
 
+out_free_drv:
+	iwl_drv_stop(trans_pcie->drv);
 out_free_trans:
 	iwl_trans_pcie_free(iwl_trans);
 	pci_set_drvdata(pdev, NULL);
-	return -EFAULT;
+	return ret;
 }
 
-static void __devexit iwl_pci_remove(struct pci_dev *pdev)
+static void iwl_pci_remove(struct pci_dev *pdev)
 {
 	struct iwl_trans *trans = pci_get_drvdata(pdev);
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
@@ -300,8 +314,6 @@ static void __devexit iwl_pci_remove(struct pci_dev *pdev)
 
 	pci_set_drvdata(pdev, NULL);
 }
-
-#endif /* CONFIG_IWLWIFI_IDI */
 
 #ifdef CONFIG_PM_SLEEP
 
@@ -347,20 +359,11 @@ static SIMPLE_DEV_PM_OPS(iwl_dev_pm_ops, iwl_pci_suspend, iwl_pci_resume);
 
 #endif
 
-#ifdef CONFIG_IWLWIFI_IDI
-/*
- * Defined externally in iwl-idi.c
- */
-int iwl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent);
-void __devexit iwl_pci_remove(struct pci_dev *pdev);
-
-#endif /* CONFIG_IWLWIFI_IDI */
-
 static struct pci_driver iwl_pci_driver = {
 	.name = DRV_NAME,
 	.id_table = iwl_hw_card_ids,
 	.probe = iwl_pci_probe,
-	.remove = __devexit_p(iwl_pci_remove),
+	.remove = iwl_pci_remove,
 	.driver.pm = IWL_PM_OPS,
 };
 

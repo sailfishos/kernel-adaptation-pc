@@ -23,6 +23,8 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
+#include <linux/pinctrl/machine.h>
+#include <linux/pinctrl/pinconf-generic.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/io.h>
@@ -40,7 +42,7 @@
 #include <linux/mmc/sh_mobile_sdhi.h>
 #include <linux/mfd/tmio.h>
 #include <linux/sh_clk.h>
-#include <linux/videodev2.h>
+#include <linux/irqchip/arm-gic.h>
 #include <video/sh_mobile_lcdc.h>
 #include <video/sh_mipi_dsi.h>
 #include <sound/sh_fsi.h>
@@ -50,7 +52,6 @@
 #include <mach/common.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/hardware/gic.h>
 #include <asm/hardware/cache-l2x0.h>
 #include <asm/traps.h>
 
@@ -214,95 +215,6 @@ static struct platform_device irda_device = {
 	.num_resources  = ARRAY_SIZE(irda_resources),
 };
 
-static unsigned char lcd_backlight_seq[3][2] = {
-	{ 0x04, 0x07 },
-	{ 0x23, 0x80 },
-	{ 0x03, 0x01 },
-};
-
-static void lcd_backlight_on(void)
-{
-	struct i2c_adapter *a;
-	struct i2c_msg msg;
-	int k;
-
-	a = i2c_get_adapter(1);
-	for (k = 0; a && k < 3; k++) {
-		msg.addr = 0x6d;
-		msg.buf = &lcd_backlight_seq[k][0];
-		msg.len = 2;
-		msg.flags = 0;
-		if (i2c_transfer(a, &msg, 1) != 1)
-			break;
-	}
-}
-
-static void lcd_backlight_reset(void)
-{
-	gpio_set_value(GPIO_PORT235, 0);
-	mdelay(24);
-	gpio_set_value(GPIO_PORT235, 1);
-}
-
-/* LCDC0 */
-static const struct fb_videomode lcdc0_modes[] = {
-	{
-		.name		= "R63302(QHD)",
-		.xres		= 544,
-		.yres		= 961,
-		.left_margin	= 72,
-		.right_margin	= 600,
-		.hsync_len	= 16,
-		.upper_margin	= 8,
-		.lower_margin	= 8,
-		.vsync_len	= 2,
-		.sync		= FB_SYNC_VERT_HIGH_ACT | FB_SYNC_HOR_HIGH_ACT,
-	},
-};
-
-static struct sh_mobile_lcdc_info lcdc0_info = {
-	.clock_source = LCDC_CLK_PERIPHERAL,
-	.ch[0] = {
-		.chan = LCDC_CHAN_MAINLCD,
-		.interface_type = RGB24,
-		.clock_divider = 1,
-		.flags = LCDC_FLAGS_DWPOL,
-		.fourcc = V4L2_PIX_FMT_RGB565,
-		.lcd_modes = lcdc0_modes,
-		.num_modes = ARRAY_SIZE(lcdc0_modes),
-		.panel_cfg = {
-			.width = 44,
-			.height = 79,
-			.display_on = lcd_backlight_on,
-			.display_off = lcd_backlight_reset,
-		},
-	}
-};
-
-static struct resource lcdc0_resources[] = {
-	[0] = {
-		.name	= "LCDC0",
-		.start	= 0xfe940000, /* P4-only space */
-		.end	= 0xfe943fff,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= intcs_evt2irq(0x580),
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device lcdc0_device = {
-	.name		= "sh_mobile_lcdc_fb",
-	.num_resources	= ARRAY_SIZE(lcdc0_resources),
-	.resource	= lcdc0_resources,
-	.id             = 0,
-	.dev	= {
-		.platform_data	= &lcdc0_info,
-		.coherent_dma_mask = ~0,
-	},
-};
-
 /* MIPI-DSI */
 static struct resource mipidsi0_resources[] = {
 	[0] = {
@@ -359,7 +271,7 @@ sh_mipi_set_dot_clock_pck_err:
 
 static struct sh_mipi_dsi_info mipidsi0_info = {
 	.data_format	= MIPI_RGB888,
-	.lcd_chan	= &lcdc0_info.ch[0],
+	.channel	= LCDC_CHAN_MAINLCD,
 	.lane		= 2,
 	.vsynw_offset	= 20,
 	.clksrc		= 1,
@@ -379,6 +291,109 @@ static struct platform_device mipidsi0_device = {
 	},
 };
 
+static unsigned char lcd_backlight_seq[3][2] = {
+	{ 0x04, 0x07 },
+	{ 0x23, 0x80 },
+	{ 0x03, 0x01 },
+};
+
+static int lcd_backlight_set_brightness(int brightness)
+{
+	struct i2c_adapter *adap;
+	struct i2c_msg msg;
+	unsigned int i;
+	int ret;
+
+	if (brightness == 0) {
+		/* Reset the chip */
+		gpio_set_value(235, 0);
+		mdelay(24);
+		gpio_set_value(235, 1);
+		return 0;
+	}
+
+	adap = i2c_get_adapter(1);
+	if (adap == NULL)
+		return -ENODEV;
+
+	for (i = 0; i < ARRAY_SIZE(lcd_backlight_seq); i++) {
+		msg.addr = 0x6d;
+		msg.buf = &lcd_backlight_seq[i][0];
+		msg.len = 2;
+		msg.flags = 0;
+
+		ret = i2c_transfer(adap, &msg, 1);
+		if (ret < 0)
+			break;
+	}
+
+	i2c_put_adapter(adap);
+	return ret < 0 ? ret : 0;
+}
+
+/* LCDC0 */
+static const struct fb_videomode lcdc0_modes[] = {
+	{
+		.name		= "R63302(QHD)",
+		.xres		= 544,
+		.yres		= 961,
+		.left_margin	= 72,
+		.right_margin	= 600,
+		.hsync_len	= 16,
+		.upper_margin	= 8,
+		.lower_margin	= 8,
+		.vsync_len	= 2,
+		.sync		= FB_SYNC_VERT_HIGH_ACT | FB_SYNC_HOR_HIGH_ACT,
+	},
+};
+
+static struct sh_mobile_lcdc_info lcdc0_info = {
+	.clock_source = LCDC_CLK_PERIPHERAL,
+	.ch[0] = {
+		.chan = LCDC_CHAN_MAINLCD,
+		.interface_type = RGB24,
+		.clock_divider = 1,
+		.flags = LCDC_FLAGS_DWPOL,
+		.fourcc = V4L2_PIX_FMT_RGB565,
+		.lcd_modes = lcdc0_modes,
+		.num_modes = ARRAY_SIZE(lcdc0_modes),
+		.panel_cfg = {
+			.width = 44,
+			.height = 79,
+		},
+		.bl_info = {
+			.name = "sh_mobile_lcdc_bl",
+			.max_brightness = 1,
+			.set_brightness = lcd_backlight_set_brightness,
+		},
+		.tx_dev = &mipidsi0_device,
+	}
+};
+
+static struct resource lcdc0_resources[] = {
+	[0] = {
+		.name	= "LCDC0",
+		.start	= 0xfe940000, /* P4-only space */
+		.end	= 0xfe943fff,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= intcs_evt2irq(0x580),
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device lcdc0_device = {
+	.name		= "sh_mobile_lcdc_fb",
+	.num_resources	= ARRAY_SIZE(lcdc0_resources),
+	.resource	= lcdc0_resources,
+	.id             = 0,
+	.dev	= {
+		.platform_data	= &lcdc0_info,
+		.coherent_dma_mask = ~0,
+	},
+};
+
 /* Fixed 2.8V regulators to be used by SDHI0 */
 static struct regulator_consumer_supply fixed2v8_power_consumers[] =
 {
@@ -393,7 +408,7 @@ static struct sh_mobile_sdhi_info sdhi0_info = {
 	.tmio_flags	= TMIO_MMC_HAS_IDLE_WAIT | TMIO_MMC_USE_GPIO_CD,
 	.tmio_caps	= MMC_CAP_SD_HIGHSPEED,
 	.tmio_ocr_mask	= MMC_VDD_27_28 | MMC_VDD_28_29,
-	.cd_gpio	= GPIO_PORT251,
+	.cd_gpio	= 251,
 };
 
 static struct resource sdhi0_resources[] = {
@@ -448,7 +463,7 @@ static struct regulator_init_data cn4_power_init_data = {
 static struct fixed_voltage_config cn4_power_info = {
 	.supply_name = "CN4 SD/MMC Vdd",
 	.microvolts = 3300000,
-	.gpio = GPIO_PORT114,
+	.gpio = 114,
 	.enable_high = 1,
 	.init_data = &cn4_power_init_data,
 };
@@ -466,11 +481,10 @@ static void ag5evm_sdhi1_set_pwr(struct platform_device *pdev, int state)
 	static int power_gpio = -EINVAL;
 
 	if (power_gpio < 0) {
-		int ret = gpio_request(GPIO_PORT114, "sdhi1_power");
-		if (!ret) {
-			power_gpio = GPIO_PORT114;
-			gpio_direction_output(power_gpio, 0);
-		}
+		int ret = gpio_request_one(114, GPIOF_OUT_INIT_LOW,
+					   "sdhi1_power");
+		if (!ret)
+			power_gpio = 114;
 	}
 
 	/*
@@ -481,7 +495,7 @@ static void ag5evm_sdhi1_set_pwr(struct platform_device *pdev, int state)
 	 * regulator driver. We have to live with the race in case the driver
 	 * gets unloaded and the GPIO freed between these two steps.
 	 */
-	gpio_set_value(GPIO_PORT114, state);
+	gpio_set_value(114, state);
 }
 
 static struct sh_mobile_sdhi_info sh_sdhi1_info = {
@@ -532,10 +546,81 @@ static struct platform_device *ag5evm_devices[] __initdata = {
 	&fsi_device,
 	&mmc_device,
 	&irda_device,
-	&lcdc0_device,
 	&mipidsi0_device,
+	&lcdc0_device,
 	&sdhi0_device,
 	&sdhi1_device,
+};
+
+static unsigned long pin_pullup_conf[] = {
+	PIN_CONF_PACKED(PIN_CONFIG_BIAS_PULL_UP, 0),
+};
+
+static const struct pinctrl_map ag5evm_pinctrl_map[] = {
+	/* FSIA */
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_fsi2.0", "pfc-sh73a0",
+				  "fsia_mclk_in", "fsia"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_fsi2.0", "pfc-sh73a0",
+				  "fsia_sclk_in", "fsia"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_fsi2.0", "pfc-sh73a0",
+				  "fsia_data_in", "fsia"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_fsi2.0", "pfc-sh73a0",
+				  "fsia_data_out", "fsia"),
+	/* I2C2 & I2C3 */
+	PIN_MAP_MUX_GROUP_DEFAULT("i2c-sh_mobile.2", "pfc-sh73a0",
+				  "i2c2_0", "i2c2"),
+	PIN_MAP_MUX_GROUP_DEFAULT("i2c-sh_mobile.3", "pfc-sh73a0",
+				  "i2c3_0", "i2c3"),
+	/* IrDA */
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_irda.0", "pfc-sh73a0",
+				  "irda_0", "irda"),
+	/* KEYSC */
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				  "keysc_in8", "keysc"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				  "keysc_out04", "keysc"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				  "keysc_out5", "keysc"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				  "keysc_out6_0", "keysc"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				  "keysc_out7_0", "keysc"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				  "keysc_out8_0", "keysc"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				  "keysc_out9_2", "keysc"),
+	PIN_MAP_CONFIGS_GROUP_DEFAULT("sh_keysc.0", "pfc-sh73a0",
+				      "keysc_in8", pin_pullup_conf),
+	/* MMCIF */
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_mmcif.0", "pfc-sh73a0",
+				  "mmc0_data8_0", "mmc0"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_mmcif.0", "pfc-sh73a0",
+				  "mmc0_ctrl_0", "mmc0"),
+	PIN_MAP_CONFIGS_PIN_DEFAULT("sh_mmcif.0", "pfc-sh73a0",
+				    "PORT279", pin_pullup_conf),
+	PIN_MAP_CONFIGS_GROUP_DEFAULT("sh_mmcif.0", "pfc-sh73a0",
+				      "mmc0_data8_0", pin_pullup_conf),
+	/* SCIFA2 */
+	PIN_MAP_MUX_GROUP_DEFAULT("sh-sci.2", "pfc-sh73a0",
+				  "scifa2_data_0", "scifa2"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh-sci.2", "pfc-sh73a0",
+				  "scifa2_ctrl_0", "scifa2"),
+	/* SDHI0 (CN15 [SD I/F]) */
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_mobile_sdhi.0", "pfc-sh73a0",
+				  "sdhi0_data4", "sdhi0"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_mobile_sdhi.0", "pfc-sh73a0",
+				  "sdhi0_ctrl", "sdhi0"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_mobile_sdhi.0", "pfc-sh73a0",
+				  "sdhi0_wp", "sdhi0"),
+	/* SDHI1 (CN4 [WLAN I/F]) */
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_mobile_sdhi.1", "pfc-sh73a0",
+				  "sdhi1_data4", "sdhi1"),
+	PIN_MAP_MUX_GROUP_DEFAULT("sh_mobile_sdhi.1", "pfc-sh73a0",
+				  "sdhi1_ctrl", "sdhi1"),
+	PIN_MAP_CONFIGS_GROUP_DEFAULT("sh_mobile_sdhi.1", "pfc-sh73a0",
+				      "sdhi1_data4", pin_pullup_conf),
+	PIN_MAP_CONFIGS_PIN_DEFAULT("sh_mobile_sdhi.1", "pfc-sh73a0",
+				    "PORT263", pin_pullup_conf),
 };
 
 static void __init ag5evm_init(void)
@@ -546,100 +631,26 @@ static void __init ag5evm_init(void)
 				     ARRAY_SIZE(fixed2v8_power_consumers), 3300000);
 	regulator_register_fixed(3, dummy_supplies, ARRAY_SIZE(dummy_supplies));
 
+	pinctrl_register_mappings(ag5evm_pinctrl_map,
+				  ARRAY_SIZE(ag5evm_pinctrl_map));
 	sh73a0_pinmux_init();
 
-	/* enable SCIFA2 */
-	gpio_request(GPIO_FN_SCIFA2_TXD1, NULL);
-	gpio_request(GPIO_FN_SCIFA2_RXD1, NULL);
-	gpio_request(GPIO_FN_SCIFA2_RTS1_, NULL);
-	gpio_request(GPIO_FN_SCIFA2_CTS1_, NULL);
-
-	/* enable KEYSC */
-	gpio_request(GPIO_FN_KEYIN0_PU, NULL);
-	gpio_request(GPIO_FN_KEYIN1_PU, NULL);
-	gpio_request(GPIO_FN_KEYIN2_PU, NULL);
-	gpio_request(GPIO_FN_KEYIN3_PU, NULL);
-	gpio_request(GPIO_FN_KEYIN4_PU, NULL);
-	gpio_request(GPIO_FN_KEYIN5_PU, NULL);
-	gpio_request(GPIO_FN_KEYIN6_PU, NULL);
-	gpio_request(GPIO_FN_KEYIN7_PU, NULL);
-	gpio_request(GPIO_FN_KEYOUT0, NULL);
-	gpio_request(GPIO_FN_KEYOUT1, NULL);
-	gpio_request(GPIO_FN_KEYOUT2, NULL);
-	gpio_request(GPIO_FN_KEYOUT3, NULL);
-	gpio_request(GPIO_FN_KEYOUT4, NULL);
-	gpio_request(GPIO_FN_KEYOUT5, NULL);
-	gpio_request(GPIO_FN_PORT59_KEYOUT6, NULL);
-	gpio_request(GPIO_FN_PORT58_KEYOUT7, NULL);
-	gpio_request(GPIO_FN_KEYOUT8, NULL);
-	gpio_request(GPIO_FN_PORT149_KEYOUT9, NULL);
-
-	/* enable I2C channel 2 and 3 */
-	gpio_request(GPIO_FN_PORT236_I2C_SDA2, NULL);
-	gpio_request(GPIO_FN_PORT237_I2C_SCL2, NULL);
-	gpio_request(GPIO_FN_PORT248_I2C_SCL3, NULL);
-	gpio_request(GPIO_FN_PORT249_I2C_SDA3, NULL);
-
 	/* enable MMCIF */
-	gpio_request(GPIO_FN_MMCCLK0, NULL);
-	gpio_request(GPIO_FN_MMCCMD0_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_0_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_1_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_2_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_3_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_4_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_5_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_6_PU, NULL);
-	gpio_request(GPIO_FN_MMCD0_7_PU, NULL);
-	gpio_request(GPIO_PORT208, NULL); /* Reset */
-	gpio_direction_output(GPIO_PORT208, 1);
+	gpio_request_one(208, GPIOF_OUT_INIT_HIGH, NULL); /* Reset */
 
 	/* enable SMSC911X */
-	gpio_request(GPIO_PORT144, NULL); /* PINTA2 */
-	gpio_direction_input(GPIO_PORT144);
-	gpio_request(GPIO_PORT145, NULL); /* RESET */
-	gpio_direction_output(GPIO_PORT145, 1);
-
-	/* FSI A */
-	gpio_request(GPIO_FN_FSIACK, NULL);
-	gpio_request(GPIO_FN_FSIAILR, NULL);
-	gpio_request(GPIO_FN_FSIAIBT, NULL);
-	gpio_request(GPIO_FN_FSIAISLD, NULL);
-	gpio_request(GPIO_FN_FSIAOSLD, NULL);
-
-	/* IrDA */
-	gpio_request(GPIO_FN_PORT241_IRDA_OUT, NULL);
-	gpio_request(GPIO_FN_PORT242_IRDA_IN,  NULL);
-	gpio_request(GPIO_FN_PORT243_IRDA_FIRSEL, NULL);
+	gpio_request_one(144, GPIOF_IN, NULL); /* PINTA2 */
+	gpio_request_one(145, GPIOF_OUT_INIT_HIGH, NULL); /* RESET */
 
 	/* LCD panel */
-	gpio_request(GPIO_PORT217, NULL); /* RESET */
-	gpio_direction_output(GPIO_PORT217, 0);
+	gpio_request_one(217, GPIOF_OUT_INIT_LOW, NULL); /* RESET */
 	mdelay(1);
-	gpio_set_value(GPIO_PORT217, 1);
+	gpio_set_value(217, 1);
 	mdelay(100);
 
 	/* LCD backlight controller */
-	gpio_request(GPIO_PORT235, NULL); /* RESET */
-	gpio_direction_output(GPIO_PORT235, 0);
-	lcd_backlight_reset();
-
-	/* enable SDHI0 on CN15 [SD I/F] */
-	gpio_request(GPIO_FN_SDHIWP0, NULL);
-	gpio_request(GPIO_FN_SDHICMD0, NULL);
-	gpio_request(GPIO_FN_SDHICLK0, NULL);
-	gpio_request(GPIO_FN_SDHID0_3, NULL);
-	gpio_request(GPIO_FN_SDHID0_2, NULL);
-	gpio_request(GPIO_FN_SDHID0_1, NULL);
-	gpio_request(GPIO_FN_SDHID0_0, NULL);
-
-	/* enable SDHI1 on CN4 [WLAN I/F] */
-	gpio_request(GPIO_FN_SDHICLK1, NULL);
-	gpio_request(GPIO_FN_SDHICMD1_PU, NULL);
-	gpio_request(GPIO_FN_SDHID1_3_PU, NULL);
-	gpio_request(GPIO_FN_SDHID1_2_PU, NULL);
-	gpio_request(GPIO_FN_SDHID1_1_PU, NULL);
-	gpio_request(GPIO_FN_SDHID1_0_PU, NULL);
+	gpio_request_one(235, GPIOF_OUT_INIT_LOW, NULL); /* RESET */
+	lcd_backlight_set_brightness(0);
 
 #ifdef CONFIG_CACHE_L2X0
 	/* Shared attribute override enable, 64K*8way */
@@ -650,12 +661,12 @@ static void __init ag5evm_init(void)
 }
 
 MACHINE_START(AG5EVM, "ag5evm")
+	.smp		= smp_ops(sh73a0_smp_ops),
 	.map_io		= sh73a0_map_io,
 	.init_early	= sh73a0_add_early_devices,
 	.nr_irqs	= NR_IRQS_LEGACY,
 	.init_irq	= sh73a0_init_irq,
-	.handle_irq	= gic_handle_irq,
 	.init_machine	= ag5evm_init,
 	.init_late	= shmobile_init_late,
-	.timer		= &shmobile_timer,
+	.init_time	= sh73a0_earlytimer_init,
 MACHINE_END

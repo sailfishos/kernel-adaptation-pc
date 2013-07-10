@@ -118,6 +118,7 @@ static struct file_system_type udf_fstype = {
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
+MODULE_ALIAS_FS("udf");
 
 static struct kmem_cache *udf_inode_cachep;
 
@@ -134,6 +135,8 @@ static struct inode *udf_alloc_inode(struct super_block *sb)
 	ei->i_next_alloc_goal = 0;
 	ei->i_strat4096 = 0;
 	init_rwsem(&ei->i_data_sem);
+	ei->cached_extent.lstart = -1;
+	spin_lock_init(&ei->i_extent_cache_lock);
 
 	return &ei->vfs_inode;
 }
@@ -171,6 +174,11 @@ static int init_inodecache(void)
 
 static void destroy_inodecache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(udf_inode_cachep);
 }
 
@@ -199,8 +207,8 @@ struct udf_options {
 	unsigned int rootdir;
 	unsigned int flags;
 	umode_t umask;
-	gid_t gid;
-	uid_t uid;
+	kgid_t gid;
+	kuid_t uid;
 	umode_t fmode;
 	umode_t dmode;
 	struct nls_table *nls_map;
@@ -302,7 +310,8 @@ static void udf_sb_free_partitions(struct super_block *sb)
 {
 	struct udf_sb_info *sbi = UDF_SB(sb);
 	int i;
-
+	if (sbi->s_partmaps == NULL)
+		return;
 	for (i = 0; i < sbi->s_partitions; i++)
 		udf_free_partition(&sbi->s_partmaps[i]);
 	kfree(sbi->s_partmaps);
@@ -335,9 +344,9 @@ static int udf_show_options(struct seq_file *seq, struct dentry *root)
 	if (UDF_QUERY_FLAG(sb, UDF_FLAG_GID_IGNORE))
 		seq_puts(seq, ",gid=ignore");
 	if (UDF_QUERY_FLAG(sb, UDF_FLAG_UID_SET))
-		seq_printf(seq, ",uid=%u", sbi->s_uid);
+		seq_printf(seq, ",uid=%u", from_kuid(&init_user_ns, sbi->s_uid));
 	if (UDF_QUERY_FLAG(sb, UDF_FLAG_GID_SET))
-		seq_printf(seq, ",gid=%u", sbi->s_gid);
+		seq_printf(seq, ",gid=%u", from_kgid(&init_user_ns, sbi->s_gid));
 	if (sbi->s_umask != 0)
 		seq_printf(seq, ",umask=%ho", sbi->s_umask);
 	if (sbi->s_fmode != UDF_INVALID_MODE)
@@ -516,13 +525,17 @@ static int udf_parse_options(char *options, struct udf_options *uopt,
 		case Opt_gid:
 			if (match_int(args, &option))
 				return 0;
-			uopt->gid = option;
+			uopt->gid = make_kgid(current_user_ns(), option);
+			if (!gid_valid(uopt->gid))
+				return 0;
 			uopt->flags |= (1 << UDF_FLAG_GID_SET);
 			break;
 		case Opt_uid:
 			if (match_int(args, &option))
 				return 0;
-			uopt->uid = option;
+			uopt->uid = make_kuid(current_user_ns(), option);
+			if (!uid_valid(uopt->uid))
+				return 0;
 			uopt->flags |= (1 << UDF_FLAG_UID_SET);
 			break;
 		case Opt_umask:
@@ -1011,7 +1024,6 @@ static struct udf_bitmap *udf_sb_alloc_bitmap(struct super_block *sb, u32 index)
 	if (bitmap == NULL)
 		return NULL;
 
-	bitmap->s_block_bitmap = (struct buffer_head **)(bitmap + 1);
 	bitmap->s_nr_groups = nr_groups;
 	return bitmap;
 }
@@ -1069,8 +1081,6 @@ static int udf_fill_partdesc_info(struct super_block *sb,
 		if (!bitmap)
 			return 1;
 		map->s_uspace.s_bitmap = bitmap;
-		bitmap->s_extLength = le32_to_cpu(
-				phd->unallocSpaceBitmap.extLength);
 		bitmap->s_extPosition = le32_to_cpu(
 				phd->unallocSpaceBitmap.extPosition);
 		map->s_partition_flags |= UDF_PART_FLAG_UNALLOC_BITMAP;
@@ -1105,8 +1115,6 @@ static int udf_fill_partdesc_info(struct super_block *sb,
 		if (!bitmap)
 			return 1;
 		map->s_fspace.s_bitmap = bitmap;
-		bitmap->s_extLength = le32_to_cpu(
-				phd->freedSpaceBitmap.extLength);
 		bitmap->s_extPosition = le32_to_cpu(
 				phd->freedSpaceBitmap.extPosition);
 		map->s_partition_flags |= UDF_PART_FLAG_FREED_BITMAP;
@@ -1856,6 +1864,8 @@ static void udf_open_lvid(struct super_block *sb)
 	mark_buffer_dirty(bh);
 	sbi->s_lvid_dirty = 0;
 	mutex_unlock(&sbi->s_alloc_mutex);
+	/* Make opening of filesystem visible on the media immediately */
+	sync_dirty_buffer(bh);
 }
 
 static void udf_close_lvid(struct super_block *sb)
@@ -1896,6 +1906,8 @@ static void udf_close_lvid(struct super_block *sb)
 	mark_buffer_dirty(bh);
 	sbi->s_lvid_dirty = 0;
 	mutex_unlock(&sbi->s_alloc_mutex);
+	/* Make closing of filesystem visible on the media immediately */
+	sync_dirty_buffer(bh);
 }
 
 u64 lvid_get_unique_id(struct super_block *sb)
@@ -1934,8 +1946,8 @@ static int udf_fill_super(struct super_block *sb, void *options, int silent)
 	struct udf_sb_info *sbi;
 
 	uopt.flags = (1 << UDF_FLAG_USE_AD_IN_ICB) | (1 << UDF_FLAG_STRICT);
-	uopt.uid = -1;
-	uopt.gid = -1;
+	uopt.uid = INVALID_UID;
+	uopt.gid = INVALID_GID;
 	uopt.umask = 0;
 	uopt.fmode = UDF_INVALID_MODE;
 	uopt.dmode = UDF_INVALID_MODE;

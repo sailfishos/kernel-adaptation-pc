@@ -29,9 +29,8 @@
  * generation numbers as then we know the root was once mounted with an older
  * kernel that was not aware of the root item structure change.
  */
-void btrfs_read_root_item(struct btrfs_root *root,
-			 struct extent_buffer *eb, int slot,
-			 struct btrfs_root_item *item)
+void btrfs_read_root_item(struct extent_buffer *eb, int slot,
+			  struct btrfs_root_item *item)
 {
 	uuid_le uuid;
 	int len;
@@ -104,7 +103,7 @@ int btrfs_find_last_root(struct btrfs_root *root, u64 objectid,
 		goto out;
 	}
 	if (item)
-		btrfs_read_root_item(root, l, slot, item);
+		btrfs_read_root_item(l, slot, item);
 	if (key)
 		memcpy(key, &found_key, sizeof(found_key));
 
@@ -141,8 +140,10 @@ int btrfs_update_root(struct btrfs_trans_handle *trans, struct btrfs_root
 		return -ENOMEM;
 
 	ret = btrfs_search_slot(trans, root, key, path, 0, 1);
-	if (ret < 0)
-		goto out_abort;
+	if (ret < 0) {
+		btrfs_abort_transaction(trans, root, ret);
+		goto out;
+	}
 
 	if (ret != 0) {
 		btrfs_print_leaf(root, path->nodes[0]);
@@ -166,16 +167,23 @@ int btrfs_update_root(struct btrfs_trans_handle *trans, struct btrfs_root
 		btrfs_release_path(path);
 		ret = btrfs_search_slot(trans, root, key, path,
 				-1, 1);
-		if (ret < 0)
-			goto out_abort;
+		if (ret < 0) {
+			btrfs_abort_transaction(trans, root, ret);
+			goto out;
+		}
+
 		ret = btrfs_del_item(trans, root, path);
-		if (ret < 0)
-			goto out_abort;
+		if (ret < 0) {
+			btrfs_abort_transaction(trans, root, ret);
+			goto out;
+		}
 		btrfs_release_path(path);
 		ret = btrfs_insert_empty_item(trans, root, path,
 				key, sizeof(*item));
-		if (ret < 0)
-			goto out_abort;
+		if (ret < 0) {
+			btrfs_abort_transaction(trans, root, ret);
+			goto out;
+		}
 		l = path->nodes[0];
 		slot = path->slots[0];
 		ptr = btrfs_item_ptr_offset(l, slot);
@@ -192,10 +200,6 @@ int btrfs_update_root(struct btrfs_trans_handle *trans, struct btrfs_root
 out:
 	btrfs_free_path(path);
 	return ret;
-
-out_abort:
-	btrfs_abort_transaction(trans, root, ret);
-	goto out;
 }
 
 int btrfs_insert_root(struct btrfs_trans_handle *trans, struct btrfs_root *root,
@@ -543,9 +547,9 @@ void btrfs_update_root_times(struct btrfs_trans_handle *trans,
 	struct btrfs_root_item *item = &root->root_item;
 	struct timespec ct = CURRENT_TIME;
 
-	spin_lock(&root->root_times_lock);
+	spin_lock(&root->root_item_lock);
 	item->ctransid = cpu_to_le64(trans->transid);
 	item->ctime.sec = cpu_to_le64(ct.tv_sec);
 	item->ctime.nsec = cpu_to_le32(ct.tv_nsec);
-	spin_unlock(&root->root_times_lock);
+	spin_unlock(&root->root_item_lock);
 }

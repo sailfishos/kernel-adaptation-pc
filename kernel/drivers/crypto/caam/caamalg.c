@@ -205,7 +205,7 @@ static void init_sh_desc_key_aead(u32 *desc, struct caam_ctx *ctx,
 {
 	u32 *key_jump_cmd;
 
-	init_sh_desc(desc, HDR_SHARE_WAIT);
+	init_sh_desc(desc, HDR_SHARE_SERIAL);
 
 	/* Skip if already shared */
 	key_jump_cmd = append_jump(desc, JUMP_JSL | JUMP_TEST_ALL |
@@ -224,7 +224,7 @@ static int aead_set_sh_desc(struct crypto_aead *aead)
 	struct aead_tfm *tfm = &aead->base.crt_aead;
 	struct caam_ctx *ctx = crypto_aead_ctx(aead);
 	struct device *jrdev = ctx->jrdev;
-	bool keys_fit_inline = 0;
+	bool keys_fit_inline = false;
 	u32 *key_jump_cmd, *jump_cmd;
 	u32 geniv, moveiv;
 	u32 *desc;
@@ -239,7 +239,7 @@ static int aead_set_sh_desc(struct crypto_aead *aead)
 	if (DESC_AEAD_ENC_LEN + DESC_JOB_IO_LEN +
 	    ctx->split_key_pad_len + ctx->enckeylen <=
 	    CAAM_DESC_BYTES_MAX)
-		keys_fit_inline = 1;
+		keys_fit_inline = true;
 
 	/* aead_encrypt shared descriptor */
 	desc = ctx->sh_desc_enc;
@@ -297,12 +297,12 @@ static int aead_set_sh_desc(struct crypto_aead *aead)
 	if (DESC_AEAD_DEC_LEN + DESC_JOB_IO_LEN +
 	    ctx->split_key_pad_len + ctx->enckeylen <=
 	    CAAM_DESC_BYTES_MAX)
-		keys_fit_inline = 1;
+		keys_fit_inline = true;
 
 	desc = ctx->sh_desc_dec;
 
 	/* aead_decrypt shared descriptor */
-	init_sh_desc(desc, HDR_SHARE_WAIT);
+	init_sh_desc(desc, HDR_SHARE_SERIAL);
 
 	/* Skip if already shared */
 	key_jump_cmd = append_jump(desc, JUMP_JSL | JUMP_TEST_ALL |
@@ -365,7 +365,7 @@ static int aead_set_sh_desc(struct crypto_aead *aead)
 	if (DESC_AEAD_GIVENC_LEN + DESC_JOB_IO_LEN +
 	    ctx->split_key_pad_len + ctx->enckeylen <=
 	    CAAM_DESC_BYTES_MAX)
-		keys_fit_inline = 1;
+		keys_fit_inline = true;
 
 	/* aead_givencrypt shared descriptor */
 	desc = ctx->sh_desc_givenc;
@@ -564,7 +564,7 @@ static int ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
 
 	/* ablkcipher_encrypt shared descriptor */
 	desc = ctx->sh_desc_enc;
-	init_sh_desc(desc, HDR_SHARE_WAIT);
+	init_sh_desc(desc, HDR_SHARE_SERIAL);
 	/* Skip if already shared */
 	key_jump_cmd = append_jump(desc, JUMP_JSL | JUMP_TEST_ALL |
 				   JUMP_COND_SHRD);
@@ -605,7 +605,7 @@ static int ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
 	/* ablkcipher_decrypt shared descriptor */
 	desc = ctx->sh_desc_dec;
 
-	init_sh_desc(desc, HDR_SHARE_WAIT);
+	init_sh_desc(desc, HDR_SHARE_SERIAL);
 	/* Skip if already shared */
 	key_jump_cmd = append_jump(desc, JUMP_JSL | JUMP_TEST_ALL |
 				   JUMP_COND_SHRD);
@@ -1154,7 +1154,7 @@ static struct aead_edesc *aead_edesc_alloc(struct aead_request *req,
 		dst_nents = sg_count(req->dst, req->cryptlen, &dst_chained);
 
 	sgc = dma_map_sg_chained(jrdev, req->assoc, assoc_nents ? : 1,
-				 DMA_BIDIRECTIONAL, assoc_chained);
+				 DMA_TO_DEVICE, assoc_chained);
 	if (likely(req->src == req->dst)) {
 		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
 					 DMA_BIDIRECTIONAL, src_chained);
@@ -1336,7 +1336,7 @@ static struct aead_edesc *aead_giv_edesc_alloc(struct aead_givcrypt_request
 		dst_nents = sg_count(req->dst, req->cryptlen, &dst_chained);
 
 	sgc = dma_map_sg_chained(jrdev, req->assoc, assoc_nents ? : 1,
-				 DMA_BIDIRECTIONAL, assoc_chained);
+				 DMA_TO_DEVICE, assoc_chained);
 	if (likely(req->src == req->dst)) {
 		sgc = dma_map_sg_chained(jrdev, req->src, src_nents ? : 1,
 					 DMA_BIDIRECTIONAL, src_chained);
@@ -1354,10 +1354,10 @@ static struct aead_edesc *aead_giv_edesc_alloc(struct aead_givcrypt_request
 		contig &= ~GIV_SRC_CONTIG;
 	if (dst_nents || iv_dma + ivsize != sg_dma_address(req->dst))
 		contig &= ~GIV_DST_CONTIG;
-		if (unlikely(req->src != req->dst)) {
-			dst_nents = dst_nents ? : 1;
-			sec4_sg_len += 1;
-		}
+	if (unlikely(req->src != req->dst)) {
+		dst_nents = dst_nents ? : 1;
+		sec4_sg_len += 1;
+	}
 	if (!(contig & GIV_SRC_CONTIG)) {
 		assoc_nents = assoc_nents ? : 1;
 		src_nents = src_nents ? : 1;
@@ -1693,6 +1693,7 @@ static struct caam_alg_template driver_algs[] = {
 		.name = "authenc(hmac(sha224),cbc(aes))",
 		.driver_name = "authenc-hmac-sha224-cbc-aes-caam",
 		.blocksize = AES_BLOCK_SIZE,
+		.type = CRYPTO_ALG_TYPE_AEAD,
 		.template_aead = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
@@ -1732,6 +1733,7 @@ static struct caam_alg_template driver_algs[] = {
 		.name = "authenc(hmac(sha384),cbc(aes))",
 		.driver_name = "authenc-hmac-sha384-cbc-aes-caam",
 		.blocksize = AES_BLOCK_SIZE,
+		.type = CRYPTO_ALG_TYPE_AEAD,
 		.template_aead = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
@@ -1810,6 +1812,7 @@ static struct caam_alg_template driver_algs[] = {
 		.name = "authenc(hmac(sha224),cbc(des3_ede))",
 		.driver_name = "authenc-hmac-sha224-cbc-des3_ede-caam",
 		.blocksize = DES3_EDE_BLOCK_SIZE,
+		.type = CRYPTO_ALG_TYPE_AEAD,
 		.template_aead = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
@@ -1849,6 +1852,7 @@ static struct caam_alg_template driver_algs[] = {
 		.name = "authenc(hmac(sha384),cbc(des3_ede))",
 		.driver_name = "authenc-hmac-sha384-cbc-des3_ede-caam",
 		.blocksize = DES3_EDE_BLOCK_SIZE,
+		.type = CRYPTO_ALG_TYPE_AEAD,
 		.template_aead = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
@@ -1926,6 +1930,7 @@ static struct caam_alg_template driver_algs[] = {
 		.name = "authenc(hmac(sha224),cbc(des))",
 		.driver_name = "authenc-hmac-sha224-cbc-des-caam",
 		.blocksize = DES_BLOCK_SIZE,
+		.type = CRYPTO_ALG_TYPE_AEAD,
 		.template_aead = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,
@@ -1965,6 +1970,7 @@ static struct caam_alg_template driver_algs[] = {
 		.name = "authenc(hmac(sha384),cbc(des))",
 		.driver_name = "authenc-hmac-sha384-cbc-des-caam",
 		.blocksize = DES_BLOCK_SIZE,
+		.type = CRYPTO_ALG_TYPE_AEAD,
 		.template_aead = {
 			.setkey = aead_setkey,
 			.setauthsize = aead_setauthsize,

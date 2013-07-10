@@ -182,9 +182,9 @@ __nf_conntrack_find(struct net *net, u16 zone,
 
 extern int nf_conntrack_hash_check_insert(struct nf_conn *ct);
 extern void nf_ct_delete_from_lists(struct nf_conn *ct);
-extern void nf_ct_insert_dying_list(struct nf_conn *ct);
+extern void nf_ct_dying_timeout(struct nf_conn *ct);
 
-extern void nf_conntrack_flush_report(struct net *net, u32 pid, int report);
+extern void nf_conntrack_flush_report(struct net *net, u32 portid, int report);
 
 extern bool nf_ct_get_tuplepr(const struct sk_buff *skb,
 			      unsigned int nhoff, u_int16_t l3num,

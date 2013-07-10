@@ -34,12 +34,19 @@ typedef struct xfs_trans_reservations {
 	uint	tr_addafork;	/* cvt inode to attributed trans */
 	uint	tr_writeid;	/* write setuid/setgid file */
 	uint	tr_attrinval;	/* attr fork buffer invalidation */
-	uint	tr_attrset;	/* set/create an attribute */
+	uint	tr_attrsetm;	/* set/create an attribute at mount time */
+	uint	tr_attrsetrt;	/* set/create an attribute at runtime */
 	uint	tr_attrrm;	/* remove an attribute */
 	uint	tr_clearagi;	/* clear bad agi unlinked ino bucket */
 	uint	tr_growrtalloc;	/* grow realtime allocations */
 	uint	tr_growrtzero;	/* grow realtime zeroing */
 	uint	tr_growrtfree;	/* grow realtime freeing */
+	uint	tr_qm_sbchange;	/* change quota flags */
+	uint	tr_qm_setqlim;	/* adjust quota limits */
+	uint	tr_qm_dqalloc;	/* allocate quota on disk */
+	uint	tr_qm_quotaoff;	/* turn quota off */
+	uint	tr_qm_equotaoff;/* end of turn quota off */
+	uint	tr_sb;		/* modify superblock */
 } xfs_trans_reservations_t;
 
 #ifndef __KERNEL__
@@ -51,15 +58,8 @@ typedef struct xfs_trans_reservations {
 
 #else /* __KERNEL__ */
 
-#include "xfs_sync.h"
-
 struct xlog;
-struct xfs_mount_args;
 struct xfs_inode;
-struct xfs_bmbt_irec;
-struct xfs_bmap_free;
-struct xfs_extdelta;
-struct xfs_swapext;
 struct xfs_mru_cache;
 struct xfs_nameops;
 struct xfs_ail;
@@ -202,18 +202,20 @@ typedef struct xfs_mount {
 	struct mutex		m_icsb_mutex;	/* balancer sync lock */
 #endif
 	struct xfs_mru_cache	*m_filestream;  /* per-mount filestream data */
-	struct delayed_work	m_sync_work;	/* background sync work */
 	struct delayed_work	m_reclaim_work;	/* background inode reclaim */
-	struct work_struct	m_flush_work;	/* background inode flush */
+	struct delayed_work	m_eofblocks_work; /* background eof blocks
+						     trimming */
 	__int64_t		m_update_flags;	/* sb flags we need to update
 						   on the next remount,rw */
-	struct shrinker		m_inode_shrink;	/* inode reclaim shrinker */
 	int64_t			m_low_space[XFS_LOWSP_MAX];
 						/* low free space thresholds */
 
 	struct workqueue_struct	*m_data_workqueue;
 	struct workqueue_struct	*m_unwritten_workqueue;
 	struct workqueue_struct	*m_cil_workqueue;
+	struct workqueue_struct	*m_reclaim_workqueue;
+	struct workqueue_struct	*m_log_workqueue;
+	struct workqueue_struct *m_eofblocks_workqueue;
 } xfs_mount_t;
 
 /*
@@ -389,10 +391,13 @@ extern void	xfs_set_low_space_thresholds(struct xfs_mount *);
 
 #endif	/* __KERNEL__ */
 
+extern void	xfs_sb_calc_crc(struct xfs_buf	*);
 extern void	xfs_mod_sb(struct xfs_trans *, __int64_t);
 extern int	xfs_initialize_perag(struct xfs_mount *, xfs_agnumber_t,
 					xfs_agnumber_t *);
-extern void	xfs_sb_from_disk(struct xfs_mount *, struct xfs_dsb *);
+extern void	xfs_sb_from_disk(struct xfs_sb *, struct xfs_dsb *);
 extern void	xfs_sb_to_disk(struct xfs_dsb *, struct xfs_sb *, __int64_t);
+
+extern const struct xfs_buf_ops xfs_sb_buf_ops;
 
 #endif	/* __XFS_MOUNT_H__ */

@@ -74,9 +74,8 @@ kallsyms()
 	info KSYM ${2}
 	local kallsymopt;
 
-	if [ -n "${CONFIG_SYMBOL_PREFIX}" ]; then
-		kallsymopt="${kallsymopt} \
-			    --symbol-prefix=${CONFIG_SYMBOL_PREFIX}"
+	if [ -n "${CONFIG_HAVE_UNDERSCORE_SYMBOL_PREFIX}" ]; then
+		kallsymopt="${kallsymopt} --symbol-prefix=_"
 	fi
 
 	if [ -n "${CONFIG_KALLSYMS_ALL}" ]; then
@@ -132,7 +131,14 @@ if [ "$1" = "clean" ]; then
 fi
 
 # We need access to CONFIG_ symbols
-. ./.config
+case "${KCONFIG_CONFIG}" in
+*/*)
+	. "${KCONFIG_CONFIG}"
+	;;
+*)
+	# Force using a file from the current directory
+	. "./${KCONFIG_CONFIG}"
+esac
 
 #link vmlinux.o
 info LD vmlinux.o

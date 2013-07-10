@@ -120,32 +120,31 @@ static const struct iio_chan_spec adis16060_channels[] = {
 		.type = IIO_ANGL_VEL,
 		.modified = 1,
 		.channel2 = IIO_MOD_Z,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.address = ADIS16060_GYRO,
 	}, {
 		.type = IIO_VOLTAGE,
 		.indexed = 1,
 		.channel = 0,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.address = ADIS16060_AIN1,
 	}, {
 		.type = IIO_VOLTAGE,
 		.indexed = 1,
 		.channel = 1,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.address = ADIS16060_AIN2,
 	}, {
 		.type = IIO_TEMP,
 		.indexed = 1,
 		.channel = 0,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-		IIO_CHAN_INFO_OFFSET_SEPARATE_BIT |
-		IIO_CHAN_INFO_SCALE_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+		BIT(IIO_CHAN_INFO_OFFSET) | BIT(IIO_CHAN_INFO_SCALE),
 		.address = ADIS16060_TEMP_OUT,
 	}
 };
 
-static int __devinit adis16060_r_probe(struct spi_device *spi)
+static int adis16060_r_probe(struct spi_device *spi)
 {
 	int ret;
 	struct adis16060_state *st;
@@ -192,7 +191,7 @@ static int adis16060_r_remove(struct spi_device *spi)
 	return 0;
 }
 
-static int __devinit adis16060_w_probe(struct spi_device *spi)
+static int adis16060_w_probe(struct spi_device *spi)
 {
 	int ret;
 	struct iio_dev *indio_dev = adis16060_iio_dev;
@@ -221,7 +220,7 @@ static struct spi_driver adis16060_r_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = adis16060_r_probe,
-	.remove = __devexit_p(adis16060_r_remove),
+	.remove = adis16060_r_remove,
 };
 
 static struct spi_driver adis16060_w_driver = {
@@ -230,7 +229,7 @@ static struct spi_driver adis16060_w_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = adis16060_w_probe,
-	.remove = __devexit_p(adis16060_w_remove),
+	.remove = adis16060_w_remove,
 };
 
 static __init int adis16060_init(void)

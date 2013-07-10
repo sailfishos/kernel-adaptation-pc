@@ -174,8 +174,8 @@ static const struct iio_chan_spec_ext_info ad5624r_ext_info[] = {
 	.indexed = 1, \
 	.output = 1, \
 	.channel = (_chan), \
-	.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT | \
-		     IIO_CHAN_INFO_SCALE_SHARED_BIT, \
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW), \
+	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE), \
 	.address = (_chan), \
 	.scan_type = IIO_ST('u', (_bits), 16, 16 - (_bits)), \
 	.ext_info = ad5624r_ext_info, \
@@ -220,7 +220,7 @@ static const struct ad5624r_chip_info ad5624r_chip_info_tbl[] = {
 	},
 };
 
-static int __devinit ad5624r_probe(struct spi_device *spi)
+static int ad5624r_probe(struct spi_device *spi)
 {
 	struct ad5624r_state *st;
 	struct iio_dev *indio_dev;
@@ -238,7 +238,11 @@ static int __devinit ad5624r_probe(struct spi_device *spi)
 		if (ret)
 			goto error_put_reg;
 
-		voltage_uv = regulator_get_voltage(st->reg);
+		ret = regulator_get_voltage(st->reg);
+		if (ret < 0)
+			goto error_disable_reg;
+
+		voltage_uv = ret;
 	}
 
 	spi_set_drvdata(spi, indio_dev);
@@ -282,7 +286,7 @@ error_ret:
 	return ret;
 }
 
-static int __devexit ad5624r_remove(struct spi_device *spi)
+static int ad5624r_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad5624r_state *st = iio_priv(indio_dev);
@@ -314,7 +318,7 @@ static struct spi_driver ad5624r_driver = {
 		   .owner = THIS_MODULE,
 		   },
 	.probe = ad5624r_probe,
-	.remove = __devexit_p(ad5624r_remove),
+	.remove = ad5624r_remove,
 	.id_table = ad5624r_id,
 };
 module_spi_driver(ad5624r_driver);

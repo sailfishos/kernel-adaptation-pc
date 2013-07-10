@@ -219,7 +219,7 @@ static int gcm_aes_nx_crypt(struct aead_request *req, int enc)
 	if (enc)
 		NX_CPB_FDM(csbcpb) |= NX_FDM_ENDE_ENCRYPT;
 	else
-		nbytes -= AES_BLOCK_SIZE;
+		nbytes -= crypto_aead_authsize(crypto_aead_reqtfm(req));
 
 	csbcpb->cpb.aes_gcm.bit_length_data = nbytes * 8;
 
@@ -316,7 +316,6 @@ struct crypto_alg nx_gcm_aes_alg = {
 	.cra_ctxsize     = sizeof(struct nx_crypto_ctx),
 	.cra_type        = &crypto_aead_type,
 	.cra_module      = THIS_MODULE,
-	.cra_list        = LIST_HEAD_INIT(nx_gcm_aes_alg.cra_list),
 	.cra_init        = nx_crypto_ctx_aes_gcm_init,
 	.cra_exit        = nx_crypto_ctx_exit,
 	.cra_aead = {
@@ -338,7 +337,6 @@ struct crypto_alg nx_gcm4106_aes_alg = {
 	.cra_ctxsize     = sizeof(struct nx_crypto_ctx),
 	.cra_type        = &crypto_nivaead_type,
 	.cra_module      = THIS_MODULE,
-	.cra_list        = LIST_HEAD_INIT(nx_gcm4106_aes_alg.cra_list),
 	.cra_init        = nx_crypto_ctx_aes_gcm_init,
 	.cra_exit        = nx_crypto_ctx_exit,
 	.cra_aead = {

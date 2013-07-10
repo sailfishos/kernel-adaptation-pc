@@ -349,8 +349,8 @@ int apparmor_bprm_set_creds(struct linux_binprm *bprm)
 	unsigned int state;
 	struct file_perms perms = {};
 	struct path_cond cond = {
-		bprm->file->f_path.dentry->d_inode->i_uid,
-		bprm->file->f_path.dentry->d_inode->i_mode
+		file_inode(bprm->file)->i_uid,
+		file_inode(bprm->file)->i_mode
 	};
 	const char *name = NULL, *target = NULL, *info = NULL;
 	int error = cap_bprm_set_creds(bprm);
@@ -721,7 +721,7 @@ audit:
 	if (!permtest)
 		error = aa_audit_file(profile, &perms, GFP_KERNEL,
 				      OP_CHANGE_HAT, AA_MAY_CHANGEHAT, NULL,
-				      target, 0, info, error);
+				      target, GLOBAL_ROOT_UID, info, error);
 
 out:
 	aa_put_profile(hat);
@@ -848,7 +848,7 @@ int aa_change_profile(const char *ns_name, const char *hname, bool onexec,
 audit:
 	if (!permtest)
 		error = aa_audit_file(profile, &perms, GFP_KERNEL, op, request,
-				      name, hname, 0, info, error);
+				      name, hname, GLOBAL_ROOT_UID, info, error);
 
 	aa_put_namespace(ns);
 	aa_put_profile(target);

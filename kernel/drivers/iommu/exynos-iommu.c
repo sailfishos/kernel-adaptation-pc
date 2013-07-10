@@ -511,7 +511,7 @@ int exynos_sysmmu_enable(struct device *dev, unsigned long pgtable)
 	return ret;
 }
 
-bool exynos_sysmmu_disable(struct device *dev)
+static bool exynos_sysmmu_disable(struct device *dev)
 {
 	struct sysmmu_drvdata *data = dev_get_drvdata(dev->archdata.iommu);
 	bool disabled;
@@ -840,8 +840,7 @@ static void exynos_iommu_detach_device(struct iommu_domain *domain,
 	if (__exynos_sysmmu_disable(data)) {
 		dev_dbg(dev, "%s: Detached IOMMU with pgtable %#lx\n",
 					__func__, __pa(priv->pgtable));
-		list_del(&data->node);
-		INIT_LIST_HEAD(&data->node);
+		list_del_init(&data->node);
 
 	} else {
 		dev_dbg(dev, "%s: Detaching IOMMU with pgtable %#lx delayed",
@@ -1028,7 +1027,7 @@ done:
 }
 
 static phys_addr_t exynos_iommu_iova_to_phys(struct iommu_domain *domain,
-					  unsigned long iova)
+					  dma_addr_t iova)
 {
 	struct exynos_iommu_domain *priv = domain->priv;
 	unsigned long *entry;

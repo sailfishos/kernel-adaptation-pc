@@ -66,7 +66,6 @@ static void gfar_gdrvinfo(struct net_device *dev,
 			  struct ethtool_drvinfo *drvinfo);
 
 static const char stat_gstrings[][ETH_GSTRING_LEN] = {
-	"rx-dropped-by-kernel",
 	"rx-large-frame-errors",
 	"rx-short-frame-errors",
 	"rx-non-octet-errors",
@@ -149,20 +148,17 @@ static void gfar_fill_stats(struct net_device *dev, struct ethtool_stats *dummy,
 	int i;
 	struct gfar_private *priv = netdev_priv(dev);
 	struct gfar __iomem *regs = priv->gfargrp[0].regs;
-	u64 *extra = (u64 *) & priv->extra_stats;
+	atomic64_t *extra = (atomic64_t *)&priv->extra_stats;
+
+	for (i = 0; i < GFAR_EXTRA_STATS_LEN; i++)
+		buf[i] = atomic64_read(&extra[i]);
 
 	if (priv->device_flags & FSL_GIANFAR_DEV_HAS_RMON) {
 		u32 __iomem *rmon = (u32 __iomem *) &regs->rmon;
-		struct gfar_stats *stats = (struct gfar_stats *) buf;
 
-		for (i = 0; i < GFAR_RMON_LEN; i++)
-			stats->rmon[i] = (u64) gfar_read(&rmon[i]);
-
-		for (i = 0; i < GFAR_EXTRA_STATS_LEN; i++)
-			stats->extra[i] = extra[i];
-	} else
-		for (i = 0; i < GFAR_EXTRA_STATS_LEN; i++)
-			buf[i] = extra[i];
+		for (; i < GFAR_STATS_LEN; i++, rmon++)
+			buf[i] = (u64) gfar_read(rmon);
+	}
 }
 
 static int gfar_sset_count(struct net_device *dev, int sset)
@@ -184,10 +180,11 @@ static int gfar_sset_count(struct net_device *dev, int sset)
 static void gfar_gdrvinfo(struct net_device *dev,
 			  struct ethtool_drvinfo *drvinfo)
 {
-	strncpy(drvinfo->driver, DRV_NAME, GFAR_INFOSTR_LEN);
-	strncpy(drvinfo->version, gfar_driver_version, GFAR_INFOSTR_LEN);
-	strncpy(drvinfo->fw_version, "N/A", GFAR_INFOSTR_LEN);
-	strncpy(drvinfo->bus_info, "N/A", GFAR_INFOSTR_LEN);
+	strlcpy(drvinfo->driver, DRV_NAME, sizeof(drvinfo->driver));
+	strlcpy(drvinfo->version, gfar_driver_version,
+		sizeof(drvinfo->version));
+	strlcpy(drvinfo->fw_version, "N/A", sizeof(drvinfo->fw_version));
+	strlcpy(drvinfo->bus_info, "N/A", sizeof(drvinfo->bus_info));
 	drvinfo->regdump_len = 0;
 	drvinfo->eedump_len = 0;
 }
@@ -392,14 +389,14 @@ static int gfar_scoalesce(struct net_device *dev,
 
 	/* Check the bounds of the values */
 	if (cvals->rx_coalesce_usecs > GFAR_MAX_COAL_USECS) {
-		pr_info("Coalescing is limited to %d microseconds\n",
-			GFAR_MAX_COAL_USECS);
+		netdev_info(dev, "Coalescing is limited to %d microseconds\n",
+			    GFAR_MAX_COAL_USECS);
 		return -EINVAL;
 	}
 
 	if (cvals->rx_max_coalesced_frames > GFAR_MAX_COAL_FRAMES) {
-		pr_info("Coalescing is limited to %d frames\n",
-			GFAR_MAX_COAL_FRAMES);
+		netdev_info(dev, "Coalescing is limited to %d frames\n",
+			    GFAR_MAX_COAL_FRAMES);
 		return -EINVAL;
 	}
 
@@ -421,14 +418,14 @@ static int gfar_scoalesce(struct net_device *dev,
 
 	/* Check the bounds of the values */
 	if (cvals->tx_coalesce_usecs > GFAR_MAX_COAL_USECS) {
-		pr_info("Coalescing is limited to %d microseconds\n",
-			GFAR_MAX_COAL_USECS);
+		netdev_info(dev, "Coalescing is limited to %d microseconds\n",
+			    GFAR_MAX_COAL_USECS);
 		return -EINVAL;
 	}
 
 	if (cvals->tx_max_coalesced_frames > GFAR_MAX_COAL_FRAMES) {
-		pr_info("Coalescing is limited to %d frames\n",
-			GFAR_MAX_COAL_FRAMES);
+		netdev_info(dev, "Coalescing is limited to %d frames\n",
+			    GFAR_MAX_COAL_FRAMES);
 		return -EINVAL;
 	}
 
@@ -438,7 +435,7 @@ static int gfar_scoalesce(struct net_device *dev,
 			gfar_usecs2ticks(priv, cvals->tx_coalesce_usecs));
 	}
 
-	gfar_configure_coalescing(priv, 0xFF, 0xFF);
+	gfar_configure_coalescing_all(priv);
 
 	return 0;
 }
@@ -545,7 +542,7 @@ int gfar_set_features(struct net_device *dev, netdev_features_t features)
 	int err = 0, i = 0;
 	netdev_features_t changed = dev->features ^ features;
 
-	if (changed & (NETIF_F_HW_VLAN_TX|NETIF_F_HW_VLAN_RX))
+	if (changed & (NETIF_F_HW_VLAN_CTAG_TX|NETIF_F_HW_VLAN_CTAG_RX))
 		gfar_vlan_mode(dev, features);
 
 	if (!(changed & NETIF_F_RXCSUM))
@@ -715,12 +712,11 @@ static int gfar_ethflow_to_filer_table(struct gfar_private *priv, u64 ethflow,
 	int j = MAX_FILER_IDX, l = 0x0;
 	int ret = 1;
 
-	local_rqfpr = kmalloc(sizeof(unsigned int) * (MAX_FILER_IDX + 1),
-			      GFP_KERNEL);
-	local_rqfcr = kmalloc(sizeof(unsigned int) * (MAX_FILER_IDX + 1),
-			      GFP_KERNEL);
+	local_rqfpr = kmalloc_array(MAX_FILER_IDX + 1, sizeof(unsigned int),
+				    GFP_KERNEL);
+	local_rqfcr = kmalloc_array(MAX_FILER_IDX + 1, sizeof(unsigned int),
+				    GFP_KERNEL);
 	if (!local_rqfpr || !local_rqfcr) {
-		pr_err("Out of memory\n");
 		ret = 0;
 		goto err;
 	}
@@ -739,7 +735,8 @@ static int gfar_ethflow_to_filer_table(struct gfar_private *priv, u64 ethflow,
 		cmp_rqfpr = RQFPR_IPV6 |RQFPR_UDP;
 		break;
 	default:
-		pr_err("Right now this class is not supported\n");
+		netdev_err(priv->ndev,
+			   "Right now this class is not supported\n");
 		ret = 0;
 		goto err;
 	}
@@ -755,7 +752,8 @@ static int gfar_ethflow_to_filer_table(struct gfar_private *priv, u64 ethflow,
 	}
 
 	if (i == MAX_FILER_IDX + 1) {
-		pr_err("No parse rule found, can't create hash rules\n");
+		netdev_err(priv->ndev,
+			   "No parse rule found, can't create hash rules\n");
 		ret = 0;
 		goto err;
 	}
@@ -1572,7 +1570,7 @@ static int gfar_process_filer_changes(struct gfar_private *priv)
 	gfar_cluster_filer(tab);
 	gfar_optimize_filer_masks(tab);
 
-	pr_debug("\n\tSummary:\n"
+	pr_debug("\tSummary:\n"
 		 "\tData on hardware: %d\n"
 		 "\tCompression rate: %d%%\n",
 		 tab->index, 100 - (100 * tab->index) / i);

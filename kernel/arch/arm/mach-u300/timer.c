@@ -17,14 +17,17 @@
 #include <linux/io.h>
 #include <linux/clk.h>
 #include <linux/err.h>
+#include <linux/irq.h>
 
 #include <mach/hardware.h>
+#include <mach/irqs.h>
 
 /* Generic stuff */
 #include <asm/sched_clock.h>
 #include <asm/mach/map.h>
 #include <asm/mach/time.h>
-#include <asm/mach/irq.h>
+
+#include "timer.h"
 
 /*
  * APP side special timer registers
@@ -346,7 +349,7 @@ static u32 notrace u300_read_sched_clock(void)
 /*
  * This sets up the system timers, clock source and clock event.
  */
-static void __init u300_timer_init(void)
+void __init u300_timer_init(void)
 {
 	struct clk *clk;
 	unsigned long rate;
@@ -410,11 +413,3 @@ static void __init u300_timer_init(void)
 	 * used by hrtimers!
 	 */
 }
-
-/*
- * Very simple system timer that only register the clock event and
- * clock source.
- */
-struct sys_timer u300_timer = {
-	.init		= u300_timer_init,
-};

@@ -51,15 +51,12 @@
  */
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/dmapool.h>
 #include <linux/dma-mapping.h>
-#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/idr.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
@@ -158,7 +155,7 @@ int hw_port_test_set(struct ci13xxx *ci, u8 mode)
 	if (mode > TEST_MODE_MAX)
 		return -EINVAL;
 
-	hw_write(ci, OP_PORTSC, PORTSC_PTC, mode << ffs_nr(PORTSC_PTC));
+	hw_write(ci, OP_PORTSC, PORTSC_PTC, mode << __ffs(PORTSC_PTC));
 	return 0;
 }
 
@@ -169,7 +166,7 @@ int hw_port_test_set(struct ci13xxx *ci, u8 mode)
  */
 u8 hw_port_test_get(struct ci13xxx *ci)
 {
-	return hw_read(ci, OP_PORTSC, PORTSC_PTC) >> ffs_nr(PORTSC_PTC);
+	return hw_read(ci, OP_PORTSC, PORTSC_PTC) >> __ffs(PORTSC_PTC);
 }
 
 static int hw_device_init(struct ci13xxx *ci, void __iomem *base)
@@ -181,11 +178,11 @@ static int hw_device_init(struct ci13xxx *ci, void __iomem *base)
 
 	ci->hw_bank.cap = ci->hw_bank.abs;
 	ci->hw_bank.cap += ci->platdata->capoffset;
-	ci->hw_bank.op = ci->hw_bank.cap + ioread8(ci->hw_bank.cap);
+	ci->hw_bank.op = ci->hw_bank.cap + (ioread32(ci->hw_bank.cap) & 0xff);
 
 	hw_alloc_regmap(ci, false);
 	reg = hw_read(ci, CAP_HCCPARAMS, HCCPARAMS_LEN) >>
-		ffs_nr(HCCPARAMS_LEN);
+		__ffs(HCCPARAMS_LEN);
 	ci->hw_bank.lpm  = reg;
 	hw_alloc_regmap(ci, !!reg);
 	ci->hw_bank.size = ci->hw_bank.op - ci->hw_bank.abs;
@@ -193,7 +190,7 @@ static int hw_device_init(struct ci13xxx *ci, void __iomem *base)
 	ci->hw_bank.size /= sizeof(u32);
 
 	reg = hw_read(ci, CAP_DCCPARAMS, DCCPARAMS_DEN) >>
-		ffs_nr(DCCPARAMS_DEN);
+		__ffs(DCCPARAMS_DEN);
 	ci->hw_ep_max = reg * 2;   /* cache hw ENDPT_MAX */
 
 	if (ci->hw_ep_max > ENDPT_MAX)
@@ -273,8 +270,6 @@ static void ci_role_work(struct work_struct *work)
 	struct ci13xxx *ci = container_of(work, struct ci13xxx, work);
 	enum ci_role role = ci_otg_role(ci);
 
-	hw_write(ci, OP_OTGSC, OTGSC_IDIS, OTGSC_IDIS);
-
 	if (role != ci->role) {
 		dev_dbg(ci->dev, "switching from %s to %s\n",
 			ci_role(ci)->name, ci->roles[role]->name);
@@ -282,55 +277,30 @@ static void ci_role_work(struct work_struct *work)
 		ci_role_stop(ci);
 		ci_role_start(ci, role);
 	}
+
+	enable_irq(ci->irq);
 }
-
-static ssize_t show_role(struct device *dev, struct device_attribute *attr,
-			 char *buf)
-{
-	struct ci13xxx *ci = dev_get_drvdata(dev);
-
-	return sprintf(buf, "%s\n", ci_role(ci)->name);
-}
-
-static ssize_t store_role(struct device *dev, struct device_attribute *attr,
-			  const char *buf, size_t count)
-{
-	struct ci13xxx *ci = dev_get_drvdata(dev);
-	enum ci_role role;
-	int ret;
-
-	for (role = CI_ROLE_HOST; role < CI_ROLE_END; role++)
-		if (ci->roles[role] && !strcmp(buf, ci->roles[role]->name))
-			break;
-
-	if (role == CI_ROLE_END || role == ci->role)
-		return -EINVAL;
-
-	ci_role_stop(ci);
-	ret = ci_role_start(ci, role);
-	if (ret)
-		return ret;
-
-	return count;
-}
-
-static DEVICE_ATTR(role, S_IRUSR | S_IWUSR, show_role, store_role);
 
 static irqreturn_t ci_irq(int irq, void *data)
 {
 	struct ci13xxx *ci = data;
 	irqreturn_t ret = IRQ_NONE;
+	u32 otgsc = 0;
 
-	if (ci->is_otg) {
-		u32 sts = hw_read(ci, OP_OTGSC, ~0);
+	if (ci->is_otg)
+		otgsc = hw_read(ci, OP_OTGSC, ~0);
 
-		if (sts & OTGSC_IDIS) {
-			queue_work(ci->wq, &ci->work);
-			ret = IRQ_HANDLED;
-		}
+	if (ci->role != CI_ROLE_END)
+		ret = ci_role(ci)->irq(ci);
+
+	if (ci->is_otg && (otgsc & OTGSC_IDIS)) {
+		hw_write(ci, OP_OTGSC, OTGSC_IDIS, OTGSC_IDIS);
+		disable_irq_nosync(ci->irq);
+		queue_work(ci->wq, &ci->work);
+		ret = IRQ_HANDLED;
 	}
 
-	return ci->role == CI_ROLE_END ? ret : ci_role(ci)->irq(ci);
+	return ret;
 }
 
 static DEFINE_IDA(ci_ida);
@@ -381,12 +351,13 @@ EXPORT_SYMBOL_GPL(ci13xxx_add_device);
 
 void ci13xxx_remove_device(struct platform_device *pdev)
 {
+	int id = pdev->id;
 	platform_device_unregister(pdev);
-	ida_simple_remove(&ci_ida, pdev->id);
+	ida_simple_remove(&ci_ida, id);
 }
 EXPORT_SYMBOL_GPL(ci13xxx_remove_device);
 
-static int __devinit ci_hdrc_probe(struct platform_device *pdev)
+static int ci_hdrc_probe(struct platform_device *pdev)
 {
 	struct device	*dev = &pdev->dev;
 	struct ci13xxx	*ci;
@@ -400,16 +371,9 @@ static int __devinit ci_hdrc_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(dev, "missing resource\n");
-		return -ENODEV;
-	}
-
-	base = devm_request_and_ioremap(dev, res);
-	if (!res) {
-		dev_err(dev, "can't request and ioremap resource\n");
-		return -ENOMEM;
-	}
+	base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(base))
+		return PTR_ERR(base);
 
 	ci = devm_kzalloc(dev, sizeof(*ci), GFP_KERNEL);
 	if (!ci) {
@@ -462,6 +426,8 @@ static int __devinit ci_hdrc_probe(struct platform_device *pdev)
 
 	if (ci->roles[CI_ROLE_HOST] && ci->roles[CI_ROLE_GADGET]) {
 		ci->is_otg = true;
+		/* ID pin needs 1ms debouce time, we delay 2ms for safe */
+		mdelay(2);
 		ci->role = ci_otg_role(ci);
 	} else {
 		ci->role = ci->roles[CI_ROLE_HOST]
@@ -482,17 +448,14 @@ static int __devinit ci_hdrc_probe(struct platform_device *pdev)
 	if (ret)
 		goto stop;
 
-	ret = device_create_file(dev, &dev_attr_role);
-	if (ret)
-		goto rm_attr;
-
 	if (ci->is_otg)
 		hw_write(ci, OP_OTGSC, OTGSC_IDIE, OTGSC_IDIE);
 
-	return ret;
+	ret = dbg_create_files(ci);
+	if (!ret)
+		return 0;
 
-rm_attr:
-	device_remove_file(dev, &dev_attr_role);
+	free_irq(ci->irq, ci);
 stop:
 	ci_role_stop(ci);
 rm_wq:
@@ -502,13 +465,13 @@ rm_wq:
 	return ret;
 }
 
-static int __devexit ci_hdrc_remove(struct platform_device *pdev)
+static int ci_hdrc_remove(struct platform_device *pdev)
 {
 	struct ci13xxx *ci = platform_get_drvdata(pdev);
 
+	dbg_remove_files(ci);
 	flush_workqueue(ci->wq);
 	destroy_workqueue(ci->wq);
-	device_remove_file(ci->dev, &dev_attr_role);
 	free_irq(ci->irq, ci);
 	ci_role_stop(ci);
 
@@ -517,7 +480,7 @@ static int __devexit ci_hdrc_remove(struct platform_device *pdev)
 
 static struct platform_driver ci_hdrc_driver = {
 	.probe	= ci_hdrc_probe,
-	.remove	= __devexit_p(ci_hdrc_remove),
+	.remove	= ci_hdrc_remove,
 	.driver	= {
 		.name	= "ci_hdrc",
 	},

@@ -54,25 +54,17 @@ static int pcm3730_attach(struct comedi_device *dev,
 			  struct comedi_devconfig *it)
 {
 	struct comedi_subdevice *s;
-	unsigned long iobase;
 	int ret;
 
-	iobase = it->options[0];
-	printk(KERN_INFO "comedi%d: pcm3730: 0x%04lx ", dev->minor, iobase);
-	if (!request_region(iobase, PCM3730_SIZE, "pcm3730")) {
-		printk("I/O port conflict\n");
-		return -EIO;
-	}
-	dev->iobase = iobase;
-	dev->board_name = "pcm3730";
-	dev->iobase = dev->iobase;
-	dev->irq = 0;
+	ret = comedi_request_region(dev, it->options[0], PCM3730_SIZE);
+	if (ret)
+		return ret;
 
 	ret = comedi_alloc_subdevices(dev, 6);
 	if (ret)
 		return ret;
 
-	s = dev->subdevices + 0;
+	s = &dev->subdevices[0];
 	s->type = COMEDI_SUBD_DO;
 	s->subdev_flags = SDF_WRITABLE;
 	s->maxdata = 1;
@@ -81,7 +73,7 @@ static int pcm3730_attach(struct comedi_device *dev,
 	s->range_table = &range_digital;
 	s->private = (void *)PCM3730_DOA;
 
-	s = dev->subdevices + 1;
+	s = &dev->subdevices[1];
 	s->type = COMEDI_SUBD_DO;
 	s->subdev_flags = SDF_WRITABLE;
 	s->maxdata = 1;
@@ -90,7 +82,7 @@ static int pcm3730_attach(struct comedi_device *dev,
 	s->range_table = &range_digital;
 	s->private = (void *)PCM3730_DOB;
 
-	s = dev->subdevices + 2;
+	s = &dev->subdevices[2];
 	s->type = COMEDI_SUBD_DO;
 	s->subdev_flags = SDF_WRITABLE;
 	s->maxdata = 1;
@@ -99,7 +91,7 @@ static int pcm3730_attach(struct comedi_device *dev,
 	s->range_table = &range_digital;
 	s->private = (void *)PCM3730_DOC;
 
-	s = dev->subdevices + 3;
+	s = &dev->subdevices[3];
 	s->type = COMEDI_SUBD_DI;
 	s->subdev_flags = SDF_READABLE;
 	s->maxdata = 1;
@@ -108,7 +100,7 @@ static int pcm3730_attach(struct comedi_device *dev,
 	s->range_table = &range_digital;
 	s->private = (void *)PCM3730_DIA;
 
-	s = dev->subdevices + 4;
+	s = &dev->subdevices[4];
 	s->type = COMEDI_SUBD_DI;
 	s->subdev_flags = SDF_READABLE;
 	s->maxdata = 1;
@@ -117,7 +109,7 @@ static int pcm3730_attach(struct comedi_device *dev,
 	s->range_table = &range_digital;
 	s->private = (void *)PCM3730_DIB;
 
-	s = dev->subdevices + 5;
+	s = &dev->subdevices[5];
 	s->type = COMEDI_SUBD_DI;
 	s->subdev_flags = SDF_READABLE;
 	s->maxdata = 1;
@@ -131,17 +123,11 @@ static int pcm3730_attach(struct comedi_device *dev,
 	return 0;
 }
 
-static void pcm3730_detach(struct comedi_device *dev)
-{
-	if (dev->iobase)
-		release_region(dev->iobase, PCM3730_SIZE);
-}
-
 static struct comedi_driver pcm3730_driver = {
 	.driver_name	= "pcm3730",
 	.module		= THIS_MODULE,
 	.attach		= pcm3730_attach,
-	.detach		= pcm3730_detach,
+	.detach		= comedi_legacy_detach,
 };
 module_comedi_driver(pcm3730_driver);
 

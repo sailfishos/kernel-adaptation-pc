@@ -129,7 +129,7 @@ void tipc_disc_recv_msg(struct sk_buff *buf, struct tipc_bearer *b_ptr)
 	int link_fully_up;
 
 	media_addr.broadcast = 1;
-	b_ptr->media->msg2addr(&media_addr, msg_media_addr(msg));
+	b_ptr->media->msg2addr(b_ptr, &media_addr, msg_media_addr(msg));
 	kfree_skb(buf);
 
 	/* Ensure message from node is valid and communication is permitted */
@@ -243,7 +243,7 @@ void tipc_disc_recv_msg(struct sk_buff *buf, struct tipc_bearer *b_ptr)
 	if ((type == DSC_REQ_MSG) && !link_fully_up && !b_ptr->blocked) {
 		rbuf = tipc_disc_init_msg(DSC_RESP_MSG, orig, b_ptr);
 		if (rbuf) {
-			b_ptr->media->send_msg(rbuf, b_ptr, &media_addr);
+			tipc_bearer_send(b_ptr, rbuf, &media_addr);
 			kfree_skb(rbuf);
 		}
 	}

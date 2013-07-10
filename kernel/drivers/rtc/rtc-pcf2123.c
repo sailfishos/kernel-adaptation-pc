@@ -219,14 +219,15 @@ static const struct rtc_class_ops pcf2123_rtc_ops = {
 	.set_time	= pcf2123_rtc_set_time,
 };
 
-static int __devinit pcf2123_probe(struct spi_device *spi)
+static int pcf2123_probe(struct spi_device *spi)
 {
 	struct rtc_device *rtc;
 	struct pcf2123_plat_data *pdata;
 	u8 txbuf[2], rxbuf[2];
 	int ret, i;
 
-	pdata = kzalloc(sizeof(struct pcf2123_plat_data), GFP_KERNEL);
+	pdata = devm_kzalloc(&spi->dev, sizeof(struct pcf2123_plat_data),
+				GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 	spi->dev.platform_data = pdata;
@@ -265,6 +266,7 @@ static int __devinit pcf2123_probe(struct spi_device *spi)
 
 	if (!(rxbuf[0] & 0x20)) {
 		dev_err(&spi->dev, "chip not found\n");
+		ret = -ENODEV;
 		goto kfree_exit;
 	}
 
@@ -281,7 +283,7 @@ static int __devinit pcf2123_probe(struct spi_device *spi)
 	pcf2123_delay_trec();
 
 	/* Finalize the initialization */
-	rtc = rtc_device_register(pcf2123_driver.driver.name, &spi->dev,
+	rtc = devm_rtc_device_register(&spi->dev, pcf2123_driver.driver.name,
 			&pcf2123_rtc_ops, THIS_MODULE);
 
 	if (IS_ERR(rtc)) {
@@ -314,26 +316,20 @@ sysfs_exit:
 		device_remove_file(&spi->dev, &pdata->regs[i].attr);
 
 kfree_exit:
-	kfree(pdata);
 	spi->dev.platform_data = NULL;
 	return ret;
 }
 
-static int __devexit pcf2123_remove(struct spi_device *spi)
+static int pcf2123_remove(struct spi_device *spi)
 {
 	struct pcf2123_plat_data *pdata = spi->dev.platform_data;
 	int i;
 
 	if (pdata) {
-		struct rtc_device *rtc = pdata->rtc;
-
-		if (rtc)
-			rtc_device_unregister(rtc);
 		for (i = 0; i < 16; i++)
 			if (pdata->regs[i].name[0])
 				device_remove_file(&spi->dev,
 						   &pdata->regs[i].attr);
-		kfree(pdata);
 	}
 
 	return 0;
@@ -345,7 +341,7 @@ static struct spi_driver pcf2123_driver = {
 			.owner	= THIS_MODULE,
 	},
 	.probe	= pcf2123_probe,
-	.remove	= __devexit_p(pcf2123_remove),
+	.remove	= pcf2123_remove,
 };
 
 module_spi_driver(pcf2123_driver);

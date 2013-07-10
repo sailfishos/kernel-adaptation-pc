@@ -114,7 +114,6 @@ static struct sclp_register sclp_vt220_register = {
 static void
 sclp_vt220_process_queue(struct sclp_vt220_request *request)
 {
-	struct tty_struct *tty;
 	unsigned long flags;
 	void *page;
 
@@ -139,12 +138,7 @@ sclp_vt220_process_queue(struct sclp_vt220_request *request)
 	} while (__sclp_vt220_emit(request));
 	if (request == NULL && sclp_vt220_flush_later)
 		sclp_vt220_emit_current();
-	/* Check if the tty needs a wake up call */
-	tty = tty_port_tty_get(&sclp_vt220_port);
-	if (tty) {
-		tty_wakeup(tty);
-		tty_kref_put(tty);
-	}
+	tty_port_tty_wakeup(&sclp_vt220_port);
 }
 
 #define SCLP_BUFFER_MAX_RETRY		1
@@ -461,13 +455,8 @@ sclp_vt220_write(struct tty_struct *tty, const unsigned char *buf, int count)
 static void
 sclp_vt220_receiver_fn(struct evbuf_header *evbuf)
 {
-	struct tty_struct *tty = tty_port_tty_get(&sclp_vt220_port);
 	char *buffer;
 	unsigned int count;
-
-	/* Ignore input if device is not open */
-	if (tty == NULL)
-		return;
 
 	buffer = (char *) ((addr_t) evbuf + sizeof(struct evbuf_header));
 	count = evbuf->length - sizeof(struct evbuf_header);
@@ -480,11 +469,10 @@ sclp_vt220_receiver_fn(struct evbuf_header *evbuf)
 		/* Send input to line discipline */
 		buffer++;
 		count--;
-		tty_insert_flip_string(tty, buffer, count);
-		tty_flip_buffer_push(tty);
+		tty_insert_flip_string(&sclp_vt220_port, buffer, count);
+		tty_flip_buffer_push(&sclp_vt220_port);
 		break;
 	}
-	tty_kref_put(tty);
 }
 
 /*
@@ -495,7 +483,7 @@ sclp_vt220_open(struct tty_struct *tty, struct file *filp)
 {
 	if (tty->count == 1) {
 		tty_port_tty_set(&sclp_vt220_port, tty);
-		tty->low_latency = 0;
+		sclp_vt220_port.low_latency = 0;
 		if (!tty->winsize.ws_row && !tty->winsize.ws_col) {
 			tty->winsize.ws_row = 24;
 			tty->winsize.ws_col = 80;
@@ -615,6 +603,7 @@ static void __init __sclp_vt220_cleanup(void)
 		return;
 	sclp_unregister(&sclp_vt220_register);
 	__sclp_vt220_free_pages();
+	tty_port_destroy(&sclp_vt220_port);
 }
 
 /* Allocate buffer pages and register with sclp core. Controlled by init
@@ -650,6 +639,7 @@ out:
 	if (rc) {
 		__sclp_vt220_free_pages();
 		sclp_vt220_init_count--;
+		tty_port_destroy(&sclp_vt220_port);
 	}
 	return rc;
 }
@@ -691,6 +681,7 @@ static int __init sclp_vt220_tty_init(void)
 	driver->init_termios = tty_std_termios;
 	driver->flags = TTY_DRIVER_REAL_RAW;
 	tty_set_operations(driver, &sclp_vt220_ops);
+	tty_port_link_device(&sclp_vt220_port, driver, 0);
 
 	rc = tty_register_driver(driver);
 	if (rc)

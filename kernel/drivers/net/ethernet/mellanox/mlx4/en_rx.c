@@ -35,6 +35,7 @@
 #include <linux/slab.h>
 #include <linux/mlx4/qp.h>
 #include <linux/skbuff.h>
+#include <linux/rculist.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
 #include <linux/vmalloc.h>
@@ -319,6 +320,8 @@ int mlx4_en_create_rx_ring(struct mlx4_en_priv *priv,
 	}
 	ring->buf = ring->wqres.buf.direct.buf;
 
+	ring->hwtstamp_rx_filter = priv->hwtstamp_config.rx_filter;
+
 	return 0;
 
 err_hwq:
@@ -553,6 +556,7 @@ static void mlx4_en_refill_rx_buffers(struct mlx4_en_priv *priv,
 int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int budget)
 {
 	struct mlx4_en_priv *priv = netdev_priv(dev);
+	struct mlx4_en_dev *mdev = priv->mdev;
 	struct mlx4_cqe *cqe;
 	struct mlx4_en_rx_ring *ring = &priv->rx_ring[cq->ring];
 	struct mlx4_en_rx_alloc *frags;
@@ -563,9 +567,8 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 	unsigned int length;
 	int polled = 0;
 	int ip_summed;
-	struct ethhdr *ethh;
-	dma_addr_t dma;
-	u64 s_mac;
+	int factor = priv->cqe_factor;
+	u64 timestamp;
 
 	if (!priv->port_up)
 		return 0;
@@ -574,7 +577,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 	 * descriptor offset can be deduced from the CQE index instead of
 	 * reading 'cqe->index' */
 	index = cq->mcq.cons_index & ring->size_mask;
-	cqe = &cq->buf[index];
+	cqe = &cq->buf[(index << factor) + factor];
 
 	/* Process all completed CQEs */
 	while (XNOR(cqe->owner_sr_opcode & MLX4_CQE_OWNER_MASK,
@@ -602,21 +605,40 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 			goto next;
 		}
 
-		/* Get pointer to first fragment since we haven't skb yet and
-		 * cast it to ethhdr struct */
-		dma = be64_to_cpu(rx_desc->data[0].addr);
-		dma_sync_single_for_cpu(priv->ddev, dma, sizeof(*ethh),
-					DMA_FROM_DEVICE);
-		ethh = (struct ethhdr *)(page_address(frags[0].page) +
-					 frags[0].offset);
-		s_mac = mlx4_en_mac_to_u64(ethh->h_source);
+		/* Check if we need to drop the packet if SRIOV is not enabled
+		 * and not performing the selftest or flb disabled
+		 */
+		if (priv->flags & MLX4_EN_FLAG_RX_FILTER_NEEDED) {
+			struct ethhdr *ethh;
+			dma_addr_t dma;
+			/* Get pointer to first fragment since we haven't
+			 * skb yet and cast it to ethhdr struct
+			 */
+			dma = be64_to_cpu(rx_desc->data[0].addr);
+			dma_sync_single_for_cpu(priv->ddev, dma, sizeof(*ethh),
+						DMA_FROM_DEVICE);
+			ethh = (struct ethhdr *)(page_address(frags[0].page) +
+						 frags[0].offset);
 
-		/* If source MAC is equal to our own MAC and not performing
-		 * the selftest or flb disabled - drop the packet */
-		if (s_mac == priv->mac &&
-		    !((dev->features & NETIF_F_LOOPBACK) ||
-		      priv->validate_loopback))
-			goto next;
+			if (is_multicast_ether_addr(ethh->h_dest)) {
+				struct mlx4_mac_entry *entry;
+				struct hlist_head *bucket;
+				unsigned int mac_hash;
+
+				/* Drop the packet, since HW loopback-ed it */
+				mac_hash = ethh->h_source[MLX4_EN_MAC_HASH_IDX];
+				bucket = &priv->mac_hash[mac_hash];
+				rcu_read_lock();
+				hlist_for_each_entry_rcu(entry, bucket, hlist) {
+					if (ether_addr_equal_64bits(entry->mac,
+								    ethh->h_source)) {
+						rcu_read_unlock();
+						goto next;
+					}
+				}
+				rcu_read_unlock();
+			}
+		}
 
 		/*
 		 * Packet is OK - process it.
@@ -630,7 +652,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 			if ((cqe->status & cpu_to_be16(MLX4_CQE_STATUS_IPOK)) &&
 			    (cqe->checksum == cpu_to_be16(0xffff))) {
 				ring->csum_ok++;
-				/* This packet is eligible for LRO if it is:
+				/* This packet is eligible for GRO if it is:
 				 * - DIX Ethernet (type interpretation)
 				 * - TCP/IP (v4)
 				 * - without IP options
@@ -651,23 +673,31 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 					gro_skb->data_len = length;
 					gro_skb->ip_summed = CHECKSUM_UNNECESSARY;
 
-					if (cqe->vlan_my_qpn &
-					    cpu_to_be32(MLX4_CQE_VLAN_PRESENT_MASK)) {
+					if ((cqe->vlan_my_qpn &
+					    cpu_to_be32(MLX4_CQE_VLAN_PRESENT_MASK)) &&
+					    (dev->features & NETIF_F_HW_VLAN_CTAG_RX)) {
 						u16 vid = be16_to_cpu(cqe->sl_vid);
 
-						__vlan_hwaccel_put_tag(gro_skb, vid);
+						__vlan_hwaccel_put_tag(gro_skb, htons(ETH_P_8021Q), vid);
 					}
 
 					if (dev->features & NETIF_F_RXHASH)
 						gro_skb->rxhash = be32_to_cpu(cqe->immed_rss_invalid);
 
 					skb_record_rx_queue(gro_skb, cq->ring);
-					napi_gro_frags(&cq->napi);
 
+					if (ring->hwtstamp_rx_filter == HWTSTAMP_FILTER_ALL) {
+						timestamp = mlx4_en_get_cqe_ts(cqe);
+						mlx4_en_fill_hwtstamps(mdev,
+								       skb_hwtstamps(gro_skb),
+								       timestamp);
+					}
+
+					napi_gro_frags(&cq->napi);
 					goto next;
 				}
 
-				/* LRO not possible, complete processing here */
+				/* GRO not possible, complete processing here */
 				ip_summed = CHECKSUM_UNNECESSARY;
 			} else {
 				ip_summed = CHECKSUM_NONE;
@@ -696,9 +726,16 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		if (dev->features & NETIF_F_RXHASH)
 			skb->rxhash = be32_to_cpu(cqe->immed_rss_invalid);
 
-		if (be32_to_cpu(cqe->vlan_my_qpn) &
-		    MLX4_CQE_VLAN_PRESENT_MASK)
-			__vlan_hwaccel_put_tag(skb, be16_to_cpu(cqe->sl_vid));
+		if ((be32_to_cpu(cqe->vlan_my_qpn) &
+		    MLX4_CQE_VLAN_PRESENT_MASK) &&
+		    (dev->features & NETIF_F_HW_VLAN_CTAG_RX))
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), be16_to_cpu(cqe->sl_vid));
+
+		if (ring->hwtstamp_rx_filter == HWTSTAMP_FILTER_ALL) {
+			timestamp = mlx4_en_get_cqe_ts(cqe);
+			mlx4_en_fill_hwtstamps(mdev, skb_hwtstamps(skb),
+					       timestamp);
+		}
 
 		/* Push it up the stack */
 		netif_receive_skb(skb);
@@ -709,12 +746,9 @@ next:
 
 		++cq->mcq.cons_index;
 		index = (cq->mcq.cons_index) & ring->size_mask;
-		cqe = &cq->buf[index];
-		if (++polled == budget) {
-			/* We are here because we reached the NAPI budget -
-			 * flush only pending LRO sessions */
+		cqe = &cq->buf[(index << factor) + factor];
+		if (++polled == budget)
 			goto out;
-		}
 	}
 
 out:
@@ -837,11 +871,9 @@ static int mlx4_en_config_rss_qp(struct mlx4_en_priv *priv, int qpn,
 	struct mlx4_qp_context *context;
 	int err = 0;
 
-	context = kmalloc(sizeof *context , GFP_KERNEL);
-	if (!context) {
-		en_err(priv, "Failed to allocate qp context\n");
+	context = kmalloc(sizeof(*context), GFP_KERNEL);
+	if (!context)
 		return -ENOMEM;
-	}
 
 	err = mlx4_qp_alloc(mdev->dev, qpn, qp);
 	if (err) {

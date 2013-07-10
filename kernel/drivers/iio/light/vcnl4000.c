@@ -93,11 +93,11 @@ static int vcnl4000_measure(struct vcnl4000_data *data, u8 req_mask,
 static const struct iio_chan_spec vcnl4000_channels[] = {
 	{
 		.type = IIO_LIGHT,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			IIO_CHAN_INFO_SCALE_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+			BIT(IIO_CHAN_INFO_SCALE),
 	}, {
 		.type = IIO_PROXIMITY,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 	}
 };
 
@@ -150,8 +150,8 @@ static const struct iio_info vcnl4000_info = {
 	.driver_module = THIS_MODULE,
 };
 
-static int __devinit vcnl4000_probe(struct i2c_client *client,
-					const struct i2c_device_id *id)
+static int vcnl4000_probe(struct i2c_client *client,
+			  const struct i2c_device_id *id)
 {
 	struct vcnl4000_data *data;
 	struct iio_dev *indio_dev;
@@ -190,7 +190,7 @@ error_free_dev:
 	return ret;
 }
 
-static int __devexit vcnl4000_remove(struct i2c_client *client)
+static int vcnl4000_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 
@@ -206,7 +206,7 @@ static struct i2c_driver vcnl4000_driver = {
 		.owner  = THIS_MODULE,
 	},
 	.probe  = vcnl4000_probe,
-	.remove = __devexit_p(vcnl4000_remove),
+	.remove = vcnl4000_remove,
 	.id_table = vcnl4000_id,
 };
 

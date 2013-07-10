@@ -24,6 +24,7 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/of_dma.h>
 
 #include "at_hdmac_regs.h"
 #include "dmaengine.h"
@@ -168,9 +169,9 @@ static void atc_desc_put(struct at_dma_chan *atchan, struct at_desc *desc)
 }
 
 /**
- * atc_desc_chain - build chain adding a descripor
- * @first: address of first descripor of the chain
- * @prev: address of previous descripor of the chain
+ * atc_desc_chain - build chain adding a descriptor
+ * @first: address of first descriptor of the chain
+ * @prev: address of previous descriptor of the chain
  * @desc: descriptor to queue
  *
  * Called from prep_* functions
@@ -310,8 +311,6 @@ static void atc_complete_all(struct at_dma_chan *atchan)
 
 	dev_vdbg(chan2dev(&atchan->chan_common), "complete all\n");
 
-	BUG_ON(atc_chan_is_enabled(atchan));
-
 	/*
 	 * Submit queued descriptors ASAP, i.e. before we go through
 	 * the completed ones.
@@ -367,6 +366,9 @@ static void atc_cleanup_descriptors(struct at_dma_chan *atchan)
 static void atc_advance_work(struct at_dma_chan *atchan)
 {
 	dev_vdbg(chan2dev(&atchan->chan_common), "advance_work\n");
+
+	if (atc_chan_is_enabled(atchan))
+		return;
 
 	if (list_empty(&atchan->active_list) ||
 	    list_is_singular(&atchan->active_list)) {
@@ -676,7 +678,7 @@ atc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 		ctrlb |=  ATC_DST_ADDR_MODE_FIXED
 			| ATC_SRC_ADDR_MODE_INCR
 			| ATC_FC_MEM2PER
-			| ATC_SIF(AT_DMA_MEM_IF) | ATC_DIF(AT_DMA_PER_IF);
+			| ATC_SIF(atchan->mem_if) | ATC_DIF(atchan->per_if);
 		reg = sconfig->dst_addr;
 		for_each_sg(sgl, sg, sg_len, i) {
 			struct at_desc	*desc;
@@ -715,7 +717,7 @@ atc_prep_slave_sg(struct dma_chan *chan, struct scatterlist *sgl,
 		ctrlb |=  ATC_DST_ADDR_MODE_INCR
 			| ATC_SRC_ADDR_MODE_FIXED
 			| ATC_FC_PER2MEM
-			| ATC_SIF(AT_DMA_PER_IF) | ATC_DIF(AT_DMA_MEM_IF);
+			| ATC_SIF(atchan->per_if) | ATC_DIF(atchan->mem_if);
 
 		reg = sconfig->src_addr;
 		for_each_sg(sgl, sg, sg_len, i) {
@@ -778,15 +780,13 @@ err:
  */
 static int
 atc_dma_cyclic_check_values(unsigned int reg_width, dma_addr_t buf_addr,
-		size_t period_len, enum dma_transfer_direction direction)
+		size_t period_len)
 {
 	if (period_len > (ATC_BTSIZE_MAX << reg_width))
 		goto err_out;
 	if (unlikely(period_len & ((1 << reg_width) - 1)))
 		goto err_out;
 	if (unlikely(buf_addr & ((1 << reg_width) - 1)))
-		goto err_out;
-	if (unlikely(!(direction & (DMA_DEV_TO_MEM | DMA_MEM_TO_DEV))))
 		goto err_out;
 
 	return 0;
@@ -796,7 +796,7 @@ err_out:
 }
 
 /**
- * atc_dma_cyclic_fill_desc - Fill one period decriptor
+ * atc_dma_cyclic_fill_desc - Fill one period descriptor
  */
 static int
 atc_dma_cyclic_fill_desc(struct dma_chan *chan, struct at_desc *desc,
@@ -823,8 +823,8 @@ atc_dma_cyclic_fill_desc(struct dma_chan *chan, struct at_desc *desc,
 		desc->lli.ctrlb = ATC_DST_ADDR_MODE_FIXED
 				| ATC_SRC_ADDR_MODE_INCR
 				| ATC_FC_MEM2PER
-				| ATC_SIF(AT_DMA_MEM_IF)
-				| ATC_DIF(AT_DMA_PER_IF);
+				| ATC_SIF(atchan->mem_if)
+				| ATC_DIF(atchan->per_if);
 		break;
 
 	case DMA_DEV_TO_MEM:
@@ -834,8 +834,8 @@ atc_dma_cyclic_fill_desc(struct dma_chan *chan, struct at_desc *desc,
 		desc->lli.ctrlb = ATC_DST_ADDR_MODE_INCR
 				| ATC_SRC_ADDR_MODE_FIXED
 				| ATC_FC_PER2MEM
-				| ATC_SIF(AT_DMA_PER_IF)
-				| ATC_DIF(AT_DMA_MEM_IF);
+				| ATC_SIF(atchan->per_if)
+				| ATC_DIF(atchan->mem_if);
 		break;
 
 	default:
@@ -852,12 +852,13 @@ atc_dma_cyclic_fill_desc(struct dma_chan *chan, struct at_desc *desc,
  * @buf_len: total number of bytes for the entire buffer
  * @period_len: number of bytes for each period
  * @direction: transfer direction, to or from device
+ * @flags: tx descriptor status flags
  * @context: transfer context (ignored)
  */
 static struct dma_async_tx_descriptor *
 atc_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t buf_addr, size_t buf_len,
 		size_t period_len, enum dma_transfer_direction direction,
-		void *context)
+		unsigned long flags, void *context)
 {
 	struct at_dma_chan	*atchan = to_at_dma_chan(chan);
 	struct at_dma_slave	*atslave = chan->private;
@@ -885,14 +886,16 @@ atc_prep_dma_cyclic(struct dma_chan *chan, dma_addr_t buf_addr, size_t buf_len,
 		return NULL;
 	}
 
+	if (unlikely(!is_slave_direction(direction)))
+		goto err_out;
+
 	if (sconfig->direction == DMA_MEM_TO_DEV)
 		reg_width = convert_buswidth(sconfig->dst_addr_width);
 	else
 		reg_width = convert_buswidth(sconfig->src_addr_width);
 
 	/* Check for too big/unaligned periods and unaligned DMA buffer */
-	if (atc_dma_cyclic_check_values(reg_width, buf_addr,
-					period_len, direction))
+	if (atc_dma_cyclic_check_values(reg_width, buf_addr, period_len))
 		goto err_out;
 
 	/* build cyclic linked list */
@@ -1077,9 +1080,7 @@ static void atc_issue_pending(struct dma_chan *chan)
 		return;
 
 	spin_lock_irqsave(&atchan->lock, flags);
-	if (!atc_chan_is_enabled(atchan)) {
-		atc_advance_work(atchan);
-	}
+	atc_advance_work(atchan);
 	spin_unlock_irqrestore(&atchan->lock, flags);
 }
 
@@ -1188,6 +1189,67 @@ static void atc_free_chan_resources(struct dma_chan *chan)
 	dev_vdbg(chan2dev(chan), "free_chan_resources: done\n");
 }
 
+#ifdef CONFIG_OF
+static bool at_dma_filter(struct dma_chan *chan, void *slave)
+{
+	struct at_dma_slave *atslave = slave;
+
+	if (atslave->dma_dev == chan->device->dev) {
+		chan->private = atslave;
+		return true;
+	} else {
+		return false;
+	}
+}
+
+static struct dma_chan *at_dma_xlate(struct of_phandle_args *dma_spec,
+				     struct of_dma *of_dma)
+{
+	struct dma_chan *chan;
+	struct at_dma_chan *atchan;
+	struct at_dma_slave *atslave;
+	dma_cap_mask_t mask;
+	unsigned int per_id;
+	struct platform_device *dmac_pdev;
+
+	if (dma_spec->args_count != 2)
+		return NULL;
+
+	dmac_pdev = of_find_device_by_node(dma_spec->np);
+
+	dma_cap_zero(mask);
+	dma_cap_set(DMA_SLAVE, mask);
+
+	atslave = devm_kzalloc(&dmac_pdev->dev, sizeof(*atslave), GFP_KERNEL);
+	if (!atslave)
+		return NULL;
+	/*
+	 * We can fill both SRC_PER and DST_PER, one of these fields will be
+	 * ignored depending on DMA transfer direction.
+	 */
+	per_id = dma_spec->args[1];
+	atslave->cfg = ATC_FIFOCFG_HALFFIFO | ATC_DST_H2SEL_HW
+		      | ATC_SRC_H2SEL_HW | ATC_DST_PER(per_id)
+		      | ATC_SRC_PER(per_id);
+	atslave->dma_dev = &dmac_pdev->dev;
+
+	chan = dma_request_channel(mask, at_dma_filter, atslave);
+	if (!chan)
+		return NULL;
+
+	atchan = to_at_dma_chan(chan);
+	atchan->per_if = dma_spec->args[0] & 0xff;
+	atchan->mem_if = (dma_spec->args[0] >> 16) & 0xff;
+
+	return chan;
+}
+#else
+static struct dma_chan *at_dma_xlate(struct of_phandle_args *dma_spec,
+				     struct of_dma *of_dma)
+{
+	return NULL;
+}
+#endif
 
 /*--  Module Management  -----------------------------------------------*/
 
@@ -1342,6 +1404,8 @@ static int __init at_dma_probe(struct platform_device *pdev)
 	for (i = 0; i < plat_dat->nr_channels; i++) {
 		struct at_dma_chan	*atchan = &atdma->chan[i];
 
+		atchan->mem_if = AT_DMA_MEM_IF;
+		atchan->per_if = AT_DMA_PER_IF;
 		atchan->chan_common.device = &atdma->dma_common;
 		dma_cookie_init(&atchan->chan_common);
 		list_add_tail(&atchan->chan_common.device_node,
@@ -1388,8 +1452,25 @@ static int __init at_dma_probe(struct platform_device *pdev)
 
 	dma_async_device_register(&atdma->dma_common);
 
+	/*
+	 * Do not return an error if the dmac node is not present in order to
+	 * not break the existing way of requesting channel with
+	 * dma_request_channel().
+	 */
+	if (pdev->dev.of_node) {
+		err = of_dma_controller_register(pdev->dev.of_node,
+						 at_dma_xlate, atdma);
+		if (err) {
+			dev_err(&pdev->dev, "could not register of_dma_controller\n");
+			goto err_of_dma_controller_register;
+		}
+	}
+
 	return 0;
 
+err_of_dma_controller_register:
+	dma_async_device_unregister(&atdma->dma_common);
+	dma_pool_destroy(atdma->dma_desc_pool);
 err_pool_create:
 	platform_set_drvdata(pdev, NULL);
 	free_irq(platform_get_irq(pdev, 0), atdma);
@@ -1406,7 +1487,7 @@ err_kfree:
 	return err;
 }
 
-static int __exit at_dma_remove(struct platform_device *pdev)
+static int at_dma_remove(struct platform_device *pdev)
 {
 	struct at_dma		*atdma = platform_get_drvdata(pdev);
 	struct dma_chan		*chan, *_chan;
@@ -1564,7 +1645,7 @@ static const struct dev_pm_ops at_dma_dev_pm_ops = {
 };
 
 static struct platform_driver at_dma_driver = {
-	.remove		= __exit_p(at_dma_remove),
+	.remove		= at_dma_remove,
 	.shutdown	= at_dma_shutdown,
 	.id_table	= atdma_devtypes,
 	.driver = {

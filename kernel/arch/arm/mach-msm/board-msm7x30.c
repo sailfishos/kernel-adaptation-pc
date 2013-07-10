@@ -38,8 +38,7 @@
 #include "devices.h"
 #include "gpiomux.h"
 #include "proc_comm.h"
-
-extern struct sys_timer msm_timer;
+#include "common.h"
 
 static void __init msm7x30_fixup(struct tag *tag, char **cmdline,
 		struct meminfo *mi)
@@ -90,6 +89,7 @@ struct msm_gpiomux_config msm_gpiomux_configs[GPIOMUX_NGPIOS] = {
 };
 
 static struct platform_device *devices[] __initdata = {
+	&msm_device_gpio_7x30,
 #if defined(CONFIG_SERIAL_MSM) || defined(CONFIG_MSM_SERIAL_DEBUGGER)
         &msm_device_uart2,
 #endif
@@ -132,7 +132,7 @@ MACHINE_START(MSM7X30_SURF, "QCT MSM7X30 SURF")
 	.init_irq = msm7x30_init_irq,
 	.init_machine = msm7x30_init,
 	.init_late = msm7x30_init_late,
-	.timer = &msm_timer,
+	.init_time	= msm7x30_timer_init,
 MACHINE_END
 
 MACHINE_START(MSM7X30_FFA, "QCT MSM7X30 FFA")
@@ -143,7 +143,7 @@ MACHINE_START(MSM7X30_FFA, "QCT MSM7X30 FFA")
 	.init_irq = msm7x30_init_irq,
 	.init_machine = msm7x30_init,
 	.init_late = msm7x30_init_late,
-	.timer = &msm_timer,
+	.init_time	= msm7x30_timer_init,
 MACHINE_END
 
 MACHINE_START(MSM7X30_FLUID, "QCT MSM7X30 FLUID")
@@ -154,5 +154,5 @@ MACHINE_START(MSM7X30_FLUID, "QCT MSM7X30 FLUID")
 	.init_irq = msm7x30_init_irq,
 	.init_machine = msm7x30_init,
 	.init_late = msm7x30_init_late,
-	.timer = &msm_timer,
+	.init_time	= msm7x30_timer_init,
 MACHINE_END

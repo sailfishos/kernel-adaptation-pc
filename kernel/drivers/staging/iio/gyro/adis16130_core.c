@@ -100,13 +100,13 @@ static const struct iio_chan_spec adis16130_channels[] = {
 		.type = IIO_ANGL_VEL,
 		.modified = 1,
 		.channel2 = IIO_MOD_Z,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.address = ADIS16130_RATEDATA,
 	}, {
 		.type = IIO_TEMP,
 		.indexed = 1,
 		.channel = 0,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.address = ADIS16130_TEMPDATA,
 	}
 };
@@ -116,7 +116,7 @@ static const struct iio_info adis16130_info = {
 	.driver_module = THIS_MODULE,
 };
 
-static int __devinit adis16130_probe(struct spi_device *spi)
+static int adis16130_probe(struct spi_device *spi)
 {
 	int ret;
 	struct adis16130_state *st;
@@ -168,7 +168,7 @@ static struct spi_driver adis16130_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = adis16130_probe,
-	.remove = __devexit_p(adis16130_remove),
+	.remove = adis16130_remove,
 };
 module_spi_driver(adis16130_driver);
 

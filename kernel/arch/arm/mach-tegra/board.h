@@ -1,6 +1,7 @@
 /*
  * arch/arm/mach-tegra/board.h
  *
+ * Copyright (c) 2013 NVIDIA Corporation. All rights reserved.
  * Copyright (C) 2010 Google, Inc.
  *
  * Author:
@@ -25,8 +26,7 @@
 
 void tegra_assert_system_reset(char mode, const char *cmd);
 
-void __init tegra20_init_early(void);
-void __init tegra30_init_early(void);
+void __init tegra_init_early(void);
 void __init tegra_map_common_io(void);
 void __init tegra_init_irq(void);
 void __init tegra_dt_init_irq(void);
@@ -40,6 +40,7 @@ int tegra_clk_debugfs_init(void);
 static inline int tegra_clk_debugfs_init(void) { return 0; }
 #endif
 
+int __init tegra_powergate_init(void);
 #if defined(CONFIG_ARCH_TEGRA_2x_SOC) && defined(CONFIG_DEBUG_FS)
 int __init tegra_powergate_debugfs_init(void);
 #else
@@ -55,5 +56,4 @@ static inline int harmony_pcie_init(void) { return 0; }
 
 void __init tegra_paz00_wifikill_init(void);
 
-extern struct sys_timer tegra_timer;
 #endif

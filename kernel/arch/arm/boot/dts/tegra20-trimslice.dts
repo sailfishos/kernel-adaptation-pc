@@ -10,6 +10,18 @@
 		reg = <0x00000000 0x40000000>;
 	};
 
+	host1x {
+		hdmi {
+			status = "okay";
+
+			vdd-supply = <&hdmi_vdd_reg>;
+			pll-supply = <&hdmi_pll_reg>;
+
+			nvidia,ddc-i2c-bus = <&hdmi_ddc>;
+			nvidia,hpd-gpio = <&gpio 111 0>; /* PN7 */
+		};
+	};
+
 	pinmux {
 		pinctrl-names = "default";
 		pinctrl-0 = <&state_default>;
@@ -237,6 +249,11 @@
 					"ld23_22";
 				nvidia,pull = <1>;
 			};
+			conf_spif {
+				nvidia,pins = "spif";
+				nvidia,pull = <1>;
+				nvidia,tristate = <0>;
+			};
 		};
 	};
 
@@ -246,17 +263,26 @@
 
 	serial@70006000 {
 		status = "okay";
-		clock-frequency = <216000000>;
 	};
 
-	i2c@7000c000 {
+	dvi_ddc: i2c@7000c000 {
 		status = "okay";
-		clock-frequency = <400000>;
+		clock-frequency = <100000>;
 	};
 
-	i2c@7000c400 {
+	spi@7000c380 {
 		status = "okay";
-		clock-frequency = <400000>;
+		spi-max-frequency = <48000000>;
+		spi-flash@0 {
+			compatible = "winbond,w25q80bl";
+			reg = <0>;
+			spi-max-frequency = <48000000>;
+		};
+	};
+
+	hdmi_ddc: i2c@7000c400 {
+		status = "okay";
+		clock-frequency = <100000>;
 	};
 
 	i2c@7000c500 {
@@ -274,6 +300,15 @@
 		};
 	};
 
+	pmc {
+		nvidia,suspend-mode = <2>;
+		nvidia,cpu-pwr-good-time = <5000>;
+		nvidia,cpu-pwr-off-time = <5000>;
+		nvidia,core-pwr-good-time = <3845 3845>;
+		nvidia,core-pwr-off-time = <3875>;
+		nvidia,sys-clock-req-active-high;
+	};
+
 	usb@c5000000 {
 		status = "okay";
 		nvidia,vbus-gpio = <&gpio 170 0>; /* gpio PV2 */
@@ -288,6 +323,10 @@
 		status = "okay";
 	};
 
+	usb-phy@c5004400 {
+		nvidia,phy-reset-gpio = <&gpio 168 0>; /* gpio PV0 */
+	};
+
 	sdhci@c8000000 {
 		status = "okay";
 		bus-width = <4>;
@@ -295,14 +334,70 @@
 
 	sdhci@c8000600 {
 		status = "okay";
-		cd-gpios = <&gpio 121 0>; /* gpio PP1 */
+		cd-gpios = <&gpio 121 1>; /* gpio PP1 */
 		wp-gpios = <&gpio 122 0>; /* gpio PP2 */
 		bus-width = <4>;
+	};
+
+	clocks {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		clk32k_in: clock {
+			compatible = "fixed-clock";
+			reg=<0>;
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		power {
+			label = "Power";
+			gpios = <&gpio 190 1>; /* gpio PX6, active low */
+			linux,code = <116>; /* KEY_POWER */
+			gpio-key,wakeup;
+		};
+	};
+
+	poweroff {
+		compatible = "gpio-poweroff";
+		gpios = <&gpio 191 1>; /* gpio PX7, active low */
+	};
+
+	regulators {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		hdmi_vdd_reg: regulator@0 {
+			compatible = "regulator-fixed";
+			reg = <0>;
+			regulator-name = "avdd_hdmi";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-always-on;
+		};
+
+		hdmi_pll_reg: regulator@1 {
+			compatible = "regulator-fixed";
+			reg = <1>;
+			regulator-name = "avdd_hdmi_pll";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+		};
 	};
 
 	sound {
 		compatible = "nvidia,tegra-audio-trimslice";
 		nvidia,i2s-controller = <&tegra_i2s1>;
 		nvidia,audio-codec = <&codec>;
+
+		clocks = <&tegra_car 112>, <&tegra_car 113>, <&tegra_car 94>;
+		clock-names = "pll_a", "pll_a_out0", "mclk";
 	};
 };

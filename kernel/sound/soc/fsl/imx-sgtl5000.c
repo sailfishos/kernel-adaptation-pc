@@ -56,7 +56,7 @@ static const struct snd_soc_dapm_widget imx_sgtl5000_dapm_widgets[] = {
 	SND_SOC_DAPM_SPK("Ext Spk", NULL),
 };
 
-static int __devinit imx_sgtl5000_probe(struct platform_device *pdev)
+static int imx_sgtl5000_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct device_node *ssi_np, *codec_np;
@@ -148,7 +148,7 @@ static int __devinit imx_sgtl5000_probe(struct platform_device *pdev)
 	data->dai.stream_name = "HiFi";
 	data->dai.codec_dai_name = "sgtl5000";
 	data->dai.codec_of_node = codec_np;
-	data->dai.cpu_dai_name = dev_name(&ssi_pdev->dev);
+	data->dai.cpu_of_node = ssi_np;
 	data->dai.platform_name = "imx-pcm-audio";
 	data->dai.init = &imx_sgtl5000_dai_init;
 	data->dai.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
@@ -162,6 +162,7 @@ static int __devinit imx_sgtl5000_probe(struct platform_device *pdev)
 	if (ret)
 		goto clk_fail;
 	data->card.num_links = 1;
+	data->card.owner = THIS_MODULE;
 	data->card.dai_link = &data->dai;
 	data->card.dapm_widgets = imx_sgtl5000_dapm_widgets;
 	data->card.num_dapm_widgets = ARRAY_SIZE(imx_sgtl5000_dapm_widgets);
@@ -184,7 +185,7 @@ fail:
 	return ret;
 }
 
-static int __devexit imx_sgtl5000_remove(struct platform_device *pdev)
+static int imx_sgtl5000_remove(struct platform_device *pdev)
 {
 	struct imx_sgtl5000_data *data = platform_get_drvdata(pdev);
 
@@ -210,7 +211,7 @@ static struct platform_driver imx_sgtl5000_driver = {
 		.of_match_table = imx_sgtl5000_dt_ids,
 	},
 	.probe = imx_sgtl5000_probe,
-	.remove = __devexit_p(imx_sgtl5000_remove),
+	.remove = imx_sgtl5000_remove,
 };
 module_platform_driver(imx_sgtl5000_driver);
 

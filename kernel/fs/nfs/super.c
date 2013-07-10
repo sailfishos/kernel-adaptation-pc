@@ -31,6 +31,7 @@
 #include <linux/errno.h>
 #include <linux/unistd.h>
 #include <linux/sunrpc/clnt.h>
+#include <linux/sunrpc/addr.h>
 #include <linux/sunrpc/stats.h>
 #include <linux/sunrpc/metrics.h>
 #include <linux/sunrpc/xprtsock.h>
@@ -63,6 +64,7 @@
 #include "iostat.h"
 #include "internal.h"
 #include "fscache.h"
+#include "nfs4session.h"
 #include "pnfs.h"
 #include "nfs.h"
 
@@ -88,6 +90,7 @@ enum {
 	Opt_sharecache, Opt_nosharecache,
 	Opt_resvport, Opt_noresvport,
 	Opt_fscache, Opt_nofscache,
+	Opt_migration, Opt_nomigration,
 
 	/* Mount options that take integer arguments */
 	Opt_port,
@@ -147,6 +150,8 @@ static const match_table_t nfs_mount_option_tokens = {
 	{ Opt_noresvport, "noresvport" },
 	{ Opt_fscache, "fsc" },
 	{ Opt_nofscache, "nofsc" },
+	{ Opt_migration, "migration" },
+	{ Opt_nomigration, "nomigration" },
 
 	{ Opt_port, "port=%s" },
 	{ Opt_rsize, "rsize=%s" },
@@ -287,8 +292,9 @@ struct file_system_type nfs_fs_type = {
 	.name		= "nfs",
 	.mount		= nfs_fs_mount,
 	.kill_sb	= nfs_kill_super,
-	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_REVAL_DOT|FS_BINARY_MOUNTDATA,
+	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_BINARY_MOUNTDATA,
 };
+MODULE_ALIAS_FS("nfs");
 EXPORT_SYMBOL_GPL(nfs_fs_type);
 
 struct file_system_type nfs_xdev_fs_type = {
@@ -296,13 +302,14 @@ struct file_system_type nfs_xdev_fs_type = {
 	.name		= "nfs",
 	.mount		= nfs_xdev_mount,
 	.kill_sb	= nfs_kill_super,
-	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_REVAL_DOT|FS_BINARY_MOUNTDATA,
+	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_BINARY_MOUNTDATA,
 };
 
 const struct super_operations nfs_sops = {
 	.alloc_inode	= nfs_alloc_inode,
 	.destroy_inode	= nfs_destroy_inode,
 	.write_inode	= nfs_write_inode,
+	.drop_inode	= nfs_drop_inode,
 	.put_super	= nfs_put_super,
 	.statfs		= nfs_statfs,
 	.evict_inode	= nfs_evict_inode,
@@ -325,8 +332,10 @@ struct file_system_type nfs4_fs_type = {
 	.name		= "nfs4",
 	.mount		= nfs_fs_mount,
 	.kill_sb	= nfs_kill_super,
-	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_REVAL_DOT|FS_BINARY_MOUNTDATA,
+	.fs_flags	= FS_RENAME_DOES_D_MOVE|FS_BINARY_MOUNTDATA,
 };
+MODULE_ALIAS_FS("nfs4");
+MODULE_ALIAS("nfs4");
 EXPORT_SYMBOL_GPL(nfs4_fs_type);
 
 static int __init register_nfs4_fs(void)
@@ -676,6 +685,9 @@ static void nfs_show_mount_options(struct seq_file *m, struct nfs_server *nfss,
 	if (nfss->options & NFS_OPTION_FSCACHE)
 		seq_printf(m, ",fsc");
 
+	if (nfss->options & NFS_OPTION_MIGRATION)
+		seq_printf(m, ",migration");
+
 	if (nfss->flags & NFS_MOUNT_LOOKUP_CACHE_NONEG) {
 		if (nfss->flags & NFS_MOUNT_LOOKUP_CACHE_NONE)
 			seq_printf(m, ",lookupcache=none");
@@ -908,7 +920,7 @@ static struct nfs_parsed_mount_data *nfs_alloc_parsed_mount_data(void)
 		data->mount_server.port	= NFS_UNSPEC_PORT;
 		data->nfs_server.port	= NFS_UNSPEC_PORT;
 		data->nfs_server.protocol = XPRT_TRANSPORT_TCP;
-		data->auth_flavors[0]	= RPC_AUTH_UNIX;
+		data->auth_flavors[0]	= RPC_AUTH_MAXFLAVOR;
 		data->auth_flavor_len	= 1;
 		data->minorversion	= 0;
 		data->need_mount	= true;
@@ -1095,7 +1107,7 @@ static int nfs_get_option_str(substring_t args[], char **option)
 {
 	kfree(*option);
 	*option = match_strdup(args);
-	return !option;
+	return !*option;
 }
 
 static int nfs_get_option_ul(substring_t args[], unsigned long *option)
@@ -1106,7 +1118,7 @@ static int nfs_get_option_ul(substring_t args[], unsigned long *option)
 	string = match_strdup(args);
 	if (string == NULL)
 		return -ENOMEM;
-	rc = strict_strtoul(string, 10, option);
+	rc = kstrtoul(string, 10, option);
 	kfree(string);
 
 	return rc;
@@ -1242,6 +1254,12 @@ static int nfs_parse_mount_options(char *raw,
 			mnt->options &= ~NFS_OPTION_FSCACHE;
 			kfree(mnt->fscache_uniq);
 			mnt->fscache_uniq = NULL;
+			break;
+		case Opt_migration:
+			mnt->options |= NFS_OPTION_MIGRATION;
+			break;
+		case Opt_nomigration:
+			mnt->options &= NFS_OPTION_MIGRATION;
 			break;
 
 		/*
@@ -1535,9 +1553,13 @@ static int nfs_parse_mount_options(char *raw,
 	if (mnt->minorversion && mnt->version != 4)
 		goto out_minorversion_mismatch;
 
+	if (mnt->options & NFS_OPTION_MIGRATION &&
+	    mnt->version != 4 && mnt->minorversion != 0)
+		goto out_migration_misuse;
+
 	/*
 	 * verify that any proto=/mountproto= options match the address
-	 * familiies in the addr=/mountaddr= options.
+	 * families in the addr=/mountaddr= options.
 	 */
 	if (protofamily != AF_UNSPEC &&
 	    protofamily != mnt->nfs_server.address.ss_family)
@@ -1572,6 +1594,10 @@ out_minorversion_mismatch:
 	printk(KERN_INFO "NFS: mount option vers=%u does not support "
 			 "minorversion=%u\n", mnt->version, mnt->minorversion);
 	return 0;
+out_migration_misuse:
+	printk(KERN_INFO
+		"NFS: 'migration' not supported for this NFS version\n");
+	return 0;
 out_nomem:
 	printk(KERN_INFO "NFS: not enough memory to parse option\n");
 	return 0;
@@ -1582,48 +1608,91 @@ out_security_failure:
 }
 
 /*
- * Match the requested auth flavors with the list returned by
- * the server.  Returns zero and sets the mount's authentication
- * flavor on success; returns -EACCES if server does not support
- * the requested flavor.
+ * Select a security flavor for this mount.  The selected flavor
+ * is planted in args->auth_flavors[0].
+ *
+ * Returns 0 on success, -EACCES on failure.
  */
-static int nfs_walk_authlist(struct nfs_parsed_mount_data *args,
-			     struct nfs_mount_request *request)
+static int nfs_select_flavor(struct nfs_parsed_mount_data *args,
+			      struct nfs_mount_request *request)
 {
-	unsigned int i, j, server_authlist_len = *(request->auth_flav_len);
+	unsigned int i, count = *(request->auth_flav_len);
+	rpc_authflavor_t flavor;
+
+	/*
+	 * The NFSv2 MNT operation does not return a flavor list.
+	 */
+	if (args->mount_server.version != NFS_MNT3_VERSION)
+		goto out_default;
 
 	/*
 	 * Certain releases of Linux's mountd return an empty
-	 * flavor list.  To prevent behavioral regression with
-	 * these servers (ie. rejecting mounts that used to
-	 * succeed), revert to pre-2.6.32 behavior (no checking)
-	 * if the returned flavor list is empty.
+	 * flavor list in some cases.
 	 */
-	if (server_authlist_len == 0)
-		return 0;
+	if (count == 0)
+		goto out_default;
 
 	/*
-	 * We avoid sophisticated negotiating here, as there are
-	 * plenty of cases where we can get it wrong, providing
-	 * either too little or too much security.
+	 * If the sec= mount option is used, the specified flavor or AUTH_NULL
+	 * must be in the list returned by the server.
 	 *
+	 * AUTH_NULL has a special meaning when it's in the server list - it
+	 * means that the server will ignore the rpc creds, so any flavor
+	 * can be used.
+	 */
+	if (args->auth_flavors[0] != RPC_AUTH_MAXFLAVOR) {
+		for (i = 0; i < count; i++) {
+			if (args->auth_flavors[0] == request->auth_flavs[i] ||
+			    request->auth_flavs[i] == RPC_AUTH_NULL)
+				goto out;
+		}
+		dfprintk(MOUNT, "NFS: auth flavor %d not supported by server\n",
+			args->auth_flavors[0]);
+		goto out_err;
+	}
+
+	/*
 	 * RFC 2623, section 2.7 suggests we SHOULD prefer the
 	 * flavor listed first.  However, some servers list
-	 * AUTH_NULL first.  Our caller plants AUTH_SYS, the
-	 * preferred default, in args->auth_flavors[0] if user
-	 * didn't specify sec= mount option.
+	 * AUTH_NULL first.  Avoid ever choosing AUTH_NULL.
 	 */
-	for (i = 0; i < args->auth_flavor_len; i++)
-		for (j = 0; j < server_authlist_len; j++)
-			if (args->auth_flavors[i] == request->auth_flavs[j]) {
-				dfprintk(MOUNT, "NFS: using auth flavor %d\n",
-					request->auth_flavs[j]);
-				args->auth_flavors[0] = request->auth_flavs[j];
-				return 0;
-			}
+	for (i = 0; i < count; i++) {
+		struct rpcsec_gss_info info;
 
-	dfprintk(MOUNT, "NFS: server does not support requested auth flavor\n");
-	nfs_umount(request);
+		flavor = request->auth_flavs[i];
+		switch (flavor) {
+		case RPC_AUTH_UNIX:
+			goto out_set;
+		case RPC_AUTH_NULL:
+			continue;
+		default:
+			if (rpcauth_get_gssinfo(flavor, &info) == 0)
+				goto out_set;
+		}
+	}
+
+	/*
+	 * As a last chance, see if the server list contains AUTH_NULL -
+	 * if it does, use the default flavor.
+	 */
+	for (i = 0; i < count; i++) {
+		if (request->auth_flavs[i] == RPC_AUTH_NULL)
+			goto out_default;
+	}
+
+	dfprintk(MOUNT, "NFS: no auth flavors in common with server\n");
+	goto out_err;
+
+out_default:
+	/* use default if flavor not already set */
+	flavor = (args->auth_flavors[0] == RPC_AUTH_MAXFLAVOR) ?
+		RPC_AUTH_UNIX : args->auth_flavors[0];
+out_set:
+	args->auth_flavors[0] = flavor;
+out:
+	dfprintk(MOUNT, "NFS: using auth flavor %d\n", args->auth_flavors[0]);
+	return 0;
+out_err:
 	return -EACCES;
 }
 
@@ -1687,12 +1756,7 @@ static int nfs_request_mount(struct nfs_parsed_mount_data *args,
 		return status;
 	}
 
-	/*
-	 * MNTv1 (NFSv2) does not support auth flavor negotiation.
-	 */
-	if (args->mount_server.version != NFS_MNT3_VERSION)
-		return 0;
-	return nfs_walk_authlist(args, &request);
+	return nfs_select_flavor(args, &request);
 }
 
 struct dentry *nfs_try_mount(int flags, const char *dev_name,
@@ -1878,6 +1942,7 @@ static int nfs23_validate_mount_data(void *options,
 		args->namlen		= data->namlen;
 		args->bsize		= data->bsize;
 
+		args->auth_flavors[0] = RPC_AUTH_UNIX;
 		if (data->flags & NFS_MOUNT_SECFLAVOUR)
 			args->auth_flavors[0] = data->pseudoflavor;
 		if (!args->nfs_server.hostname)
@@ -2304,19 +2369,30 @@ static void nfs_get_cache_cookie(struct super_block *sb,
 				 struct nfs_parsed_mount_data *parsed,
 				 struct nfs_clone_mount *cloned)
 {
+	struct nfs_server *nfss = NFS_SB(sb);
 	char *uniq = NULL;
 	int ulen = 0;
 
-	if (parsed && parsed->fscache_uniq) {
-		uniq = parsed->fscache_uniq;
-		ulen = strlen(parsed->fscache_uniq);
+	nfss->fscache_key = NULL;
+	nfss->fscache = NULL;
+
+	if (parsed) {
+		if (!(parsed->options & NFS_OPTION_FSCACHE))
+			return;
+		if (parsed->fscache_uniq) {
+			uniq = parsed->fscache_uniq;
+			ulen = strlen(parsed->fscache_uniq);
+		}
 	} else if (cloned) {
 		struct nfs_server *mnt_s = NFS_SB(cloned->sb);
+		if (!(mnt_s->options & NFS_OPTION_FSCACHE))
+			return;
 		if (mnt_s->fscache_key) {
 			uniq = mnt_s->fscache_key->key.uniquifier;
 			ulen = mnt_s->fscache_key->key.uniq_len;
 		};
-	}
+	} else
+		return;
 
 	nfs_fscache_get_super_cookie(sb, uniq, ulen);
 }
@@ -2344,10 +2420,9 @@ int nfs_clone_sb_security(struct super_block *s, struct dentry *mntroot,
 			  struct nfs_mount_info *mount_info)
 {
 	/* clone any lsm security options from the parent to the new sb */
-	security_sb_clone_mnt_opts(mount_info->cloned->sb, s);
 	if (mntroot->d_inode->i_op != NFS_SB(s)->nfs_client->rpc_ops->dir_inode_ops)
 		return -ESTALE;
-	return 0;
+	return security_sb_clone_mnt_opts(mount_info->cloned->sb, s);
 }
 EXPORT_SYMBOL_GPL(nfs_clone_sb_security);
 
@@ -2494,7 +2569,7 @@ EXPORT_SYMBOL_GPL(nfs_kill_super);
 /*
  * Clone an NFS2/3/4 server record on xdev traversal (FSID-change)
  */
-struct dentry *
+static struct dentry *
 nfs_xdev_mount(struct file_system_type *fs_type, int flags,
 		const char *dev_name, void *raw_data)
 {
@@ -2507,27 +2582,23 @@ nfs_xdev_mount(struct file_system_type *fs_type, int flags,
 	struct nfs_server *server;
 	struct dentry *mntroot = ERR_PTR(-ENOMEM);
 	struct nfs_subversion *nfs_mod = NFS_SB(data->sb)->nfs_client->cl_nfs_mod;
-	int error;
 
-	dprintk("--> nfs_xdev_mount_common()\n");
+	dprintk("--> nfs_xdev_mount()\n");
 
 	mount_info.mntfh = mount_info.cloned->fh;
 
 	/* create a new volume representation */
 	server = nfs_mod->rpc_ops->clone_server(NFS_SB(data->sb), data->fh, data->fattr, data->authflavor);
-	if (IS_ERR(server)) {
-		error = PTR_ERR(server);
-		goto out_err;
-	}
 
-	mntroot = nfs_fs_mount_common(server, flags, dev_name, &mount_info, nfs_mod);
-	dprintk("<-- nfs_xdev_mount_common() = 0\n");
-out:
+	if (IS_ERR(server))
+		mntroot = ERR_CAST(server);
+	else
+		mntroot = nfs_fs_mount_common(server, flags,
+				dev_name, &mount_info, nfs_mod);
+
+	dprintk("<-- nfs_xdev_mount() = %ld\n",
+			IS_ERR(mntroot) ? PTR_ERR(mntroot) : 0L);
 	return mntroot;
-
-out_err:
-	dprintk("<-- nfs_xdev_mount_common() = %d [error]\n", error);
-	goto out;
 }
 
 #if IS_ENABLED(CONFIG_NFS_V4)
@@ -2567,6 +2638,7 @@ static int nfs4_validate_mount_data(void *options,
 			goto out_no_address;
 		args->nfs_server.port = ntohs(((struct sockaddr_in *)sap)->sin_port);
 
+		args->auth_flavors[0] = RPC_AUTH_UNIX;
 		if (data->auth_flavourlen) {
 			if (data->auth_flavourlen > 1)
 				goto out_inval_auth;
@@ -2642,6 +2714,7 @@ unsigned int nfs_idmap_cache_timeout = 600;
 bool nfs4_disable_idmapping = true;
 unsigned short max_session_slots = NFS4_DEF_SLOT_TABLE_SIZE;
 unsigned short send_implementation_id = 1;
+char nfs4_client_id_uniquifier[NFS4_CLIENT_ID_UNIQ_LEN] = "";
 
 EXPORT_SYMBOL_GPL(nfs_callback_set_tcpport);
 EXPORT_SYMBOL_GPL(nfs_callback_tcpport);
@@ -2649,6 +2722,7 @@ EXPORT_SYMBOL_GPL(nfs_idmap_cache_timeout);
 EXPORT_SYMBOL_GPL(nfs4_disable_idmapping);
 EXPORT_SYMBOL_GPL(max_session_slots);
 EXPORT_SYMBOL_GPL(send_implementation_id);
+EXPORT_SYMBOL_GPL(nfs4_client_id_uniquifier);
 
 #define NFS_CALLBACK_MAXPORTNR (65535U)
 
@@ -2659,7 +2733,7 @@ static int param_set_portnr(const char *val, const struct kernel_param *kp)
 
 	if (!val)
 		return -EINVAL;
-	ret = strict_strtoul(val, 0, &num);
+	ret = kstrtoul(val, 0, &num);
 	if (ret == -EINVAL || num > NFS_CALLBACK_MAXPORTNR)
 		return -EINVAL;
 	*((unsigned int *)kp->arg) = num;
@@ -2674,6 +2748,8 @@ static struct kernel_param_ops param_ops_portnr = {
 module_param_named(callback_tcpport, nfs_callback_set_tcpport, portnr, 0644);
 module_param(nfs_idmap_cache_timeout, int, 0644);
 module_param(nfs4_disable_idmapping, bool, 0644);
+module_param_string(nfs4_unique_id, nfs4_client_id_uniquifier,
+			NFS4_CLIENT_ID_UNIQ_LEN, 0600);
 MODULE_PARM_DESC(nfs4_disable_idmapping,
 		"Turn off NFSv4 idmapping when using 'sec=sys'");
 module_param(max_session_slots, ushort, 0644);
@@ -2682,6 +2758,6 @@ MODULE_PARM_DESC(max_session_slots, "Maximum number of outstanding NFSv4.1 "
 module_param(send_implementation_id, ushort, 0644);
 MODULE_PARM_DESC(send_implementation_id,
 		"Send implementation ID with NFSv4.1 exchange_id");
-MODULE_ALIAS("nfs4");
+MODULE_PARM_DESC(nfs4_unique_id, "nfs_client_id4 uniquifier string");
 
 #endif /* CONFIG_NFS_V4 */

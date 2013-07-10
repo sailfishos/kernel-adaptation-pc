@@ -19,7 +19,6 @@
   - controlling the baud rate doesn't make sense
 */
 
-#define DRIVER_VERSION "v0.7.2"
 #define DRIVER_AUTHOR "Matthias Urlichs <smurf@smurf.noris.de>"
 #define DRIVER_DESC "USB Driver for GSM modems"
 
@@ -37,11 +36,8 @@
 #include <linux/serial.h>
 #include "usb-wwan.h"
 
-static bool debug;
-
 void usb_wwan_dtr_rts(struct usb_serial_port *port, int on)
 {
-	struct usb_serial *serial = port->serial;
 	struct usb_wwan_port_private *portdata;
 	struct usb_wwan_intf_private *intfdata;
 
@@ -51,12 +47,11 @@ void usb_wwan_dtr_rts(struct usb_serial_port *port, int on)
 		return;
 
 	portdata = usb_get_serial_port_data(port);
-	mutex_lock(&serial->disc_mutex);
+	/* FIXME: locking */
 	portdata->rts_state = on;
 	portdata->dtr_state = on;
-	if (serial->dev)
-		intfdata->send_setup(port);
-	mutex_unlock(&serial->disc_mutex);
+
+	intfdata->send_setup(port);
 }
 EXPORT_SYMBOL(usb_wwan_dtr_rts);
 
@@ -67,7 +62,7 @@ void usb_wwan_set_termios(struct tty_struct *tty,
 	struct usb_wwan_intf_private *intfdata = port->serial->private;
 
 	/* Doesn't support option setting */
-	tty_termios_copy_hw(tty->termios, old_termios);
+	tty_termios_copy_hw(&tty->termios, old_termios);
 
 	if (intfdata->send_setup)
 		intfdata->send_setup(port);
@@ -178,7 +173,7 @@ int usb_wwan_ioctl(struct tty_struct *tty,
 {
 	struct usb_serial_port *port = tty->driver_data;
 
-	dbg("%s cmd 0x%04x", __func__, cmd);
+	dev_dbg(&port->dev, "%s cmd 0x%04x\n", __func__, cmd);
 
 	switch (cmd) {
 	case TIOCGSERIAL:
@@ -191,7 +186,7 @@ int usb_wwan_ioctl(struct tty_struct *tty,
 		break;
 	}
 
-	dbg("%s arg not supported", __func__);
+	dev_dbg(&port->dev, "%s arg not supported\n", __func__);
 
 	return -ENOIOCTLCMD;
 }
@@ -212,7 +207,7 @@ int usb_wwan_write(struct tty_struct *tty, struct usb_serial_port *port,
 	portdata = usb_get_serial_port_data(port);
 	intfdata = port->serial->private;
 
-	dbg("%s: write (%d chars)", __func__, count);
+	dev_dbg(&port->dev, "%s: write (%d chars)\n", __func__, count);
 
 	i = 0;
 	left = count;
@@ -229,8 +224,8 @@ int usb_wwan_write(struct tty_struct *tty, struct usb_serial_port *port,
 			usb_unlink_urb(this_urb);
 			continue;
 		}
-		dbg("%s: endpoint %d buf %d", __func__,
-		    usb_pipeendpoint(this_urb->pipe), i);
+		dev_dbg(&port->dev, "%s: endpoint %d buf %d\n", __func__,
+			usb_pipeendpoint(this_urb->pipe), i);
 
 		err = usb_autopm_get_interface_async(port->serial->interface);
 		if (err < 0)
@@ -249,8 +244,9 @@ int usb_wwan_write(struct tty_struct *tty, struct usb_serial_port *port,
 			spin_unlock_irqrestore(&intfdata->susp_lock, flags);
 			err = usb_submit_urb(this_urb, GFP_ATOMIC);
 			if (err) {
-				dbg("usb_submit_urb %p (write bulk) failed "
-				    "(%d)", this_urb, err);
+				dev_dbg(&port->dev,
+					"usb_submit_urb %p (write bulk) failed (%d)\n",
+					this_urb, err);
 				clear_bit(i, &portdata->out_busy);
 				spin_lock_irqsave(&intfdata->susp_lock, flags);
 				intfdata->in_flight--;
@@ -267,7 +263,7 @@ int usb_wwan_write(struct tty_struct *tty, struct usb_serial_port *port,
 	}
 
 	count -= left;
-	dbg("%s: wrote (did %d)", __func__, count);
+	dev_dbg(&port->dev, "%s: wrote (did %d)\n", __func__, count);
 	return count;
 }
 EXPORT_SYMBOL(usb_wwan_write);
@@ -277,34 +273,30 @@ static void usb_wwan_indat_callback(struct urb *urb)
 	int err;
 	int endpoint;
 	struct usb_serial_port *port;
-	struct tty_struct *tty;
+	struct device *dev;
 	unsigned char *data = urb->transfer_buffer;
 	int status = urb->status;
 
 	endpoint = usb_pipeendpoint(urb->pipe);
 	port = urb->context;
+	dev = &port->dev;
 
 	if (status) {
-		dbg("%s: nonzero status: %d on endpoint %02x.",
-		    __func__, status, endpoint);
+		dev_dbg(dev, "%s: nonzero status: %d on endpoint %02x.\n",
+			__func__, status, endpoint);
 	} else {
-		tty = tty_port_tty_get(&port->port);
-		if (tty) {
-			if (urb->actual_length) {
-				tty_insert_flip_string(tty, data,
-						urb->actual_length);
-				tty_flip_buffer_push(tty);
-			} else
-				dbg("%s: empty read urb received", __func__);
-			tty_kref_put(tty);
-		}
+		if (urb->actual_length) {
+			tty_insert_flip_string(&port->port, data,
+					urb->actual_length);
+			tty_flip_buffer_push(&port->port);
+		} else
+			dev_dbg(dev, "%s: empty read urb received\n", __func__);
 
 		/* Resubmit urb so we continue receiving */
 		err = usb_submit_urb(urb, GFP_ATOMIC);
 		if (err) {
 			if (err != -EPERM) {
-				printk(KERN_ERR "%s: resubmit read urb failed. "
-					"(%d)", __func__, err);
+				dev_err(dev, "%s: resubmit read urb failed. (%d)\n", __func__, err);
 				/* busy also in error unless we are killed */
 				usb_mark_last_busy(port->serial->dev);
 			}
@@ -356,7 +348,7 @@ int usb_wwan_write_room(struct tty_struct *tty)
 			data_len += OUT_BUFLEN;
 	}
 
-	dbg("%s: %d", __func__, data_len);
+	dev_dbg(&port->dev, "%s: %d\n", __func__, data_len);
 	return data_len;
 }
 EXPORT_SYMBOL(usb_wwan_write_room);
@@ -378,7 +370,7 @@ int usb_wwan_chars_in_buffer(struct tty_struct *tty)
 		if (this_urb && test_bit(i, &portdata->out_busy))
 			data_len += this_urb->transfer_buffer_length;
 	}
-	dbg("%s: %d", __func__, data_len);
+	dev_dbg(&port->dev, "%s: %d\n", __func__, data_len);
 	return data_len;
 }
 EXPORT_SYMBOL(usb_wwan_chars_in_buffer);
@@ -401,8 +393,8 @@ int usb_wwan_open(struct tty_struct *tty, struct usb_serial_port *port)
 			continue;
 		err = usb_submit_urb(urb, GFP_KERNEL);
 		if (err) {
-			dbg("%s: submit urb %d failed (%d) %d",
-			    __func__, i, err, urb->transfer_buffer_length);
+			dev_dbg(&port->dev, "%s: submit urb %d failed (%d) %d\n",
+				__func__, i, err, urb->transfer_buffer_length);
 		}
 	}
 
@@ -429,20 +421,19 @@ void usb_wwan_close(struct usb_serial_port *port)
 
 	portdata = usb_get_serial_port_data(port);
 
-	if (serial->dev) {
-		/* Stop reading/writing urbs */
-		spin_lock_irq(&intfdata->susp_lock);
-		portdata->opened = 0;
-		spin_unlock_irq(&intfdata->susp_lock);
+	/* Stop reading/writing urbs */
+	spin_lock_irq(&intfdata->susp_lock);
+	portdata->opened = 0;
+	spin_unlock_irq(&intfdata->susp_lock);
 
-		for (i = 0; i < N_IN_URB; i++)
-			usb_kill_urb(portdata->in_urbs[i]);
-		for (i = 0; i < N_OUT_URB; i++)
-			usb_kill_urb(portdata->out_urbs[i]);
-		/* balancing - important as an error cannot be handled*/
-		usb_autopm_get_interface_no_resume(serial->interface);
-		serial->interface->needs_remote_wakeup = 0;
-	}
+	for (i = 0; i < N_IN_URB; i++)
+		usb_kill_urb(portdata->in_urbs[i]);
+	for (i = 0; i < N_OUT_URB; i++)
+		usb_kill_urb(portdata->out_urbs[i]);
+
+	/* balancing - important as an error cannot be handled*/
+	usb_autopm_get_interface_no_resume(serial->interface);
+	serial->interface->needs_remote_wakeup = 0;
 }
 EXPORT_SYMBOL(usb_wwan_close);
 
@@ -457,7 +448,9 @@ static struct urb *usb_wwan_setup_urb(struct usb_serial_port *port,
 
 	urb = usb_alloc_urb(0, GFP_KERNEL);	/* No ISO */
 	if (urb == NULL) {
-		dbg("%s: alloc for endpoint %d failed.", __func__, endpoint);
+		dev_dbg(&serial->interface->dev,
+			"%s: alloc for endpoint %d failed.\n", __func__,
+			endpoint);
 		return NULL;
 	}
 
@@ -497,7 +490,8 @@ int usb_wwan_port_probe(struct usb_serial_port *port)
 						buffer, IN_BUFLEN,
 						usb_wwan_indat_callback);
 		portdata->in_urbs[i] = urb;
- 	}
+	}
+
 	for (i = 0; i < N_OUT_URB; i++) {
 		if (!port->bulk_out_size)
 			break;
@@ -659,11 +653,11 @@ int usb_wwan_resume(struct usb_serial *serial)
 	for (i = 0; i < serial->num_ports; i++) {
 		port = serial->port[i];
 		if (!port->interrupt_in_urb) {
-			dbg("%s: No interrupt URB for port %d", __func__, i);
+			dev_dbg(&port->dev, "%s: No interrupt URB for port\n", __func__);
 			continue;
 		}
 		err = usb_submit_urb(port->interrupt_in_urb, GFP_NOIO);
-		dbg("Submitted interrupt URB for port %d (result %d)", i, err);
+		dev_dbg(&port->dev, "Submitted interrupt URB for port (result %d)\n", err);
 		if (err < 0) {
 			dev_err(&port->dev, "%s: Error %d for interrupt URB\n",
 				__func__, err);
@@ -707,8 +701,4 @@ EXPORT_SYMBOL(usb_wwan_resume);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_VERSION(DRIVER_VERSION);
 MODULE_LICENSE("GPL");
-
-module_param(debug, bool, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(debug, "Debug messages");

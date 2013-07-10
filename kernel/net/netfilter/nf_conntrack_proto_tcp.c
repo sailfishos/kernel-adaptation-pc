@@ -1,5 +1,7 @@
 /* (C) 1999-2001 Paul `Rusty' Russell
  * (C) 2002-2004 Netfilter Core Team <coreteam@netfilter.org>
+ * (C) 2002-2013 Jozsef Kadlecsik <kadlec@blackhole.kfki.hu>
+ * (C) 2006-2012 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -502,10 +504,10 @@ static inline s16 nat_offset(const struct nf_conn *ct,
 
 	return get_offset != NULL ? get_offset(ct, dir, seq) : 0;
 }
-#define NAT_OFFSET(pf, ct, dir, seq) \
-	(pf == NFPROTO_IPV4 ? nat_offset(ct, dir, seq) : 0)
+#define NAT_OFFSET(ct, dir, seq) \
+	(nat_offset(ct, dir, seq))
 #else
-#define NAT_OFFSET(pf, ct, dir, seq)	0
+#define NAT_OFFSET(ct, dir, seq)	0
 #endif
 
 static bool tcp_in_window(const struct nf_conn *ct,
@@ -538,7 +540,7 @@ static bool tcp_in_window(const struct nf_conn *ct,
 		tcp_sack(skb, dataoff, tcph, &sack);
 
 	/* Take into account NAT sequence number mangling */
-	receiver_offset = NAT_OFFSET(pf, ct, !dir, ack - 1);
+	receiver_offset = NAT_OFFSET(ct, !dir, ack - 1);
 	ack -= receiver_offset;
 	sack -= receiver_offset;
 
@@ -720,7 +722,7 @@ static bool tcp_in_window(const struct nf_conn *ct,
 		    tn->tcp_be_liberal)
 			res = true;
 		if (!res && LOG_INVALID(net, IPPROTO_TCP))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 			"nf_ct_tcp: %s ",
 			before(seq, sender->td_maxend + 1) ?
 			after(end, sender->td_end - receiver->td_maxwin - 1) ?
@@ -772,7 +774,7 @@ static int tcp_error(struct net *net, struct nf_conn *tmpl,
 	th = skb_header_pointer(skb, dataoff, sizeof(_tcph), &_tcph);
 	if (th == NULL) {
 		if (LOG_INVALID(net, IPPROTO_TCP))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				"nf_ct_tcp: short packet ");
 		return -NF_ACCEPT;
 	}
@@ -780,7 +782,7 @@ static int tcp_error(struct net *net, struct nf_conn *tmpl,
 	/* Not whole TCP header or malformed packet */
 	if (th->doff*4 < sizeof(struct tcphdr) || tcplen < th->doff*4) {
 		if (LOG_INVALID(net, IPPROTO_TCP))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				"nf_ct_tcp: truncated/malformed packet ");
 		return -NF_ACCEPT;
 	}
@@ -793,7 +795,7 @@ static int tcp_error(struct net *net, struct nf_conn *tmpl,
 	if (net->ct.sysctl_checksum && hooknum == NF_INET_PRE_ROUTING &&
 	    nf_checksum(skb, hooknum, dataoff, IPPROTO_TCP, pf)) {
 		if (LOG_INVALID(net, IPPROTO_TCP))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				  "nf_ct_tcp: bad TCP checksum ");
 		return -NF_ACCEPT;
 	}
@@ -802,7 +804,7 @@ static int tcp_error(struct net *net, struct nf_conn *tmpl,
 	tcpflags = (tcp_flag_byte(th) & ~(TCPHDR_ECE|TCPHDR_CWR|TCPHDR_PSH));
 	if (!tcp_valid_flags[tcpflags]) {
 		if (LOG_INVALID(net, IPPROTO_TCP))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				  "nf_ct_tcp: invalid TCP flag combination ");
 		return -NF_ACCEPT;
 	}
@@ -949,7 +951,7 @@ static int tcp_packet(struct nf_conn *ct,
 		}
 		spin_unlock_bh(&ct->lock);
 		if (LOG_INVALID(net, IPPROTO_TCP))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				  "nf_ct_tcp: invalid packet ignored in "
 				  "state %s ", tcp_conntrack_names[old_state]);
 		return NF_ACCEPT;
@@ -959,7 +961,7 @@ static int tcp_packet(struct nf_conn *ct,
 			 dir, get_conntrack_index(th), old_state);
 		spin_unlock_bh(&ct->lock);
 		if (LOG_INVALID(net, IPPROTO_TCP))
-			nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
+			nf_log_packet(net, pf, 0, skb, NULL, NULL, NULL,
 				  "nf_ct_tcp: invalid state ");
 		return -NF_ACCEPT;
 	case TCP_CONNTRACK_CLOSE:
@@ -969,8 +971,8 @@ static int tcp_packet(struct nf_conn *ct,
 			/* Invalid RST  */
 			spin_unlock_bh(&ct->lock);
 			if (LOG_INVALID(net, IPPROTO_TCP))
-				nf_log_packet(pf, 0, skb, NULL, NULL, NULL,
-					  "nf_ct_tcp: invalid RST ");
+				nf_log_packet(net, pf, 0, skb, NULL, NULL,
+					      NULL, "nf_ct_tcp: invalid RST ");
 			return -NF_ACCEPT;
 		}
 		if (index == TCP_RST_SET
@@ -1353,6 +1355,8 @@ static const struct nla_policy tcp_timeout_nla_policy[CTA_TIMEOUT_TCP_MAX+1] = {
 	[CTA_TIMEOUT_TCP_TIME_WAIT]	= { .type = NLA_U32 },
 	[CTA_TIMEOUT_TCP_CLOSE]		= { .type = NLA_U32 },
 	[CTA_TIMEOUT_TCP_SYN_SENT2]	= { .type = NLA_U32 },
+	[CTA_TIMEOUT_TCP_RETRANS]	= { .type = NLA_U32 },
+	[CTA_TIMEOUT_TCP_UNACK]		= { .type = NLA_U32 },
 };
 #endif /* CONFIG_NF_CT_NETLINK_TIMEOUT */
 

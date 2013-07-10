@@ -49,9 +49,14 @@
 #include <linux/jhash.h>
 #include <net/arp.h>
 
+#define DRV_VERSION "1.0.0"
+
+const char ipoib_driver_version[] = DRV_VERSION;
+
 MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("IP-over-InfiniBand net driver");
 MODULE_LICENSE("Dual BSD/GPL");
+MODULE_VERSION(DRV_VERSION);
 
 int ipoib_sendq_size __read_mostly = IPOIB_TX_RING_SIZE;
 int ipoib_recvq_size __read_mostly = IPOIB_RX_RING_SIZE;
@@ -173,6 +178,11 @@ static int ipoib_stop(struct net_device *dev)
 	return 0;
 }
 
+static void ipoib_uninit(struct net_device *dev)
+{
+	ipoib_dev_cleanup(dev);
+}
+
 static netdev_features_t ipoib_fix_features(struct net_device *dev, netdev_features_t features)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
@@ -208,6 +218,37 @@ static int ipoib_change_mtu(struct net_device *dev, int new_mtu)
 	dev->mtu = min(priv->mcast_mtu, priv->admin_mtu);
 
 	return 0;
+}
+
+int ipoib_set_mode(struct net_device *dev, const char *buf)
+{
+	struct ipoib_dev_priv *priv = netdev_priv(dev);
+
+	/* flush paths if we switch modes so that connections are restarted */
+	if (IPOIB_CM_SUPPORTED(dev->dev_addr) && !strcmp(buf, "connected\n")) {
+		set_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags);
+		ipoib_warn(priv, "enabling connected mode "
+			   "will cause multicast packet drops\n");
+		netdev_update_features(dev);
+		rtnl_unlock();
+		priv->tx_wr.send_flags &= ~IB_SEND_IP_CSUM;
+
+		ipoib_flush_paths(dev);
+		rtnl_lock();
+		return 0;
+	}
+
+	if (!strcmp(buf, "datagram\n")) {
+		clear_bit(IPOIB_FLAG_ADMIN_CM, &priv->flags);
+		netdev_update_features(dev);
+		dev_set_mtu(dev, min(priv->mcast_mtu, dev->mtu));
+		rtnl_unlock();
+		ipoib_flush_paths(dev);
+		rtnl_lock();
+		return 0;
+	}
+
+	return -EINVAL;
 }
 
 static struct ipoib_path *__path_find(struct net_device *dev, void *gid)
@@ -469,6 +510,9 @@ static void path_rec_completion(int status,
 
 	spin_unlock_irqrestore(&priv->lock, flags);
 
+	if (IS_ERR_OR_NULL(ah))
+		ipoib_del_neighs_by_gid(dev, path->pathrec.dgid.raw);
+
 	if (old_ah)
 		ipoib_put_ah(old_ah);
 
@@ -686,7 +730,8 @@ static int ipoib_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		if ((header->proto != htons(ETH_P_IP)) &&
 		    (header->proto != htons(ETH_P_IPV6)) &&
 		    (header->proto != htons(ETH_P_ARP)) &&
-		    (header->proto != htons(ETH_P_RARP))) {
+		    (header->proto != htons(ETH_P_RARP)) &&
+		    (header->proto != htons(ETH_P_TIPC))) {
 			/* ethertype not supported by IPoIB */
 			++dev->stats.tx_dropped;
 			dev_kfree_skb_any(skb);
@@ -707,6 +752,7 @@ static int ipoib_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	switch (header->proto) {
 	case htons(ETH_P_IP):
 	case htons(ETH_P_IPV6):
+	case htons(ETH_P_TIPC):
 		neigh = ipoib_neigh_get(dev, cb->hwaddr);
 		if (unlikely(!neigh)) {
 			neigh_add_path(skb, cb->hwaddr, dev);
@@ -784,7 +830,7 @@ static int ipoib_hard_header(struct sk_buff *skb,
 	 */
 	memcpy(cb->hwaddr, daddr, INFINIBAND_ALEN);
 
-	return 0;
+	return sizeof *header;
 }
 
 static void ipoib_set_mcast_list(struct net_device *dev)
@@ -808,10 +854,10 @@ static u32 ipoib_addr_hash(struct ipoib_neigh_hash *htbl, u8 *daddr)
 	 * different subnets.
 	 */
 	 /* qpn octets[1:4) & port GUID octets[12:20) */
-	u32 *daddr_32 = (u32 *) daddr;
+	u32 *d32 = (u32 *) daddr;
 	u32 hv;
 
-	hv = jhash_3words(daddr_32[3], daddr_32[4], 0xFFFFFF & daddr_32[0], 0);
+	hv = jhash_3words(d32[3], d32[4], IPOIB_QPN_MASK & d32[0], 0);
 	return hv & htbl->mask;
 }
 
@@ -1257,6 +1303,9 @@ out:
 void ipoib_dev_cleanup(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev), *cpriv, *tcpriv;
+	LIST_HEAD(head);
+
+	ASSERT_RTNL();
 
 	ipoib_delete_debug_files(dev);
 
@@ -1265,10 +1314,9 @@ void ipoib_dev_cleanup(struct net_device *dev)
 		/* Stop GC on child */
 		set_bit(IPOIB_STOP_NEIGH_GC, &cpriv->flags);
 		cancel_delayed_work(&cpriv->neigh_reap_task);
-		unregister_netdev(cpriv->dev);
-		ipoib_dev_cleanup(cpriv->dev);
-		free_netdev(cpriv->dev);
+		unregister_netdevice_queue(cpriv->dev, &head);
 	}
+	unregister_netdevice_many(&head);
 
 	ipoib_ib_dev_cleanup(dev);
 
@@ -1286,6 +1334,7 @@ static const struct header_ops ipoib_header_ops = {
 };
 
 static const struct net_device_ops ipoib_netdev_ops = {
+	.ndo_uninit		 = ipoib_uninit,
 	.ndo_open		 = ipoib_open,
 	.ndo_stop		 = ipoib_stop,
 	.ndo_change_mtu		 = ipoib_change_mtu,
@@ -1295,7 +1344,7 @@ static const struct net_device_ops ipoib_netdev_ops = {
 	.ndo_set_rx_mode	 = ipoib_set_mcast_list,
 };
 
-static void ipoib_setup(struct net_device *dev)
+void ipoib_setup(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 
@@ -1373,12 +1422,9 @@ static ssize_t show_umcast(struct device *dev,
 	return sprintf(buf, "%d\n", test_bit(IPOIB_FLAG_UMCAST, &priv->flags));
 }
 
-static ssize_t set_umcast(struct device *dev,
-			  struct device_attribute *attr,
-			  const char *buf, size_t count)
+void ipoib_set_umcast(struct net_device *ndev, int umcast_val)
 {
-	struct ipoib_dev_priv *priv = netdev_priv(to_net_dev(dev));
-	unsigned long umcast_val = simple_strtoul(buf, NULL, 0);
+	struct ipoib_dev_priv *priv = netdev_priv(ndev);
 
 	if (umcast_val > 0) {
 		set_bit(IPOIB_FLAG_UMCAST, &priv->flags);
@@ -1386,6 +1432,15 @@ static ssize_t set_umcast(struct device *dev,
 				"by userspace\n");
 	} else
 		clear_bit(IPOIB_FLAG_UMCAST, &priv->flags);
+}
+
+static ssize_t set_umcast(struct device *dev,
+			  struct device_attribute *attr,
+			  const char *buf, size_t count)
+{
+	unsigned long umcast_val = simple_strtoul(buf, NULL, 0);
+
+	ipoib_set_umcast(to_net_dev(dev), umcast_val);
 
 	return count;
 }
@@ -1643,6 +1698,8 @@ static void ipoib_remove_one(struct ib_device *device)
 		return;
 
 	dev_list = ib_get_client_data(device, &ipoib_client);
+	if (!dev_list)
+		return;
 
 	list_for_each_entry_safe(priv, tmp, dev_list, list) {
 		ib_unregister_event_handler(&priv->event_handler);
@@ -1657,7 +1714,6 @@ static void ipoib_remove_one(struct ib_device *device)
 		flush_workqueue(ipoib_workqueue);
 
 		unregister_netdev(priv->dev);
-		ipoib_dev_cleanup(priv->dev);
 		free_netdev(priv->dev);
 	}
 
@@ -1709,7 +1765,14 @@ static int __init ipoib_init_module(void)
 	if (ret)
 		goto err_sa;
 
+	ret = ipoib_netlink_init();
+	if (ret)
+		goto err_client;
+
 	return 0;
+
+err_client:
+	ib_unregister_client(&ipoib_client);
 
 err_sa:
 	ib_sa_unregister_client(&ipoib_sa_client);
@@ -1723,6 +1786,7 @@ err_fs:
 
 static void __exit ipoib_cleanup_module(void)
 {
+	ipoib_netlink_fini();
 	ib_unregister_client(&ipoib_client);
 	ib_sa_unregister_client(&ipoib_sa_client);
 	ipoib_unregister_debugfs();

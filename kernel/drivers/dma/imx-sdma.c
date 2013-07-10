@@ -38,9 +38,8 @@
 #include <linux/of_device.h>
 
 #include <asm/irq.h>
-#include <mach/sdma.h>
-#include <mach/dma.h>
-#include <mach/hardware.h>
+#include <linux/platform_data/dma-imx-sdma.h>
+#include <linux/platform_data/dma-imx.h>
 
 #include "dmaengine.h"
 
@@ -1012,7 +1011,7 @@ err_out:
 static struct dma_async_tx_descriptor *sdma_prep_dma_cyclic(
 		struct dma_chan *chan, dma_addr_t dma_addr, size_t buf_len,
 		size_t period_len, enum dma_transfer_direction direction,
-		void *context)
+		unsigned long flags, void *context)
 {
 	struct sdma_channel *sdmac = to_sdma_chan(chan);
 	struct sdma_engine *sdma = sdmac->sdma;
@@ -1463,7 +1462,7 @@ err_irq:
 	return ret;
 }
 
-static int __exit sdma_remove(struct platform_device *pdev)
+static int sdma_remove(struct platform_device *pdev)
 {
 	return -EBUSY;
 }
@@ -1474,7 +1473,7 @@ static struct platform_driver sdma_driver = {
 		.of_match_table = sdma_dt_ids,
 	},
 	.id_table	= sdma_devtypes,
-	.remove		= __exit_p(sdma_remove),
+	.remove		= sdma_remove,
 };
 
 static int __init sdma_module_init(void)

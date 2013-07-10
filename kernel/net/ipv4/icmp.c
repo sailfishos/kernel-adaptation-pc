@@ -881,7 +881,7 @@ int icmp_rcv(struct sk_buff *skb)
 	case CHECKSUM_NONE:
 		skb->csum = 0;
 		if (__skb_checksum_complete(skb))
-			goto error;
+			goto csum_error;
 	}
 
 	if (!pskb_pull(skb, sizeof(*icmph)))
@@ -929,9 +929,34 @@ int icmp_rcv(struct sk_buff *skb)
 drop:
 	kfree_skb(skb);
 	return 0;
+csum_error:
+	ICMP_INC_STATS_BH(net, ICMP_MIB_CSUMERRORS);
 error:
 	ICMP_INC_STATS_BH(net, ICMP_MIB_INERRORS);
 	goto drop;
+}
+
+void icmp_err(struct sk_buff *skb, u32 info)
+{
+	struct iphdr *iph = (struct iphdr *)skb->data;
+	struct icmphdr *icmph = (struct icmphdr *)(skb->data+(iph->ihl<<2));
+	int type = icmp_hdr(skb)->type;
+	int code = icmp_hdr(skb)->code;
+	struct net *net = dev_net(skb->dev);
+
+	/*
+	 * Use ping_err to handle all icmp errors except those
+	 * triggered by ICMP_ECHOREPLY which sent from kernel.
+	 */
+	if (icmph->type != ICMP_ECHOREPLY) {
+		ping_err(skb, info);
+		return;
+	}
+
+	if (type == ICMP_DEST_UNREACH && code == ICMP_FRAG_NEEDED)
+		ipv4_update_pmtu(skb, net, info, 0, 0, IPPROTO_ICMP, 0);
+	else if (type == ICMP_REDIRECT)
+		ipv4_redirect(skb, net, 0, 0, IPPROTO_ICMP, 0);
 }
 
 /*

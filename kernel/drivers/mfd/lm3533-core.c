@@ -382,7 +382,7 @@ static struct attribute_group lm3533_attribute_group = {
 	.attrs		= lm3533_attributes
 };
 
-static int __devinit lm3533_device_als_init(struct lm3533 *lm3533)
+static int lm3533_device_als_init(struct lm3533 *lm3533)
 {
 	struct lm3533_platform_data *pdata = lm3533->dev->platform_data;
 	int ret;
@@ -405,7 +405,7 @@ static int __devinit lm3533_device_als_init(struct lm3533 *lm3533)
 	return 0;
 }
 
-static int __devinit lm3533_device_bl_init(struct lm3533 *lm3533)
+static int lm3533_device_bl_init(struct lm3533 *lm3533)
 {
 	struct lm3533_platform_data *pdata = lm3533->dev->platform_data;
 	int i;
@@ -434,7 +434,7 @@ static int __devinit lm3533_device_bl_init(struct lm3533 *lm3533)
 	return 0;
 }
 
-static int __devinit lm3533_device_led_init(struct lm3533 *lm3533)
+static int lm3533_device_led_init(struct lm3533 *lm3533)
 {
 	struct lm3533_platform_data *pdata = lm3533->dev->platform_data;
 	int i;
@@ -463,7 +463,7 @@ static int __devinit lm3533_device_led_init(struct lm3533 *lm3533)
 	return 0;
 }
 
-static int __devinit lm3533_device_setup(struct lm3533 *lm3533,
+static int lm3533_device_setup(struct lm3533 *lm3533,
 					struct lm3533_platform_data *pdata)
 {
 	int ret;
@@ -479,7 +479,7 @@ static int __devinit lm3533_device_setup(struct lm3533 *lm3533,
 	return 0;
 }
 
-static int __devinit lm3533_device_init(struct lm3533 *lm3533)
+static int lm3533_device_init(struct lm3533 *lm3533)
 {
 	struct lm3533_platform_data *pdata = lm3533->dev->platform_data;
 	int ret;
@@ -496,8 +496,8 @@ static int __devinit lm3533_device_init(struct lm3533 *lm3533)
 	dev_set_drvdata(lm3533->dev, lm3533);
 
 	if (gpio_is_valid(lm3533->gpio_hwen)) {
-		ret = gpio_request_one(lm3533->gpio_hwen, GPIOF_OUT_INIT_LOW,
-								"lm3533-hwen");
+		ret = devm_gpio_request_one(lm3533->dev, lm3533->gpio_hwen,
+					GPIOF_OUT_INIT_LOW, "lm3533-hwen");
 		if (ret < 0) {
 			dev_err(lm3533->dev,
 				"failed to request HWEN GPIO %d\n",
@@ -528,13 +528,11 @@ err_unregister:
 	mfd_remove_devices(lm3533->dev);
 err_disable:
 	lm3533_disable(lm3533);
-	if (gpio_is_valid(lm3533->gpio_hwen))
-		gpio_free(lm3533->gpio_hwen);
 
 	return ret;
 }
 
-static void __devexit lm3533_device_exit(struct lm3533 *lm3533)
+static void lm3533_device_exit(struct lm3533 *lm3533)
 {
 	dev_dbg(lm3533->dev, "%s\n", __func__);
 
@@ -542,8 +540,6 @@ static void __devexit lm3533_device_exit(struct lm3533 *lm3533)
 
 	mfd_remove_devices(lm3533->dev);
 	lm3533_disable(lm3533);
-	if (gpio_is_valid(lm3533->gpio_hwen))
-		gpio_free(lm3533->gpio_hwen);
 }
 
 static bool lm3533_readable_register(struct device *dev, unsigned int reg)
@@ -596,7 +592,7 @@ static struct regmap_config regmap_config = {
 	.precious_reg	= lm3533_precious_register,
 };
 
-static int __devinit lm3533_i2c_probe(struct i2c_client *i2c,
+static int lm3533_i2c_probe(struct i2c_client *i2c,
 					const struct i2c_device_id *id)
 {
 	struct lm3533 *lm3533;
@@ -624,7 +620,7 @@ static int __devinit lm3533_i2c_probe(struct i2c_client *i2c,
 	return 0;
 }
 
-static int __devexit lm3533_i2c_remove(struct i2c_client *i2c)
+static int lm3533_i2c_remove(struct i2c_client *i2c)
 {
 	struct lm3533 *lm3533 = i2c_get_clientdata(i2c);
 
@@ -648,7 +644,7 @@ static struct i2c_driver lm3533_i2c_driver = {
 	},
 	.id_table	= lm3533_i2c_ids,
 	.probe		= lm3533_i2c_probe,
-	.remove		= __devexit_p(lm3533_i2c_remove),
+	.remove		= lm3533_i2c_remove,
 };
 
 static int __init lm3533_i2c_init(void)

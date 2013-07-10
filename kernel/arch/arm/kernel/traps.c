@@ -204,13 +204,6 @@ static void dump_backtrace(struct pt_regs *regs, struct task_struct *tsk)
 }
 #endif
 
-void dump_stack(void)
-{
-	dump_backtrace(NULL, NULL);
-}
-
-EXPORT_SYMBOL(dump_stack);
-
 void show_stack(struct task_struct *tsk, unsigned long *sp)
 {
 	dump_backtrace(NULL, tsk);
@@ -296,7 +289,7 @@ static void oops_end(unsigned long flags, struct pt_regs *regs, int signr)
 
 	bust_spinlocks(0);
 	die_owner = -1;
-	add_taint(TAINT_DIE);
+	add_taint(TAINT_DIE, LOCKDEP_NOW_UNRELIABLE);
 	die_nest_count--;
 	if (!die_nest_count)
 		/* Nest count reaches zero, release the lock. */

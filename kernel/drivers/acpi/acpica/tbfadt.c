@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2012, Intel Corp.
+ * Copyright (C) 2000 - 2013, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -172,6 +172,7 @@ static struct acpi_fadt_pm_info fadt_pm_info_table[] = {
  * FUNCTION:    acpi_tb_init_generic_address
  *
  * PARAMETERS:  generic_address     - GAS struct to be initialized
+ *              space_id            - ACPI Space ID for this register
  *              byte_width          - Width of this register
  *              address             - Address of the register
  *
@@ -407,8 +408,8 @@ static void acpi_tb_convert_fadt(void)
 	 * should be zero are indeed zero. This will workaround BIOSs that
 	 * inadvertently place values in these fields.
 	 *
-	 * The ACPI 1.0 reserved fields that will be zeroed are the bytes located at
-	 * offset 45, 55, 95, and the word located at offset 109, 110.
+	 * The ACPI 1.0 reserved fields that will be zeroed are the bytes located
+	 * at offset 45, 55, 95, and the word located at offset 109, 110.
 	 *
 	 * Note: The FADT revision value is unreliable. Only the length can be
 	 * trusted.
@@ -558,8 +559,12 @@ static void acpi_tb_validate_fadt(void)
 		/*
 		 * For each extended field, check for length mismatch between the
 		 * legacy length field and the corresponding 64-bit X length field.
+		 * Note: If the legacy length field is > 0xFF bits, ignore this
+		 * check. (GPE registers can be larger than the 64-bit GAS structure
+		 * can accomodate, 0xFF bits).
 		 */
 		if (address64->address &&
+		    (ACPI_MUL_8(length) <= ACPI_UINT8_MAX) &&
 		    (address64->bit_width != ACPI_MUL_8(length))) {
 			ACPI_BIOS_WARNING((AE_INFO,
 					   "32/64X length mismatch in FADT/%s: %u/%u",

@@ -122,6 +122,7 @@ extern int ata_acpi_register(void);
 extern void ata_acpi_unregister(void);
 extern void ata_acpi_bind(struct ata_device *dev);
 extern void ata_acpi_unbind(struct ata_device *dev);
+extern void ata_acpi_hotplug_init(struct ata_host *host);
 #else
 static inline void ata_acpi_dissociate(struct ata_host *host) { }
 static inline int ata_acpi_on_suspend(struct ata_port *ap) { return 0; }
@@ -134,6 +135,7 @@ static inline int ata_acpi_register(void) { return 0; }
 static inline void ata_acpi_unregister(void) { }
 static inline void ata_acpi_bind(struct ata_device *dev) { }
 static inline void ata_acpi_unbind(struct ata_device *dev) { }
+static inline void ata_acpi_hotplug_init(struct ata_host *host) {}
 #endif
 
 /* libata-scsi.c */
@@ -165,6 +167,8 @@ extern void ata_eh_about_to_do(struct ata_link *link, struct ata_device *dev,
 			       unsigned int action);
 extern void ata_eh_done(struct ata_link *link, struct ata_device *dev,
 			unsigned int action);
+extern unsigned int ata_read_log_page(struct ata_device *dev, u8 log,
+				      u8 page, void *buf, unsigned int sectors);
 extern void ata_eh_autopsy(struct ata_port *ap);
 const char *ata_get_cmd_descript(u8 command);
 extern void ata_eh_report(struct ata_port *ap);
@@ -180,6 +184,9 @@ extern void ata_eh_finish(struct ata_port *ap);
 extern int ata_ering_map(struct ata_ering *ering,
 			 int (*map_fn)(struct ata_ering_entry *, void *),
 		  	 void *arg);
+extern unsigned int atapi_eh_tur(struct ata_device *dev, u8 *r_sense_key);
+extern unsigned int atapi_eh_request_sense(struct ata_device *dev,
+					   u8 *sense_buf, u8 dfl_sense_key);
 
 /* libata-pmp.c */
 #ifdef CONFIG_SATA_PMP
@@ -227,5 +234,29 @@ static inline int ata_sff_init(void)
 static inline void ata_sff_exit(void)
 { }
 #endif /* CONFIG_ATA_SFF */
+
+/* libata-zpodd.c */
+#ifdef CONFIG_SATA_ZPODD
+void zpodd_init(struct ata_device *dev);
+void zpodd_exit(struct ata_device *dev);
+static inline bool zpodd_dev_enabled(struct ata_device *dev)
+{
+	return dev->zpodd != NULL;
+}
+void zpodd_on_suspend(struct ata_device *dev);
+bool zpodd_zpready(struct ata_device *dev);
+void zpodd_enable_run_wake(struct ata_device *dev);
+void zpodd_disable_run_wake(struct ata_device *dev);
+void zpodd_post_poweron(struct ata_device *dev);
+#else /* CONFIG_SATA_ZPODD */
+static inline void zpodd_init(struct ata_device *dev) {}
+static inline void zpodd_exit(struct ata_device *dev) {}
+static inline bool zpodd_dev_enabled(struct ata_device *dev) { return false; }
+static inline void zpodd_on_suspend(struct ata_device *dev) {}
+static inline bool zpodd_zpready(struct ata_device *dev) { return false; }
+static inline void zpodd_enable_run_wake(struct ata_device *dev) {}
+static inline void zpodd_disable_run_wake(struct ata_device *dev) {}
+static inline void zpodd_post_poweron(struct ata_device *dev) {}
+#endif /* CONFIG_SATA_ZPODD */
 
 #endif /* __LIBATA_H__ */

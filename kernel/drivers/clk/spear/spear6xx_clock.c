@@ -13,28 +13,27 @@
 #include <linux/clkdev.h>
 #include <linux/io.h>
 #include <linux/spinlock_types.h>
-#include <mach/misc_regs.h>
 #include "clk.h"
 
 static DEFINE_SPINLOCK(_lock);
 
-#define PLL1_CTR			(MISC_BASE + 0x008)
-#define PLL1_FRQ			(MISC_BASE + 0x00C)
-#define PLL2_CTR			(MISC_BASE + 0x014)
-#define PLL2_FRQ			(MISC_BASE + 0x018)
-#define PLL_CLK_CFG			(MISC_BASE + 0x020)
+#define PLL1_CTR			(misc_base + 0x008)
+#define PLL1_FRQ			(misc_base + 0x00C)
+#define PLL2_CTR			(misc_base + 0x014)
+#define PLL2_FRQ			(misc_base + 0x018)
+#define PLL_CLK_CFG			(misc_base + 0x020)
 	/* PLL_CLK_CFG register masks */
 	#define MCTR_CLK_SHIFT		28
 	#define MCTR_CLK_MASK		3
 
-#define CORE_CLK_CFG			(MISC_BASE + 0x024)
+#define CORE_CLK_CFG			(misc_base + 0x024)
 	/* CORE CLK CFG register masks */
 	#define HCLK_RATIO_SHIFT	10
 	#define HCLK_RATIO_MASK		2
 	#define PCLK_RATIO_SHIFT	8
 	#define PCLK_RATIO_MASK		2
 
-#define PERIP_CLK_CFG			(MISC_BASE + 0x028)
+#define PERIP_CLK_CFG			(misc_base + 0x028)
 	/* PERIP_CLK_CFG register masks */
 	#define CLCD_CLK_SHIFT		2
 	#define CLCD_CLK_MASK		2
@@ -48,7 +47,7 @@ static DEFINE_SPINLOCK(_lock);
 	#define GPT3_CLK_SHIFT		12
 	#define GPT_CLK_MASK		1
 
-#define PERIP1_CLK_ENB			(MISC_BASE + 0x02C)
+#define PERIP1_CLK_ENB			(misc_base + 0x02C)
 	/* PERIP1_CLK_ENB register masks */
 	#define UART0_CLK_ENB		3
 	#define UART1_CLK_ENB		4
@@ -74,13 +73,13 @@ static DEFINE_SPINLOCK(_lock);
 	#define USBH0_CLK_ENB		25
 	#define USBH1_CLK_ENB		26
 
-#define PRSC0_CLK_CFG			(MISC_BASE + 0x044)
-#define PRSC1_CLK_CFG			(MISC_BASE + 0x048)
-#define PRSC2_CLK_CFG			(MISC_BASE + 0x04C)
+#define PRSC0_CLK_CFG			(misc_base + 0x044)
+#define PRSC1_CLK_CFG			(misc_base + 0x048)
+#define PRSC2_CLK_CFG			(misc_base + 0x04C)
 
-#define CLCD_CLK_SYNT			(MISC_BASE + 0x05C)
-#define FIRDA_CLK_SYNT			(MISC_BASE + 0x060)
-#define UART_CLK_SYNT			(MISC_BASE + 0x064)
+#define CLCD_CLK_SYNT			(misc_base + 0x05C)
+#define FIRDA_CLK_SYNT			(misc_base + 0x060)
+#define UART_CLK_SYNT			(misc_base + 0x064)
 
 /* vco rate configuration table, in ascending order of rates */
 static struct pll_rate_tbl pll_rtbl[] = {
@@ -92,6 +91,7 @@ static struct pll_rate_tbl pll_rtbl[] = {
 /* aux rate configuration table, in ascending order of rates */
 static struct aux_rate_tbl aux_rtbl[] = {
 	/* For PLL1 = 332 MHz */
+	{.xscale = 2, .yscale = 27, .eq = 0}, /* 12.296 MHz */
 	{.xscale = 2, .yscale = 8, .eq = 0}, /* 41.5 MHz */
 	{.xscale = 2, .yscale = 4, .eq = 0}, /* 83 MHz */
 	{.xscale = 1, .yscale = 2, .eq = 1}, /* 166 MHz */
@@ -114,12 +114,9 @@ static struct gpt_rate_tbl gpt_rtbl[] = {
 	{.mscale = 1, .nscale = 0}, /* 83 MHz */
 };
 
-void __init spear6xx_clk_init(void)
+void __init spear6xx_clk_init(void __iomem *misc_base)
 {
 	struct clk *clk, *clk1;
-
-	clk = clk_register_fixed_rate(NULL, "apb_pclk", NULL, CLK_IS_ROOT, 0);
-	clk_register_clkdev(clk, "apb_pclk", NULL);
 
 	clk = clk_register_fixed_rate(NULL, "osc_32k_clk", NULL, CLK_IS_ROOT,
 			32000);
@@ -156,7 +153,8 @@ void __init spear6xx_clk_init(void)
 	clk_register_clkdev(clk, NULL, "wdt");
 
 	/* clock derived from pll1 clk */
-	clk = clk_register_fixed_factor(NULL, "cpu_clk", "pll1_clk", 0, 1, 1);
+	clk = clk_register_fixed_factor(NULL, "cpu_clk", "pll1_clk",
+			CLK_SET_RATE_PARENT, 1, 1);
 	clk_register_clkdev(clk, "cpu_clk", NULL);
 
 	clk = clk_register_divider(NULL, "ahb_clk", "pll1_clk",
@@ -261,11 +259,13 @@ void __init spear6xx_clk_init(void)
 	/* clock derived from pll3 clk */
 	clk = clk_register_gate(NULL, "usbh0_clk", "pll3_clk", 0,
 			PERIP1_CLK_ENB, USBH0_CLK_ENB, 0, &_lock);
-	clk_register_clkdev(clk, NULL, "usbh.0_clk");
+	clk_register_clkdev(clk, NULL, "e1800000.ehci");
+	clk_register_clkdev(clk, NULL, "e1900000.ohci");
 
 	clk = clk_register_gate(NULL, "usbh1_clk", "pll3_clk", 0,
 			PERIP1_CLK_ENB, USBH1_CLK_ENB, 0, &_lock);
-	clk_register_clkdev(clk, NULL, "usbh.1_clk");
+	clk_register_clkdev(clk, NULL, "e2000000.ehci");
+	clk_register_clkdev(clk, NULL, "e2100000.ohci");
 
 	clk = clk_register_gate(NULL, "usbd_clk", "pll3_clk", 0, PERIP1_CLK_ENB,
 			USBD_CLK_ENB, 0, &_lock);

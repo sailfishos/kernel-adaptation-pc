@@ -22,7 +22,7 @@
  * bind to nothing. '*' means bind to all netcards - this includes non-802.11
  * netcards. Bindings can be added later using an IOCTL.
  */
-char *g_net_dev = "";
+static char *g_net_dev = "";
 /*------------------------------------------------------------------------------
  * Context: process
  */
@@ -59,6 +59,6 @@ module_exit(ozwpan_exit);
 
 MODULE_AUTHOR("Chris Kelly");
 MODULE_DESCRIPTION("Ozmo Devices USB over WiFi hcd driver");
-MODULE_VERSION("1.0.10");
+MODULE_VERSION("1.0.13");
 MODULE_LICENSE("GPL");
 

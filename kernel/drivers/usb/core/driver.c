@@ -32,8 +32,6 @@
 #include "usb.h"
 
 
-#ifdef CONFIG_HOTPLUG
-
 /*
  * Adds a new dynamic USBdevice ID to this driver,
  * and cause the driver to probe for all devices again.
@@ -125,10 +123,9 @@ store_remove_id(struct device_driver *driver, const char *buf, size_t count)
 {
 	struct usb_dynid *dynid, *n;
 	struct usb_driver *usb_driver = to_usb_driver(driver);
-	u32 idVendor = 0;
-	u32 idProduct = 0;
-	int fields = 0;
-	int retval = 0;
+	u32 idVendor;
+	u32 idProduct;
+	int fields;
 
 	fields = sscanf(buf, "%x %x", &idVendor, &idProduct);
 	if (fields < 2)
@@ -141,14 +138,10 @@ store_remove_id(struct device_driver *driver, const char *buf, size_t count)
 		    (id->idProduct == idProduct)) {
 			list_del(&dynid->node);
 			kfree(dynid);
-			retval = 0;
 			break;
 		}
 	}
 	spin_unlock(&usb_driver->dynids.lock);
-
-	if (retval)
-		return retval;
 	return count;
 }
 static DRIVER_ATTR(remove_id, S_IRUGO | S_IWUSR, show_dynids, store_remove_id);
@@ -199,20 +192,6 @@ static void usb_free_dynids(struct usb_driver *usb_drv)
 	}
 	spin_unlock(&usb_drv->dynids.lock);
 }
-#else
-static inline int usb_create_newid_files(struct usb_driver *usb_drv)
-{
-	return 0;
-}
-
-static void usb_remove_newid_files(struct usb_driver *usb_drv)
-{
-}
-
-static inline void usb_free_dynids(struct usb_driver *usb_drv)
-{
-}
-#endif
 
 static const struct usb_device_id *usb_match_dynamic_id(struct usb_interface *intf,
 							struct usb_driver *drv)
@@ -243,7 +222,7 @@ static int usb_probe_device(struct device *dev)
 	/* TODO: Add real matching code */
 
 	/* The device should always appear to be in use
-	 * unless the driver suports autosuspend.
+	 * unless the driver supports autosuspend.
 	 */
 	if (!udriver->supports_autosuspend)
 		error = usb_autoresume_device(udev);
@@ -795,7 +774,6 @@ static int usb_device_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
-#ifdef	CONFIG_HOTPLUG
 static int usb_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	struct usb_device *usb_dev;
@@ -836,14 +814,6 @@ static int usb_uevent(struct device *dev, struct kobj_uevent_env *env)
 
 	return 0;
 }
-
-#else
-
-static int usb_uevent(struct device *dev, struct kobj_uevent_env *env)
-{
-	return -ENODEV;
-}
-#endif	/* CONFIG_HOTPLUG */
 
 /**
  * usb_register_device_driver - register a USB device (not interface) driver
@@ -1226,9 +1196,14 @@ done:
  *
  * This is the central routine for suspending USB devices.  It calls the
  * suspend methods for all the interface drivers in @udev and then calls
- * the suspend method for @udev itself.  If an error occurs at any stage,
- * all the interfaces which were suspended are resumed so that they remain
- * in the same state as the device.
+ * the suspend method for @udev itself.  When the routine is called in
+ * autosuspend, if an error occurs at any stage, all the interfaces
+ * which were suspended are resumed so that they remain in the same
+ * state as the device, but when called from system sleep, all error
+ * from suspend methods of interfaces and the non-root-hub device itself
+ * are simply ignored, so all suspended interfaces are only resumed
+ * to the device's state when @udev is root-hub and its suspend method
+ * returns failure.
  *
  * Autosuspend requests originating from a child device or an interface
  * driver may be made without the protection of @udev's device lock, but
@@ -1278,10 +1253,12 @@ static int usb_suspend_both(struct usb_device *udev, pm_message_t msg)
 
 	/* If the suspend failed, resume interfaces that did get suspended */
 	if (status != 0) {
-		msg.event ^= (PM_EVENT_SUSPEND | PM_EVENT_RESUME);
-		while (++i < n) {
-			intf = udev->actconfig->interface[i];
-			usb_resume_interface(udev, intf, msg, 0);
+		if (udev->actconfig) {
+			msg.event ^= (PM_EVENT_SUSPEND | PM_EVENT_RESUME);
+			while (++i < n) {
+				intf = udev->actconfig->interface[i];
+				usb_resume_interface(udev, intf, msg, 0);
+			}
 		}
 
 	/* If the suspend succeeded then prevent any more URB submissions
@@ -1437,7 +1414,7 @@ int usb_resume(struct device *dev, pm_message_t msg)
 
 #endif /* CONFIG_PM */
 
-#ifdef CONFIG_USB_SUSPEND
+#ifdef CONFIG_PM_RUNTIME
 
 /**
  * usb_enable_autosuspend - allow a USB device to be autosuspended
@@ -1805,7 +1782,7 @@ int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable)
 	return ret;
 }
 
-#endif /* CONFIG_USB_SUSPEND */
+#endif /* CONFIG_PM_RUNTIME */
 
 struct bus_type usb_bus_type = {
 	.name =		"usb",

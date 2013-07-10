@@ -180,8 +180,9 @@ static void release_pmc_hardware(void) {}
 
 static bool check_hw_exists(void)
 {
-	u64 val, val_new = ~0;
-	int i, reg, ret = 0;
+	u64 val, val_fail, val_new= ~0;
+	int i, reg, reg_fail, ret = 0;
+	int bios_fail = 0;
 
 	/*
 	 * Check to see if the BIOS enabled any of the counters, if so
@@ -192,8 +193,11 @@ static bool check_hw_exists(void)
 		ret = rdmsrl_safe(reg, &val);
 		if (ret)
 			goto msr_fail;
-		if (val & ARCH_PERFMON_EVENTSEL_ENABLE)
-			goto bios_fail;
+		if (val & ARCH_PERFMON_EVENTSEL_ENABLE) {
+			bios_fail = 1;
+			val_fail = val;
+			reg_fail = reg;
+		}
 	}
 
 	if (x86_pmu.num_counters_fixed) {
@@ -202,31 +206,35 @@ static bool check_hw_exists(void)
 		if (ret)
 			goto msr_fail;
 		for (i = 0; i < x86_pmu.num_counters_fixed; i++) {
-			if (val & (0x03 << i*4))
-				goto bios_fail;
+			if (val & (0x03 << i*4)) {
+				bios_fail = 1;
+				val_fail = val;
+				reg_fail = reg;
+			}
 		}
 	}
 
 	/*
-	 * Now write a value and read it back to see if it matches,
-	 * this is needed to detect certain hardware emulators (qemu/kvm)
-	 * that don't trap on the MSR access and always return 0s.
+	 * Read the current value, change it and read it back to see if it
+	 * matches, this is needed to detect certain hardware emulators
+	 * (qemu/kvm) that don't trap on the MSR access and always return 0s.
 	 */
-	val = 0xabcdUL;
 	reg = x86_pmu_event_addr(0);
+	if (rdmsrl_safe(reg, &val))
+		goto msr_fail;
+	val ^= 0xffffUL;
 	ret = wrmsrl_safe(reg, val);
 	ret |= rdmsrl_safe(reg, &val_new);
 	if (ret || val != val_new)
 		goto msr_fail;
 
-	return true;
-
-bios_fail:
 	/*
 	 * We still allow the PMU driver to operate:
 	 */
-	printk(KERN_CONT "Broken BIOS detected, complain to your hardware vendor.\n");
-	printk(KERN_ERR FW_BUG "the BIOS has corrupted hw-PMU resources (MSR %x is %Lx)\n", reg, val);
+	if (bios_fail) {
+		printk(KERN_CONT "Broken BIOS detected, complain to your hardware vendor.\n");
+		printk(KERN_ERR FW_BUG "the BIOS has corrupted hw-PMU resources (MSR %x is %Lx)\n", reg_fail, val_fail);
+	}
 
 	return true;
 
@@ -827,7 +835,7 @@ static inline void x86_assign_hw_event(struct perf_event *event,
 	} else {
 		hwc->config_base = x86_pmu_config_addr(hwc->idx);
 		hwc->event_base  = x86_pmu_event_addr(hwc->idx);
-		hwc->event_base_rdpmc = hwc->idx;
+		hwc->event_base_rdpmc = x86_pmu_rdpmc_index(hwc->idx);
 	}
 }
 
@@ -1308,6 +1316,144 @@ static struct attribute_group x86_pmu_format_group = {
 	.attrs = NULL,
 };
 
+/*
+ * Remove all undefined events (x86_pmu.event_map(id) == 0)
+ * out of events_attr attributes.
+ */
+static void __init filter_events(struct attribute **attrs)
+{
+	struct device_attribute *d;
+	struct perf_pmu_events_attr *pmu_attr;
+	int i, j;
+
+	for (i = 0; attrs[i]; i++) {
+		d = (struct device_attribute *)attrs[i];
+		pmu_attr = container_of(d, struct perf_pmu_events_attr, attr);
+		/* str trumps id */
+		if (pmu_attr->event_str)
+			continue;
+		if (x86_pmu.event_map(i))
+			continue;
+
+		for (j = i; attrs[j]; j++)
+			attrs[j] = attrs[j + 1];
+
+		/* Check the shifted attr. */
+		i--;
+	}
+}
+
+/* Merge two pointer arrays */
+static __init struct attribute **merge_attr(struct attribute **a, struct attribute **b)
+{
+	struct attribute **new;
+	int j, i;
+
+	for (j = 0; a[j]; j++)
+		;
+	for (i = 0; b[i]; i++)
+		j++;
+	j++;
+
+	new = kmalloc(sizeof(struct attribute *) * j, GFP_KERNEL);
+	if (!new)
+		return NULL;
+
+	j = 0;
+	for (i = 0; a[i]; i++)
+		new[j++] = a[i];
+	for (i = 0; b[i]; i++)
+		new[j++] = b[i];
+	new[j] = NULL;
+
+	return new;
+}
+
+ssize_t events_sysfs_show(struct device *dev, struct device_attribute *attr,
+			  char *page)
+{
+	struct perf_pmu_events_attr *pmu_attr = \
+		container_of(attr, struct perf_pmu_events_attr, attr);
+	u64 config = x86_pmu.event_map(pmu_attr->id);
+
+	/* string trumps id */
+	if (pmu_attr->event_str)
+		return sprintf(page, "%s", pmu_attr->event_str);
+
+	return x86_pmu.events_sysfs_show(page, config);
+}
+
+EVENT_ATTR(cpu-cycles,			CPU_CYCLES		);
+EVENT_ATTR(instructions,		INSTRUCTIONS		);
+EVENT_ATTR(cache-references,		CACHE_REFERENCES	);
+EVENT_ATTR(cache-misses, 		CACHE_MISSES		);
+EVENT_ATTR(branch-instructions,		BRANCH_INSTRUCTIONS	);
+EVENT_ATTR(branch-misses,		BRANCH_MISSES		);
+EVENT_ATTR(bus-cycles,			BUS_CYCLES		);
+EVENT_ATTR(stalled-cycles-frontend,	STALLED_CYCLES_FRONTEND	);
+EVENT_ATTR(stalled-cycles-backend,	STALLED_CYCLES_BACKEND	);
+EVENT_ATTR(ref-cycles,			REF_CPU_CYCLES		);
+
+static struct attribute *empty_attrs;
+
+static struct attribute *events_attr[] = {
+	EVENT_PTR(CPU_CYCLES),
+	EVENT_PTR(INSTRUCTIONS),
+	EVENT_PTR(CACHE_REFERENCES),
+	EVENT_PTR(CACHE_MISSES),
+	EVENT_PTR(BRANCH_INSTRUCTIONS),
+	EVENT_PTR(BRANCH_MISSES),
+	EVENT_PTR(BUS_CYCLES),
+	EVENT_PTR(STALLED_CYCLES_FRONTEND),
+	EVENT_PTR(STALLED_CYCLES_BACKEND),
+	EVENT_PTR(REF_CPU_CYCLES),
+	NULL,
+};
+
+static struct attribute_group x86_pmu_events_group = {
+	.name = "events",
+	.attrs = events_attr,
+};
+
+ssize_t x86_event_sysfs_show(char *page, u64 config, u64 event)
+{
+	u64 umask  = (config & ARCH_PERFMON_EVENTSEL_UMASK) >> 8;
+	u64 cmask  = (config & ARCH_PERFMON_EVENTSEL_CMASK) >> 24;
+	bool edge  = (config & ARCH_PERFMON_EVENTSEL_EDGE);
+	bool pc    = (config & ARCH_PERFMON_EVENTSEL_PIN_CONTROL);
+	bool any   = (config & ARCH_PERFMON_EVENTSEL_ANY);
+	bool inv   = (config & ARCH_PERFMON_EVENTSEL_INV);
+	ssize_t ret;
+
+	/*
+	* We have whole page size to spend and just little data
+	* to write, so we can safely use sprintf.
+	*/
+	ret = sprintf(page, "event=0x%02llx", event);
+
+	if (umask)
+		ret += sprintf(page + ret, ",umask=0x%02llx", umask);
+
+	if (edge)
+		ret += sprintf(page + ret, ",edge");
+
+	if (pc)
+		ret += sprintf(page + ret, ",pc");
+
+	if (any)
+		ret += sprintf(page + ret, ",any");
+
+	if (inv)
+		ret += sprintf(page + ret, ",inv");
+
+	if (cmask)
+		ret += sprintf(page + ret, ",cmask=0x%02llx", cmask);
+
+	ret += sprintf(page + ret, "\n");
+
+	return ret;
+}
+
 static int __init init_hw_perf_events(void)
 {
 	struct x86_pmu_quirk *quirk;
@@ -1349,10 +1495,26 @@ static int __init init_hw_perf_events(void)
 
 	unconstrained = (struct event_constraint)
 		__EVENT_CONSTRAINT(0, (1ULL << x86_pmu.num_counters) - 1,
-				   0, x86_pmu.num_counters, 0);
+				   0, x86_pmu.num_counters, 0, 0);
 
 	x86_pmu.attr_rdpmc = 1; /* enable userspace RDPMC usage by default */
 	x86_pmu_format_group.attrs = x86_pmu.format_attrs;
+
+	if (x86_pmu.event_attrs)
+		x86_pmu_events_group.attrs = x86_pmu.event_attrs;
+
+	if (!x86_pmu.events_sysfs_show)
+		x86_pmu_events_group.attrs = &empty_attrs;
+	else
+		filter_events(x86_pmu_events_group.attrs);
+
+	if (x86_pmu.cpu_events) {
+		struct attribute **tmp;
+
+		tmp = merge_attr(x86_pmu_events_group.attrs, x86_pmu.cpu_events);
+		if (!WARN_ON(!tmp))
+			x86_pmu_events_group.attrs = tmp;
+	}
 
 	pr_info("... version:                %d\n",     x86_pmu.version);
 	pr_info("... bit width:              %d\n",     x86_pmu.cntval_bits);
@@ -1643,6 +1805,7 @@ static struct attribute_group x86_pmu_attr_group = {
 static const struct attribute_group *x86_pmu_attr_groups[] = {
 	&x86_pmu_attr_group,
 	&x86_pmu_format_group,
+	&x86_pmu_events_group,
 	NULL,
 };
 

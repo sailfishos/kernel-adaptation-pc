@@ -21,9 +21,9 @@
 #include <linux/usb/gadget.h>
 #include <linux/usb/atmel_usba_udc.h>
 #include <linux/delay.h>
+#include <linux/platform_data/atmel.h>
 
 #include <asm/gpio.h>
-#include <mach/board.h>
 
 #include "atmel_usba_udc.h"
 
@@ -93,7 +93,7 @@ static ssize_t queue_dbg_read(struct file *file, char __user *buf,
 	if (!access_ok(VERIFY_WRITE, buf, nbytes))
 		return -EFAULT;
 
-	mutex_lock(&file->f_dentry->d_inode->i_mutex);
+	mutex_lock(&file_inode(file)->i_mutex);
 	list_for_each_entry_safe(req, tmp_req, queue, queue) {
 		len = snprintf(tmpbuf, sizeof(tmpbuf),
 				"%8p %08x %c%c%c %5d %c%c%c\n",
@@ -120,7 +120,7 @@ static ssize_t queue_dbg_read(struct file *file, char __user *buf,
 		nbytes -= len;
 		buf += len;
 	}
-	mutex_unlock(&file->f_dentry->d_inode->i_mutex);
+	mutex_unlock(&file_inode(file)->i_mutex);
 
 	return actual;
 }
@@ -168,13 +168,13 @@ out:
 static ssize_t regs_dbg_read(struct file *file, char __user *buf,
 		size_t nbytes, loff_t *ppos)
 {
-	struct inode *inode = file->f_dentry->d_inode;
+	struct inode *inode = file_inode(file);
 	int ret;
 
 	mutex_lock(&inode->i_mutex);
 	ret = simple_read_from_buffer(buf, nbytes, ppos,
 			file->private_data,
-			file->f_dentry->d_inode->i_size);
+			file_inode(file)->i_size);
 	mutex_unlock(&inode->i_mutex);
 
 	return ret;
@@ -489,13 +489,8 @@ request_complete(struct usba_ep *ep, struct usba_request *req, int status)
 	if (req->req.status == -EINPROGRESS)
 		req->req.status = status;
 
-	if (req->mapped) {
-		dma_unmap_single(
-			&udc->pdev->dev, req->req.dma, req->req.length,
-			ep->is_in ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
-		req->req.dma = DMA_ADDR_INVALID;
-		req->mapped = 0;
-	}
+	if (req->using_dma)
+		usb_gadget_unmap_request(&udc->gadget, &req->req, ep->is_in);
 
 	DBG(DBG_GADGET | DBG_REQ,
 		"%s: req %p complete: status %d, actual %u\n",
@@ -684,7 +679,6 @@ usba_ep_alloc_request(struct usb_ep *_ep, gfp_t gfp_flags)
 		return NULL;
 
 	INIT_LIST_HEAD(&req->queue);
-	req->req.dma = DMA_ADDR_INVALID;
 
 	return &req->req;
 }
@@ -717,20 +711,11 @@ static int queue_dma(struct usba_udc *udc, struct usba_ep *ep,
 		return -EINVAL;
 	}
 
+	ret = usb_gadget_map_request(&udc->gadget, &req->req, ep->is_in);
+	if (ret)
+		return ret;
+
 	req->using_dma = 1;
-
-	if (req->req.dma == DMA_ADDR_INVALID) {
-		req->req.dma = dma_map_single(
-			&udc->pdev->dev, req->req.buf, req->req.length,
-			ep->is_in ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
-		req->mapped = 1;
-	} else {
-		dma_sync_single_for_device(
-			&udc->pdev->dev, req->req.dma, req->req.length,
-			ep->is_in ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
-		req->mapped = 0;
-	}
-
 	req->ctrl = USBA_BF(DMA_BUF_LEN, req->req.length)
 			| USBA_DMA_CH_EN | USBA_DMA_END_BUF_IE
 			| USBA_DMA_END_TR_EN | USBA_DMA_END_TR_IE;
@@ -1799,7 +1784,6 @@ static int atmel_usba_start(struct usb_gadget *gadget,
 
 	udc->devstatus = 1 << USB_DEVICE_SELF_POWERED;
 	udc->driver = driver;
-	udc->gadget.dev.driver = &driver->driver;
 	spin_unlock_irqrestore(&udc->lock, flags);
 
 	clk_enable(udc->pclk);
@@ -1841,7 +1825,6 @@ static int atmel_usba_stop(struct usb_gadget *gadget,
 	toggle_bias(0);
 	usba_writel(udc, CTRL, USBA_DISABLE_MASK);
 
-	udc->gadget.dev.driver = NULL;
 	udc->driver = NULL;
 
 	clk_disable(udc->hclk);
@@ -1899,10 +1882,6 @@ static int __init usba_udc_probe(struct platform_device *pdev)
 	}
 	dev_info(&pdev->dev, "FIFO at 0x%08lx mapped at %p\n",
 		 (unsigned long)fifo->start, udc->fifo);
-
-	device_initialize(&udc->gadget.dev);
-	udc->gadget.dev.parent = &pdev->dev;
-	udc->gadget.dev.dma_mask = pdev->dev.dma_mask;
 
 	platform_set_drvdata(pdev, udc);
 
@@ -1962,12 +1941,6 @@ static int __init usba_udc_probe(struct platform_device *pdev)
 	}
 	udc->irq = irq;
 
-	ret = device_add(&udc->gadget.dev);
-	if (ret) {
-		dev_dbg(&pdev->dev, "Could not add gadget: %d\n", ret);
-		goto err_device_add;
-	}
-
 	if (gpio_is_valid(pdata->vbus_pin)) {
 		if (!gpio_request(pdata->vbus_pin, "atmel_usba_udc")) {
 			udc->vbus_pin = pdata->vbus_pin;
@@ -2007,9 +1980,6 @@ err_add_udc:
 		gpio_free(udc->vbus_pin);
 	}
 
-	device_unregister(&udc->gadget.dev);
-
-err_device_add:
 	free_irq(irq, udc);
 err_request_irq:
 	kfree(usba_ep);
@@ -2021,8 +1991,6 @@ err_map_regs:
 	clk_put(hclk);
 err_get_hclk:
 	clk_put(pclk);
-
-	platform_set_drvdata(pdev, NULL);
 
 	return ret;
 }
@@ -2053,8 +2021,6 @@ static int __exit usba_udc_remove(struct platform_device *pdev)
 	clk_put(udc->hclk);
 	clk_put(udc->pclk);
 
-	device_unregister(&udc->gadget.dev);
-
 	return 0;
 }
 
@@ -2066,17 +2032,7 @@ static struct platform_driver udc_driver = {
 	},
 };
 
-static int __init udc_init(void)
-{
-	return platform_driver_probe(&udc_driver, usba_udc_probe);
-}
-module_init(udc_init);
-
-static void __exit udc_exit(void)
-{
-	platform_driver_unregister(&udc_driver);
-}
-module_exit(udc_exit);
+module_platform_driver_probe(udc_driver, usba_udc_probe);
 
 MODULE_DESCRIPTION("Atmel USBA UDC driver");
 MODULE_AUTHOR("Haavard Skinnemoen (Atmel)");

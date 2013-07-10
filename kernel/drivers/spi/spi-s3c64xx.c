@@ -24,6 +24,7 @@
 #include <linux/delay.h>
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
+#include <linux/dmaengine.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/spi/spi.h>
@@ -31,8 +32,11 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 
+#include <linux/platform_data/spi-s3c64xx.h>
+
+#ifdef CONFIG_S3C_DMA
 #include <mach/dma.h>
-#include <plat/s3c64xx-spi.h>
+#endif
 
 #define MAX_SPI_PORTS		3
 
@@ -62,7 +66,7 @@
 #define S3C64XX_SPI_CLKSEL_SRCMSK	(3<<9)
 #define S3C64XX_SPI_CLKSEL_SRCSHFT	9
 #define S3C64XX_SPI_ENCLK_ENABLE	(1<<8)
-#define S3C64XX_SPI_PSR_MASK 		0xff
+#define S3C64XX_SPI_PSR_MASK		0xff
 
 #define S3C64XX_SPI_MODE_CH_TSZ_BYTE		(0<<29)
 #define S3C64XX_SPI_MODE_CH_TSZ_HALFWORD	(1<<29)
@@ -131,10 +135,9 @@
 #define TXBUSY    (1<<3)
 
 struct s3c64xx_spi_dma_data {
-	unsigned		ch;
-	enum dma_data_direction direction;
-	enum dma_ch	dmach;
-	struct property		*dma_prop;
+	struct dma_chan *ch;
+	enum dma_transfer_direction direction;
+	unsigned int dmach;
 };
 
 /**
@@ -196,14 +199,12 @@ struct s3c64xx_spi_driver_data {
 	unsigned                        cur_speed;
 	struct s3c64xx_spi_dma_data	rx_dma;
 	struct s3c64xx_spi_dma_data	tx_dma;
+#ifdef CONFIG_S3C_DMA
 	struct samsung_dma_ops		*ops;
+#endif
 	struct s3c64xx_spi_port_config	*port_conf;
 	unsigned int			port_id;
 	unsigned long			gpios[4];
-};
-
-static struct s3c2410_dma_client s3c64xx_spi_dma_client = {
-	.name = "samsung-spi-dma",
 };
 
 static void flush_fifo(struct s3c64xx_spi_driver_data *sdd)
@@ -213,6 +214,10 @@ static void flush_fifo(struct s3c64xx_spi_driver_data *sdd)
 	u32 val;
 
 	writel(0, regs + S3C64XX_SPI_PACKET_CNT);
+
+	val = readl(regs + S3C64XX_SPI_CH_CFG);
+	val &= ~(S3C64XX_SPI_CH_RXCH_ON | S3C64XX_SPI_CH_TXCH_ON);
+	writel(val, regs + S3C64XX_SPI_CH_CFG);
 
 	val = readl(regs + S3C64XX_SPI_CH_CFG);
 	val |= S3C64XX_SPI_CH_SW_RST;
@@ -248,10 +253,6 @@ static void flush_fifo(struct s3c64xx_spi_driver_data *sdd)
 	val = readl(regs + S3C64XX_SPI_MODE_CFG);
 	val &= ~(S3C64XX_SPI_MODE_TXDMA_ON | S3C64XX_SPI_MODE_RXDMA_ON);
 	writel(val, regs + S3C64XX_SPI_MODE_CFG);
-
-	val = readl(regs + S3C64XX_SPI_CH_CFG);
-	val &= ~(S3C64XX_SPI_CH_RXCH_ON | S3C64XX_SPI_CH_TXCH_ON);
-	writel(val, regs + S3C64XX_SPI_CH_CFG);
 }
 
 static void s3c64xx_spi_dmacb(void *data)
@@ -282,6 +283,13 @@ static void s3c64xx_spi_dmacb(void *data)
 	spin_unlock_irqrestore(&sdd->lock, flags);
 }
 
+#ifdef CONFIG_S3C_DMA
+/* FIXME: remove this section once arch/arm/mach-s3c64xx uses dmaengine */
+
+static struct s3c2410_dma_client s3c64xx_spi_dma_client = {
+	.name = "samsung-spi-dma",
+};
+
 static void prepare_dma(struct s3c64xx_spi_dma_data *dma,
 					unsigned len, dma_addr_t buf)
 {
@@ -295,14 +303,14 @@ static void prepare_dma(struct s3c64xx_spi_dma_data *dma,
 		config.direction = sdd->rx_dma.direction;
 		config.fifo = sdd->sfr_start + S3C64XX_SPI_RX_DATA;
 		config.width = sdd->cur_bpw / 8;
-		sdd->ops->config(sdd->rx_dma.ch, &config);
+		sdd->ops->config((enum dma_ch)sdd->rx_dma.ch, &config);
 	} else {
 		sdd = container_of((void *)dma,
 			struct s3c64xx_spi_driver_data, tx_dma);
 		config.direction =  sdd->tx_dma.direction;
 		config.fifo = sdd->sfr_start + S3C64XX_SPI_TX_DATA;
 		config.width = sdd->cur_bpw / 8;
-		sdd->ops->config(sdd->tx_dma.ch, &config);
+		sdd->ops->config((enum dma_ch)sdd->tx_dma.ch, &config);
 	}
 
 	info.cap = DMA_SLAVE;
@@ -312,26 +320,163 @@ static void prepare_dma(struct s3c64xx_spi_dma_data *dma,
 	info.direction = dma->direction;
 	info.buf = buf;
 
-	sdd->ops->prepare(dma->ch, &info);
-	sdd->ops->trigger(dma->ch);
+	sdd->ops->prepare((enum dma_ch)dma->ch, &info);
+	sdd->ops->trigger((enum dma_ch)dma->ch);
 }
 
 static int acquire_dma(struct s3c64xx_spi_driver_data *sdd)
 {
 	struct samsung_dma_req req;
+	struct device *dev = &sdd->pdev->dev;
 
 	sdd->ops = samsung_dma_get_ops();
 
 	req.cap = DMA_SLAVE;
 	req.client = &s3c64xx_spi_dma_client;
 
-	req.dt_dmach_prop = sdd->rx_dma.dma_prop;
-	sdd->rx_dma.ch = sdd->ops->request(sdd->rx_dma.dmach, &req);
-	req.dt_dmach_prop = sdd->tx_dma.dma_prop;
-	sdd->tx_dma.ch = sdd->ops->request(sdd->tx_dma.dmach, &req);
+	sdd->rx_dma.ch = (void *)sdd->ops->request(sdd->rx_dma.dmach, &req, dev, "rx");
+	sdd->tx_dma.ch = (void *)sdd->ops->request(sdd->tx_dma.dmach, &req, dev, "tx");
 
 	return 1;
 }
+
+static int s3c64xx_spi_prepare_transfer(struct spi_master *spi)
+{
+	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
+
+	/* Acquire DMA channels */
+	while (!acquire_dma(sdd))
+		usleep_range(10000, 11000);
+
+	pm_runtime_get_sync(&sdd->pdev->dev);
+
+	return 0;
+}
+
+static int s3c64xx_spi_unprepare_transfer(struct spi_master *spi)
+{
+	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
+
+	/* Free DMA channels */
+	sdd->ops->release((enum dma_ch)sdd->rx_dma.ch, &s3c64xx_spi_dma_client);
+	sdd->ops->release((enum dma_ch)sdd->tx_dma.ch, &s3c64xx_spi_dma_client);
+
+	pm_runtime_put(&sdd->pdev->dev);
+
+	return 0;
+}
+
+static void s3c64xx_spi_dma_stop(struct s3c64xx_spi_driver_data *sdd,
+				 struct s3c64xx_spi_dma_data *dma)
+{
+	sdd->ops->stop((enum dma_ch)dma->ch);
+}
+#else
+
+static void prepare_dma(struct s3c64xx_spi_dma_data *dma,
+					unsigned len, dma_addr_t buf)
+{
+	struct s3c64xx_spi_driver_data *sdd;
+	struct dma_slave_config config;
+	struct scatterlist sg;
+	struct dma_async_tx_descriptor *desc;
+
+	if (dma->direction == DMA_DEV_TO_MEM) {
+		sdd = container_of((void *)dma,
+			struct s3c64xx_spi_driver_data, rx_dma);
+		config.direction = dma->direction;
+		config.src_addr = sdd->sfr_start + S3C64XX_SPI_RX_DATA;
+		config.src_addr_width = sdd->cur_bpw / 8;
+		config.src_maxburst = 1;
+		dmaengine_slave_config(dma->ch, &config);
+	} else {
+		sdd = container_of((void *)dma,
+			struct s3c64xx_spi_driver_data, tx_dma);
+		config.direction = dma->direction;
+		config.dst_addr = sdd->sfr_start + S3C64XX_SPI_TX_DATA;
+		config.dst_addr_width = sdd->cur_bpw / 8;
+		config.dst_maxburst = 1;
+		dmaengine_slave_config(dma->ch, &config);
+	}
+
+	sg_init_table(&sg, 1);
+	sg_dma_len(&sg) = len;
+	sg_set_page(&sg, pfn_to_page(PFN_DOWN(buf)),
+		    len, offset_in_page(buf));
+	sg_dma_address(&sg) = buf;
+
+	desc = dmaengine_prep_slave_sg(dma->ch,
+		&sg, 1, dma->direction, DMA_PREP_INTERRUPT);
+
+	desc->callback = s3c64xx_spi_dmacb;
+	desc->callback_param = dma;
+
+	dmaengine_submit(desc);
+	dma_async_issue_pending(dma->ch);
+}
+
+static int s3c64xx_spi_prepare_transfer(struct spi_master *spi)
+{
+	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
+	dma_filter_fn filter = sdd->cntrlr_info->filter;
+	struct device *dev = &sdd->pdev->dev;
+	dma_cap_mask_t mask;
+	int ret;
+
+	dma_cap_zero(mask);
+	dma_cap_set(DMA_SLAVE, mask);
+
+	/* Acquire DMA channels */
+	sdd->rx_dma.ch = dma_request_slave_channel_compat(mask, filter,
+				(void*)sdd->rx_dma.dmach, dev, "rx");
+	if (!sdd->rx_dma.ch) {
+		dev_err(dev, "Failed to get RX DMA channel\n");
+		ret = -EBUSY;
+		goto out;
+	}
+
+	sdd->tx_dma.ch = dma_request_slave_channel_compat(mask, filter,
+				(void*)sdd->tx_dma.dmach, dev, "tx");
+	if (!sdd->tx_dma.ch) {
+		dev_err(dev, "Failed to get TX DMA channel\n");
+		ret = -EBUSY;
+		goto out_rx;
+	}
+
+	ret = pm_runtime_get_sync(&sdd->pdev->dev);
+	if (ret < 0) {
+		dev_err(dev, "Failed to enable device: %d\n", ret);
+		goto out_tx;
+	}
+
+	return 0;
+
+out_tx:
+	dma_release_channel(sdd->tx_dma.ch);
+out_rx:
+	dma_release_channel(sdd->rx_dma.ch);
+out:
+	return ret;
+}
+
+static int s3c64xx_spi_unprepare_transfer(struct spi_master *spi)
+{
+	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
+
+	/* Free DMA channels */
+	dma_release_channel(sdd->rx_dma.ch);
+	dma_release_channel(sdd->tx_dma.ch);
+
+	pm_runtime_put(&sdd->pdev->dev);
+	return 0;
+}
+
+static void s3c64xx_spi_dma_stop(struct s3c64xx_spi_driver_data *sdd,
+				 struct s3c64xx_spi_dma_data *dma)
+{
+	dmaengine_terminate_all(dma->ch);
+}
+#endif
 
 static void enable_datapath(struct s3c64xx_spi_driver_data *sdd,
 				struct spi_device *spi,
@@ -516,7 +661,7 @@ static void s3c64xx_spi_config(struct s3c64xx_spi_driver_data *sdd)
 
 	/* Disable Clock */
 	if (sdd->port_conf->clk_from_cmu) {
-		clk_disable(sdd->src_clk);
+		clk_disable_unprepare(sdd->src_clk);
 	} else {
 		val = readl(regs + S3C64XX_SPI_CLK_CFG);
 		val &= ~S3C64XX_SPI_ENCLK_ENABLE;
@@ -564,7 +709,7 @@ static void s3c64xx_spi_config(struct s3c64xx_spi_driver_data *sdd)
 		/* There is half-multiplier before the SPI */
 		clk_set_rate(sdd->src_clk, sdd->cur_speed * 2);
 		/* Enable Clock */
-		clk_enable(sdd->src_clk);
+		clk_prepare_enable(sdd->src_clk);
 	} else {
 		/* Configure Clock */
 		val = readl(regs + S3C64XX_SPI_CLK_CFG);
@@ -697,7 +842,7 @@ static int s3c64xx_spi_transfer_one_message(struct spi_master *master,
 		INIT_COMPLETION(sdd->xfer_completion);
 
 		/* Only BPW and Speed may change across transfers */
-		bpw = xfer->bits_per_word ? : spi->bits_per_word;
+		bpw = xfer->bits_per_word;
 		speed = xfer->speed_hz ? : spi->max_speed_hz;
 
 		if (xfer->len % (bpw / 8)) {
@@ -715,9 +860,9 @@ static int s3c64xx_spi_transfer_one_message(struct spi_master *master,
 		}
 
 		/* Polling method for xfers not bigger than FIFO capacity */
-		if (xfer->len <= ((FIFO_LVL_MASK(sdd) >> 1) + 1))
-			use_dma = 0;
-		else
+		use_dma = 0;
+		if (sdd->rx_dma.ch && sdd->tx_dma.ch &&
+		    (xfer->len > ((FIFO_LVL_MASK(sdd) >> 1) + 1)))
 			use_dma = 1;
 
 		spin_lock_irqsave(&sdd->lock, flags);
@@ -743,8 +888,7 @@ static int s3c64xx_spi_transfer_one_message(struct spi_master *master,
 		       sdd->regs + S3C64XX_SPI_SLAVE_SEL);
 
 		if (status) {
-			dev_err(&spi->dev, "I/O Error: "
-				"rx-%d tx-%d res:rx-%c tx-%c len-%d\n",
+			dev_err(&spi->dev, "I/O Error: rx-%d tx-%d res:rx-%c tx-%c len-%d\n",
 				xfer->rx_buf ? 1 : 0, xfer->tx_buf ? 1 : 0,
 				(sdd->state & RXBUSY) ? 'f' : 'p',
 				(sdd->state & TXBUSY) ? 'f' : 'p',
@@ -753,10 +897,10 @@ static int s3c64xx_spi_transfer_one_message(struct spi_master *master,
 			if (use_dma) {
 				if (xfer->tx_buf != NULL
 						&& (sdd->state & TXBUSY))
-					sdd->ops->stop(sdd->tx_dma.ch);
+					s3c64xx_spi_dma_stop(sdd, &sdd->tx_dma);
 				if (xfer->rx_buf != NULL
 						&& (sdd->state & RXBUSY))
-					sdd->ops->stop(sdd->rx_dma.ch);
+					s3c64xx_spi_dma_stop(sdd, &sdd->rx_dma);
 			}
 
 			goto out;
@@ -771,8 +915,6 @@ static int s3c64xx_spi_transfer_one_message(struct spi_master *master,
 			if (list_is_last(&xfer->transfer_list,
 						&msg->transfers))
 				cs_toggle = 1;
-			else
-				disable_cs(sdd, spi);
 		}
 
 		msg->actual_length += xfer->len;
@@ -795,34 +937,7 @@ out:
 	return 0;
 }
 
-static int s3c64xx_spi_prepare_transfer(struct spi_master *spi)
-{
-	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
-
-	/* Acquire DMA channels */
-	while (!acquire_dma(sdd))
-		msleep(10);
-
-	pm_runtime_get_sync(&sdd->pdev->dev);
-
-	return 0;
-}
-
-static int s3c64xx_spi_unprepare_transfer(struct spi_master *spi)
-{
-	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(spi);
-
-	/* Free DMA channels */
-	sdd->ops->release(sdd->rx_dma.ch, &s3c64xx_spi_dma_client);
-	sdd->ops->release(sdd->tx_dma.ch, &s3c64xx_spi_dma_client);
-
-	pm_runtime_put(&sdd->pdev->dev);
-
-	return 0;
-}
-
 static struct s3c64xx_spi_csinfo *s3c64xx_get_slave_ctrldata(
-				struct s3c64xx_spi_driver_data *sdd,
 				struct spi_device *spi)
 {
 	struct s3c64xx_spi_csinfo *cs;
@@ -835,9 +950,7 @@ static struct s3c64xx_spi_csinfo *s3c64xx_get_slave_ctrldata(
 		return ERR_PTR(-EINVAL);
 	}
 
-	for_each_child_of_node(slave_np, data_np)
-		if (!strcmp(data_np->name, "controller-data"))
-			break;
+	data_np = of_get_child_by_name(slave_np, "controller-data");
 	if (!data_np) {
 		dev_err(&spi->dev, "child node 'controller-data' not found\n");
 		return ERR_PTR(-EINVAL);
@@ -845,21 +958,22 @@ static struct s3c64xx_spi_csinfo *s3c64xx_get_slave_ctrldata(
 
 	cs = kzalloc(sizeof(*cs), GFP_KERNEL);
 	if (!cs) {
-		dev_err(&spi->dev, "could not allocate memory for controller"
-					" data\n");
+		dev_err(&spi->dev, "could not allocate memory for controller data\n");
+		of_node_put(data_np);
 		return ERR_PTR(-ENOMEM);
 	}
 
 	cs->line = of_get_named_gpio(data_np, "cs-gpio", 0);
 	if (!gpio_is_valid(cs->line)) {
-		dev_err(&spi->dev, "chip select gpio is not specified or "
-					"invalid\n");
+		dev_err(&spi->dev, "chip select gpio is not specified or invalid\n");
 		kfree(cs);
+		of_node_put(data_np);
 		return ERR_PTR(-EINVAL);
 	}
 
 	of_property_read_u32(data_np, "samsung,spi-feedback-delay", &fb_delay);
 	cs->fb_delay = fb_delay;
+	of_node_put(data_np);
 	return cs;
 }
 
@@ -880,7 +994,7 @@ static int s3c64xx_spi_setup(struct spi_device *spi)
 
 	sdd = spi_master_get_devdata(spi->master);
 	if (!cs && spi->dev.of_node) {
-		cs = s3c64xx_get_slave_ctrldata(sdd, spi);
+		cs = s3c64xx_get_slave_ctrldata(spi);
 		spi->controller_data = cs;
 	}
 
@@ -918,15 +1032,6 @@ static int s3c64xx_spi_setup(struct spi_device *spi)
 
 	spin_unlock_irqrestore(&sdd->lock, flags);
 
-	if (spi->bits_per_word != 8
-			&& spi->bits_per_word != 16
-			&& spi->bits_per_word != 32) {
-		dev_err(&spi->dev, "setup: %dbits/wrd not supported!\n",
-							spi->bits_per_word);
-		err = -EINVAL;
-		goto setup_exit;
-	}
-
 	pm_runtime_get_sync(&sdd->pdev->dev);
 
 	/* Check if we can provide the requested rate */
@@ -958,6 +1063,8 @@ static int s3c64xx_spi_setup(struct spi_device *spi)
 		if (spi->max_speed_hz >= speed) {
 			spi->max_speed_hz = speed;
 		} else {
+			dev_err(&spi->dev, "Can't set %dHz transfer speed\n",
+				spi->max_speed_hz);
 			err = -EINVAL;
 			goto setup_exit;
 		}
@@ -976,7 +1083,8 @@ err_msgq:
 	spi_set_ctldata(spi, NULL);
 
 err_gpio_req:
-	kfree(cs);
+	if (spi->dev.of_node)
+		kfree(cs);
 
 	return err;
 }
@@ -997,25 +1105,30 @@ static irqreturn_t s3c64xx_spi_irq(int irq, void *data)
 {
 	struct s3c64xx_spi_driver_data *sdd = data;
 	struct spi_master *spi = sdd->master;
-	unsigned int val;
+	unsigned int val, clr = 0;
 
-	val = readl(sdd->regs + S3C64XX_SPI_PENDING_CLR);
+	val = readl(sdd->regs + S3C64XX_SPI_STATUS);
 
-	val &= S3C64XX_SPI_PND_RX_OVERRUN_CLR |
-		S3C64XX_SPI_PND_RX_UNDERRUN_CLR |
-		S3C64XX_SPI_PND_TX_OVERRUN_CLR |
-		S3C64XX_SPI_PND_TX_UNDERRUN_CLR;
-
-	writel(val, sdd->regs + S3C64XX_SPI_PENDING_CLR);
-
-	if (val & S3C64XX_SPI_PND_RX_OVERRUN_CLR)
+	if (val & S3C64XX_SPI_ST_RX_OVERRUN_ERR) {
+		clr = S3C64XX_SPI_PND_RX_OVERRUN_CLR;
 		dev_err(&spi->dev, "RX overrun\n");
-	if (val & S3C64XX_SPI_PND_RX_UNDERRUN_CLR)
+	}
+	if (val & S3C64XX_SPI_ST_RX_UNDERRUN_ERR) {
+		clr |= S3C64XX_SPI_PND_RX_UNDERRUN_CLR;
 		dev_err(&spi->dev, "RX underrun\n");
-	if (val & S3C64XX_SPI_PND_TX_OVERRUN_CLR)
+	}
+	if (val & S3C64XX_SPI_ST_TX_OVERRUN_ERR) {
+		clr |= S3C64XX_SPI_PND_TX_OVERRUN_CLR;
 		dev_err(&spi->dev, "TX overrun\n");
-	if (val & S3C64XX_SPI_PND_TX_UNDERRUN_CLR)
+	}
+	if (val & S3C64XX_SPI_ST_TX_UNDERRUN_ERR) {
+		clr |= S3C64XX_SPI_PND_TX_UNDERRUN_CLR;
 		dev_err(&spi->dev, "TX underrun\n");
+	}
+
+	/* Clear the pending irq by setting and then clearing it */
+	writel(clr, sdd->regs + S3C64XX_SPI_PENDING_CLR);
+	writel(0, sdd->regs + S3C64XX_SPI_PENDING_CLR);
 
 	return IRQ_HANDLED;
 }
@@ -1039,9 +1152,13 @@ static void s3c64xx_spi_hwinit(struct s3c64xx_spi_driver_data *sdd, int channel)
 	writel(0, regs + S3C64XX_SPI_MODE_CFG);
 	writel(0, regs + S3C64XX_SPI_PACKET_CNT);
 
-	/* Clear any irq pending bits */
-	writel(readl(regs + S3C64XX_SPI_PENDING_CLR),
-				regs + S3C64XX_SPI_PENDING_CLR);
+	/* Clear any irq pending bits, should set and clear the bits */
+	val = S3C64XX_SPI_PND_RX_OVERRUN_CLR |
+		S3C64XX_SPI_PND_RX_UNDERRUN_CLR |
+		S3C64XX_SPI_PND_TX_OVERRUN_CLR |
+		S3C64XX_SPI_PND_TX_UNDERRUN_CLR;
+	writel(val, regs + S3C64XX_SPI_PENDING_CLR);
+	writel(0, regs + S3C64XX_SPI_PENDING_CLR);
 
 	writel(0, regs + S3C64XX_SPI_SWAP_CFG);
 
@@ -1054,87 +1171,8 @@ static void s3c64xx_spi_hwinit(struct s3c64xx_spi_driver_data *sdd, int channel)
 	flush_fifo(sdd);
 }
 
-static int __devinit s3c64xx_spi_get_dmares(
-			struct s3c64xx_spi_driver_data *sdd, bool tx)
-{
-	struct platform_device *pdev = sdd->pdev;
-	struct s3c64xx_spi_dma_data *dma_data;
-	struct property *prop;
-	struct resource *res;
-	char prop_name[15], *chan_str;
-
-	if (tx) {
-		dma_data = &sdd->tx_dma;
-		dma_data->direction = DMA_TO_DEVICE;
-		chan_str = "tx";
-	} else {
-		dma_data = &sdd->rx_dma;
-		dma_data->direction = DMA_FROM_DEVICE;
-		chan_str = "rx";
-	}
-
-	if (!sdd->pdev->dev.of_node) {
-		res = platform_get_resource(pdev, IORESOURCE_DMA, tx ? 0 : 1);
-		if (!res) {
-			dev_err(&pdev->dev, "Unable to get SPI-%s dma "
-					"resource\n", chan_str);
-			return -ENXIO;
-		}
-		dma_data->dmach = res->start;
-		return 0;
-	}
-
-	sprintf(prop_name, "%s-dma-channel", chan_str);
-	prop = of_find_property(pdev->dev.of_node, prop_name, NULL);
-	if (!prop) {
-		dev_err(&pdev->dev, "%s dma channel property not specified\n",
-					chan_str);
-		return -ENXIO;
-	}
-
-	dma_data->dmach = DMACH_DT_PROP;
-	dma_data->dma_prop = prop;
-	return 0;
-}
-
 #ifdef CONFIG_OF
-static int s3c64xx_spi_parse_dt_gpio(struct s3c64xx_spi_driver_data *sdd)
-{
-	struct device *dev = &sdd->pdev->dev;
-	int idx, gpio, ret;
-
-	/* find gpios for mosi, miso and clock lines */
-	for (idx = 0; idx < 3; idx++) {
-		gpio = of_get_gpio(dev->of_node, idx);
-		if (!gpio_is_valid(gpio)) {
-			dev_err(dev, "invalid gpio[%d]: %d\n", idx, gpio);
-			goto free_gpio;
-		}
-
-		ret = gpio_request(gpio, "spi-bus");
-		if (ret) {
-			dev_err(dev, "gpio [%d] request failed: %d\n",
-				gpio, ret);
-			goto free_gpio;
-		}
-	}
-	return 0;
-
-free_gpio:
-	while (--idx >= 0)
-		gpio_free(sdd->gpios[idx]);
-	return -EINVAL;
-}
-
-static void s3c64xx_spi_dt_gpio_free(struct s3c64xx_spi_driver_data *sdd)
-{
-	unsigned int idx;
-	for (idx = 0; idx < 3; idx++)
-		gpio_free(sdd->gpios[idx]);
-}
-
-static struct __devinit s3c64xx_spi_info * s3c64xx_spi_parse_dt(
-						struct device *dev)
+static struct s3c64xx_spi_info *s3c64xx_spi_parse_dt(struct device *dev)
 {
 	struct s3c64xx_spi_info *sci;
 	u32 temp;
@@ -1146,16 +1184,14 @@ static struct __devinit s3c64xx_spi_info * s3c64xx_spi_parse_dt(
 	}
 
 	if (of_property_read_u32(dev->of_node, "samsung,spi-src-clk", &temp)) {
-		dev_warn(dev, "spi bus clock parent not specified, using "
-				"clock at index 0 as parent\n");
+		dev_warn(dev, "spi bus clock parent not specified, using clock at index 0 as parent\n");
 		sci->src_clk_nr = 0;
 	} else {
 		sci->src_clk_nr = temp;
 	}
 
 	if (of_property_read_u32(dev->of_node, "num-cs", &temp)) {
-		dev_warn(dev, "number of chip select lines not specified, "
-				"assuming 1 chip select line\n");
+		dev_warn(dev, "number of chip select lines not specified, assuming 1 chip select line\n");
 		sci->num_cs = 1;
 	} else {
 		sci->num_cs = temp;
@@ -1167,15 +1203,6 @@ static struct __devinit s3c64xx_spi_info * s3c64xx_spi_parse_dt(
 static struct s3c64xx_spi_info *s3c64xx_spi_parse_dt(struct device *dev)
 {
 	return dev->platform_data;
-}
-
-static int s3c64xx_spi_parse_dt_gpio(struct s3c64xx_spi_driver_data *sdd)
-{
-	return -EINVAL;
-}
-
-static void s3c64xx_spi_dt_gpio_free(struct s3c64xx_spi_driver_data *sdd)
-{
 }
 #endif
 
@@ -1195,9 +1222,10 @@ static inline struct s3c64xx_spi_port_config *s3c64xx_spi_get_port_config(
 			 platform_get_device_id(pdev)->driver_data;
 }
 
-static int __init s3c64xx_spi_probe(struct platform_device *pdev)
+static int s3c64xx_spi_probe(struct platform_device *pdev)
 {
 	struct resource	*mem_res;
+	struct resource	*res;
 	struct s3c64xx_spi_driver_data *sdd;
 	struct s3c64xx_spi_info *sci = pdev->dev.platform_data;
 	struct spi_master *master;
@@ -1245,8 +1273,8 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
 	if (pdev->dev.of_node) {
 		ret = of_alias_get_id(pdev->dev.of_node, "spi");
 		if (ret < 0) {
-			dev_err(&pdev->dev, "failed to get alias id, "
-						"errno %d\n", ret);
+			dev_err(&pdev->dev, "failed to get alias id, errno %d\n",
+				ret);
 			goto err0;
 		}
 		sdd->port_id = ret;
@@ -1256,13 +1284,26 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
 
 	sdd->cur_bpw = 8;
 
-	ret = s3c64xx_spi_get_dmares(sdd, true);
-	if (ret)
-		goto err0;
+	if (!sdd->pdev->dev.of_node) {
+		res = platform_get_resource(pdev, IORESOURCE_DMA,  0);
+		if (!res) {
+			dev_err(&pdev->dev, "Unable to get SPI tx dma "
+					"resource\n");
+			return -ENXIO;
+		}
+		sdd->tx_dma.dmach = res->start;
 
-	ret = s3c64xx_spi_get_dmares(sdd, false);
-	if (ret)
-		goto err0;
+		res = platform_get_resource(pdev, IORESOURCE_DMA,  1);
+		if (!res) {
+			dev_err(&pdev->dev, "Unable to get SPI rx dma "
+					"resource\n");
+			return -ENXIO;
+		}
+		sdd->rx_dma.dmach = res->start;
+	}
+
+	sdd->tx_dma.direction = DMA_MEM_TO_DEV;
+	sdd->rx_dma.direction = DMA_DEV_TO_MEM;
 
 	master->dev.of_node = pdev->dev.of_node;
 	master->bus_num = sdd->port_id;
@@ -1273,52 +1314,49 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
 	master->unprepare_transfer_hardware = s3c64xx_spi_unprepare_transfer;
 	master->num_chipselect = sci->num_cs;
 	master->dma_alignment = 8;
+	master->bits_per_word_mask = BIT(32 - 1) | BIT(16 - 1) | BIT(8 - 1);
 	/* the spi->mode bits understood by this driver: */
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
 
-	sdd->regs = devm_request_and_ioremap(&pdev->dev, mem_res);
-	if (sdd->regs == NULL) {
-		dev_err(&pdev->dev, "Unable to remap IO\n");
-		ret = -ENXIO;
-		goto err1;
+	sdd->regs = devm_ioremap_resource(&pdev->dev, mem_res);
+	if (IS_ERR(sdd->regs)) {
+		ret = PTR_ERR(sdd->regs);
+		goto err0;
 	}
 
-	if (!sci->cfg_gpio && pdev->dev.of_node) {
-		if (s3c64xx_spi_parse_dt_gpio(sdd))
-			return -EBUSY;
-	} else if (sci->cfg_gpio == NULL || sci->cfg_gpio()) {
+	if (sci->cfg_gpio && sci->cfg_gpio()) {
 		dev_err(&pdev->dev, "Unable to config gpio\n");
 		ret = -EBUSY;
-		goto err2;
+		goto err0;
 	}
 
 	/* Setup clocks */
-	sdd->clk = clk_get(&pdev->dev, "spi");
+	sdd->clk = devm_clk_get(&pdev->dev, "spi");
 	if (IS_ERR(sdd->clk)) {
 		dev_err(&pdev->dev, "Unable to acquire clock 'spi'\n");
 		ret = PTR_ERR(sdd->clk);
-		goto err3;
+		goto err0;
 	}
 
-	if (clk_enable(sdd->clk)) {
+	if (clk_prepare_enable(sdd->clk)) {
 		dev_err(&pdev->dev, "Couldn't enable clock 'spi'\n");
 		ret = -EBUSY;
-		goto err4;
+		goto err0;
 	}
 
 	sprintf(clk_name, "spi_busclk%d", sci->src_clk_nr);
-	sdd->src_clk = clk_get(&pdev->dev, clk_name);
+	sdd->src_clk = devm_clk_get(&pdev->dev, clk_name);
 	if (IS_ERR(sdd->src_clk)) {
 		dev_err(&pdev->dev,
 			"Unable to acquire clock '%s'\n", clk_name);
 		ret = PTR_ERR(sdd->src_clk);
-		goto err5;
+		goto err2;
 	}
 
-	if (clk_enable(sdd->src_clk)) {
+	if (clk_prepare_enable(sdd->src_clk)) {
 		dev_err(&pdev->dev, "Couldn't enable clock '%s'\n", clk_name);
 		ret = -EBUSY;
-		goto err6;
+		goto err2;
 	}
 
 	/* Setup Deufult Mode */
@@ -1328,11 +1366,12 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
 	init_completion(&sdd->xfer_completion);
 	INIT_LIST_HEAD(&sdd->queue);
 
-	ret = request_irq(irq, s3c64xx_spi_irq, 0, "spi-s3c64xx", sdd);
+	ret = devm_request_irq(&pdev->dev, irq, s3c64xx_spi_irq, 0,
+				"spi-s3c64xx", sdd);
 	if (ret != 0) {
 		dev_err(&pdev->dev, "Failed to request IRQ %d: %d\n",
 			irq, ret);
-		goto err7;
+		goto err3;
 	}
 
 	writel(S3C64XX_SPI_INT_RX_OVERRUN_EN | S3C64XX_SPI_INT_RX_UNDERRUN_EN |
@@ -1342,11 +1381,10 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
 	if (spi_register_master(master)) {
 		dev_err(&pdev->dev, "cannot register SPI master\n");
 		ret = -EBUSY;
-		goto err8;
+		goto err3;
 	}
 
-	dev_dbg(&pdev->dev, "Samsung SoC SPI Driver loaded for Bus SPI-%d "
-					"with %d Slaves attached\n",
+	dev_dbg(&pdev->dev, "Samsung SoC SPI Driver loaded for Bus SPI-%d with %d Slaves attached\n",
 					sdd->port_id, master->num_chipselect);
 	dev_dbg(&pdev->dev, "\tIOmem=[0x%x-0x%x]\tDMA=[Rx-%d, Tx-%d]\n",
 					mem_res->end, mem_res->start,
@@ -1356,21 +1394,10 @@ static int __init s3c64xx_spi_probe(struct platform_device *pdev)
 
 	return 0;
 
-err8:
-	free_irq(irq, sdd);
-err7:
-	clk_disable(sdd->src_clk);
-err6:
-	clk_put(sdd->src_clk);
-err5:
-	clk_disable(sdd->clk);
-err4:
-	clk_put(sdd->clk);
 err3:
-	if (!sdd->cntrlr_info->cfg_gpio && pdev->dev.of_node)
-		s3c64xx_spi_dt_gpio_free(sdd);
+	clk_disable_unprepare(sdd->src_clk);
 err2:
-err1:
+	clk_disable_unprepare(sdd->clk);
 err0:
 	platform_set_drvdata(pdev, NULL);
 	spi_master_put(master);
@@ -1389,16 +1416,9 @@ static int s3c64xx_spi_remove(struct platform_device *pdev)
 
 	writel(0, sdd->regs + S3C64XX_SPI_INT_EN);
 
-	free_irq(platform_get_irq(pdev, 0), sdd);
+	clk_disable_unprepare(sdd->src_clk);
 
-	clk_disable(sdd->src_clk);
-	clk_put(sdd->src_clk);
-
-	clk_disable(sdd->clk);
-	clk_put(sdd->clk);
-
-	if (!sdd->cntrlr_info->cfg_gpio && pdev->dev.of_node)
-		s3c64xx_spi_dt_gpio_free(sdd);
+	clk_disable_unprepare(sdd->clk);
 
 	platform_set_drvdata(pdev, NULL);
 	spi_master_put(master);
@@ -1406,20 +1426,17 @@ static int s3c64xx_spi_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int s3c64xx_spi_suspend(struct device *dev)
 {
-	struct spi_master *master = spi_master_get(dev_get_drvdata(dev));
+	struct spi_master *master = dev_get_drvdata(dev);
 	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(master);
 
 	spi_master_suspend(master);
 
 	/* Disable the clock */
-	clk_disable(sdd->src_clk);
-	clk_disable(sdd->clk);
-
-	if (!sdd->cntrlr_info->cfg_gpio && dev->of_node)
-		s3c64xx_spi_dt_gpio_free(sdd);
+	clk_disable_unprepare(sdd->src_clk);
+	clk_disable_unprepare(sdd->clk);
 
 	sdd->cur_speed = 0; /* Output Clock is stopped */
 
@@ -1428,18 +1445,16 @@ static int s3c64xx_spi_suspend(struct device *dev)
 
 static int s3c64xx_spi_resume(struct device *dev)
 {
-	struct spi_master *master = spi_master_get(dev_get_drvdata(dev));
+	struct spi_master *master = dev_get_drvdata(dev);
 	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(master);
 	struct s3c64xx_spi_info *sci = sdd->cntrlr_info;
 
-	if (!sci->cfg_gpio && dev->of_node)
-		s3c64xx_spi_parse_dt_gpio(sdd);
-	else
+	if (sci->cfg_gpio)
 		sci->cfg_gpio();
 
 	/* Enable the clock */
-	clk_enable(sdd->src_clk);
-	clk_enable(sdd->clk);
+	clk_prepare_enable(sdd->src_clk);
+	clk_prepare_enable(sdd->clk);
 
 	s3c64xx_spi_hwinit(sdd, sdd->port_id);
 
@@ -1447,27 +1462,27 @@ static int s3c64xx_spi_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 #ifdef CONFIG_PM_RUNTIME
 static int s3c64xx_spi_runtime_suspend(struct device *dev)
 {
-	struct spi_master *master = spi_master_get(dev_get_drvdata(dev));
+	struct spi_master *master = dev_get_drvdata(dev);
 	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(master);
 
-	clk_disable(sdd->clk);
-	clk_disable(sdd->src_clk);
+	clk_disable_unprepare(sdd->clk);
+	clk_disable_unprepare(sdd->src_clk);
 
 	return 0;
 }
 
 static int s3c64xx_spi_runtime_resume(struct device *dev)
 {
-	struct spi_master *master = spi_master_get(dev_get_drvdata(dev));
+	struct spi_master *master = dev_get_drvdata(dev);
 	struct s3c64xx_spi_driver_data *sdd = spi_master_get_devdata(master);
 
-	clk_enable(sdd->src_clk);
-	clk_enable(sdd->clk);
+	clk_prepare_enable(sdd->src_clk);
+	clk_prepare_enable(sdd->clk);
 
 	return 0;
 }

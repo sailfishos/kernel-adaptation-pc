@@ -69,31 +69,19 @@ static inline unsigned long do_swap(volatile unsigned long *ptr,
 	return val;
 }
 
-void __cpuinit leon_callin(void)
+void __cpuinit leon_cpu_pre_starting(void *arg)
+{
+	leon_configure_cache_smp();
+}
+
+void __cpuinit leon_cpu_pre_online(void *arg)
 {
 	int cpuid = hard_smp_processor_id();
 
-	local_ops->cache_all();
-	local_ops->tlb_all();
-	leon_configure_cache_smp();
-
-	notify_cpu_starting(cpuid);
-
-	/* Get our local ticker going. */
-	register_percpu_ce(cpuid);
-
-	calibrate_delay();
-	smp_store_cpu_info(cpuid);
-
-	local_ops->cache_all();
-	local_ops->tlb_all();
-
-	/*
-	 * Unblock the master CPU _only_ when the scheduler state
-	 * of all secondary CPUs will be up-to-date, so after
-	 * the SMP initialization the master will be just allowed
-	 * to call the scheduler code.
-	 * Allow master to continue.
+	/* Allow master to continue. The master will then give us the
+	 * go-ahead by setting the smp_commenced_mask and will wait without
+	 * timeouts until our setup is completed fully (signified by
+	 * our bit being set in the cpu_online_mask).
 	 */
 	do_swap(&cpu_callin_map[cpuid], 1);
 
@@ -110,9 +98,6 @@ void __cpuinit leon_callin(void)
 
 	while (!cpumask_test_cpu(cpuid, &smp_commenced_mask))
 		mb();
-
-	local_irq_enable();
-	set_cpu_online(cpuid, true);
 }
 
 /*
@@ -268,24 +253,15 @@ void __init leon_smp_done(void)
 
 	/* Free unneeded trap tables */
 	if (!cpu_present(1)) {
-		ClearPageReserved(virt_to_page(&trapbase_cpu1));
-		init_page_count(virt_to_page(&trapbase_cpu1));
-		free_page((unsigned long)&trapbase_cpu1);
-		totalram_pages++;
+		free_reserved_page(virt_to_page(&trapbase_cpu1));
 		num_physpages++;
 	}
 	if (!cpu_present(2)) {
-		ClearPageReserved(virt_to_page(&trapbase_cpu2));
-		init_page_count(virt_to_page(&trapbase_cpu2));
-		free_page((unsigned long)&trapbase_cpu2);
-		totalram_pages++;
+		free_reserved_page(virt_to_page(&trapbase_cpu2));
 		num_physpages++;
 	}
 	if (!cpu_present(3)) {
-		ClearPageReserved(virt_to_page(&trapbase_cpu3));
-		init_page_count(virt_to_page(&trapbase_cpu3));
-		free_page((unsigned long)&trapbase_cpu3);
-		totalram_pages++;
+		free_reserved_page(virt_to_page(&trapbase_cpu3));
 		num_physpages++;
 	}
 	/* Ok, they are spinning and ready to go. */

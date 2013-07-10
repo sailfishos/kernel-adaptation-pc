@@ -5,7 +5,7 @@
  *
  * GPL LICENSE SUMMARY
  *
- * Copyright(c) 2007 - 2012 Intel Corporation. All rights reserved.
+ * Copyright(c) 2007 - 2013 Intel Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -22,7 +22,7 @@
  * USA
  *
  * The full GNU General Public License is included in this distribution
- * in the file called LICENSE.GPL.
+ * in the file called COPYING.
  *
  * Contact Information:
  *  Intel Linux Wireless <ilw@linux.intel.com>
@@ -30,7 +30,7 @@
  *
  * BSD LICENSE
  *
- * Copyright(c) 2005 - 2012 Intel Corporation. All rights reserved.
+ * Copyright(c) 2005 - 2013 Intel Corporation. All rights reserved.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -83,6 +83,7 @@ enum iwl_device_family {
 	IWL_DEVICE_FAMILY_6030,
 	IWL_DEVICE_FAMILY_6050,
 	IWL_DEVICE_FAMILY_6150,
+	IWL_DEVICE_FAMILY_7000,
 };
 
 /*
@@ -150,7 +151,7 @@ enum iwl_led_mode {
 struct iwl_base_params {
 	int eeprom_size;
 	int num_of_queues;	/* def: HW dependent */
-	/* for iwl_apm_init() */
+	/* for iwl_pcie_apm_init() */
 	u32 pll_cfg_val;
 
 	const u16 max_ll_items;
@@ -226,8 +227,8 @@ struct iwl_eeprom_params {
  * @max_data_size: The maximal length of the fw data section
  * @valid_tx_ant: valid transmit antenna
  * @valid_rx_ant: valid receive antenna
- * @eeprom_ver: EEPROM version
- * @eeprom_calib_ver: EEPROM calibration version
+ * @nvm_ver: NVM version
+ * @nvm_calib_ver: NVM calibration version
  * @lib: pointer to the lib ops
  * @base_params: pointer to basic parameters
  * @ht_params: point to ht patameters
@@ -257,8 +258,8 @@ struct iwl_cfg {
 	const u32 max_inst_size;
 	u8   valid_tx_ant;
 	u8   valid_rx_ant;
-	u16  eeprom_ver;
-	u16  eeprom_calib_ver;
+	u16  nvm_ver;
+	u16  nvm_calib_ver;
 	/* params not likely to change within a device family */
 	const struct iwl_base_params *base_params;
 	/* params likely to change within a device family */
@@ -273,5 +274,52 @@ struct iwl_cfg {
 	const bool internal_wimax_coex;
 	const bool temp_offset_v2;
 };
+
+/*
+ * This list declares the config structures for all devices.
+ */
+extern const struct iwl_cfg iwl5300_agn_cfg;
+extern const struct iwl_cfg iwl5100_agn_cfg;
+extern const struct iwl_cfg iwl5350_agn_cfg;
+extern const struct iwl_cfg iwl5100_bgn_cfg;
+extern const struct iwl_cfg iwl5100_abg_cfg;
+extern const struct iwl_cfg iwl5150_agn_cfg;
+extern const struct iwl_cfg iwl5150_abg_cfg;
+extern const struct iwl_cfg iwl6005_2agn_cfg;
+extern const struct iwl_cfg iwl6005_2abg_cfg;
+extern const struct iwl_cfg iwl6005_2bg_cfg;
+extern const struct iwl_cfg iwl6005_2agn_sff_cfg;
+extern const struct iwl_cfg iwl6005_2agn_d_cfg;
+extern const struct iwl_cfg iwl6005_2agn_mow1_cfg;
+extern const struct iwl_cfg iwl6005_2agn_mow2_cfg;
+extern const struct iwl_cfg iwl1030_bgn_cfg;
+extern const struct iwl_cfg iwl1030_bg_cfg;
+extern const struct iwl_cfg iwl6030_2agn_cfg;
+extern const struct iwl_cfg iwl6030_2abg_cfg;
+extern const struct iwl_cfg iwl6030_2bgn_cfg;
+extern const struct iwl_cfg iwl6030_2bg_cfg;
+extern const struct iwl_cfg iwl6000i_2agn_cfg;
+extern const struct iwl_cfg iwl6000i_2abg_cfg;
+extern const struct iwl_cfg iwl6000i_2bg_cfg;
+extern const struct iwl_cfg iwl6000_3agn_cfg;
+extern const struct iwl_cfg iwl6050_2agn_cfg;
+extern const struct iwl_cfg iwl6050_2abg_cfg;
+extern const struct iwl_cfg iwl6150_bgn_cfg;
+extern const struct iwl_cfg iwl6150_bg_cfg;
+extern const struct iwl_cfg iwl1000_bgn_cfg;
+extern const struct iwl_cfg iwl1000_bg_cfg;
+extern const struct iwl_cfg iwl100_bgn_cfg;
+extern const struct iwl_cfg iwl100_bg_cfg;
+extern const struct iwl_cfg iwl130_bgn_cfg;
+extern const struct iwl_cfg iwl130_bg_cfg;
+extern const struct iwl_cfg iwl2000_2bgn_cfg;
+extern const struct iwl_cfg iwl2000_2bgn_d_cfg;
+extern const struct iwl_cfg iwl2030_2bgn_cfg;
+extern const struct iwl_cfg iwl6035_2agn_cfg;
+extern const struct iwl_cfg iwl105_bgn_cfg;
+extern const struct iwl_cfg iwl105_bgn_d_cfg;
+extern const struct iwl_cfg iwl135_bgn_cfg;
+extern const struct iwl_cfg iwl7260_2ac_cfg;
+extern const struct iwl_cfg iwl3160_ac_cfg;
 
 #endif /* __IWL_CONFIG_H__ */

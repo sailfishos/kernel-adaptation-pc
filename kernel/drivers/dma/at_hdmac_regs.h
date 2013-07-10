@@ -11,7 +11,7 @@
 #ifndef AT_HDMAC_REGS_H
 #define	AT_HDMAC_REGS_H
 
-#include <mach/at_hdmac.h>
+#include <linux/platform_data/dma-atmel.h>
 
 #define	AT_DMA_MAX_NR_CHANNELS	8
 
@@ -220,6 +220,8 @@ enum atc_status {
  * @device: parent device
  * @ch_regs: memory mapped register base
  * @mask: channel index in a mask
+ * @per_if: peripheral interface
+ * @mem_if: memory interface
  * @status: transmit status information from irq/prep* functions
  *                to tasklet (use atomic operations)
  * @tasklet: bottom half to finish transaction work
@@ -238,6 +240,8 @@ struct at_dma_chan {
 	struct at_dma		*device;
 	void __iomem		*ch_regs;
 	u8			mask;
+	u8			per_if;
+	u8			mem_if;
 	unsigned long		status;
 	struct tasklet_struct	tasklet;
 	u32			save_cfg;
@@ -369,10 +373,10 @@ static void vdbg_dump_regs(struct at_dma_chan *atchan) {}
 
 static void atc_dump_lli(struct at_dma_chan *atchan, struct at_lli *lli)
 {
-	dev_printk(KERN_CRIT, chan2dev(&atchan->chan_common),
-			"  desc: s0x%x d0x%x ctrl0x%x:0x%x l0x%x\n",
-			lli->saddr, lli->daddr,
-			lli->ctrla, lli->ctrlb, lli->dscr);
+	dev_crit(chan2dev(&atchan->chan_common),
+		 "  desc: s0x%x d0x%x ctrl0x%x:0x%x l0x%x\n",
+		 lli->saddr, lli->daddr,
+		 lli->ctrla, lli->ctrlb, lli->dscr);
 }
 
 

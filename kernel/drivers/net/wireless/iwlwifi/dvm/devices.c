@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2008 - 2012 Intel Corporation. All rights reserved.
+ * Copyright(c) 2008 - 2013 Intel Corporation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -305,8 +305,8 @@ static s32 iwl_temp_calib_to_offset(struct iwl_priv *priv)
 {
 	u16 temperature, voltage;
 
-	temperature = le16_to_cpu(priv->eeprom_data->kelvin_temperature);
-	voltage = le16_to_cpu(priv->eeprom_data->kelvin_voltage);
+	temperature = le16_to_cpu(priv->nvm_data->kelvin_temperature);
+	voltage = le16_to_cpu(priv->nvm_data->kelvin_voltage);
 
 	/* offset = temp - volt / coeff */
 	return (s32)(temperature -
@@ -379,7 +379,7 @@ static int iwl5000_hw_channel_switch(struct iwl_priv *priv,
 	};
 
 	cmd.band = priv->band == IEEE80211_BAND_2GHZ;
-	ch = ch_switch->channel->hw_value;
+	ch = ch_switch->chandef.chan->hw_value;
 	IWL_DEBUG_11H(priv, "channel switch from %d to %d\n",
 		      ctx->active.channel, ch);
 	cmd.channel = cpu_to_le16(ch);
@@ -414,7 +414,8 @@ static int iwl5000_hw_channel_switch(struct iwl_priv *priv,
 	}
 	IWL_DEBUG_11H(priv, "uCode time for the switch is 0x%x\n",
 		      cmd.switch_time);
-	cmd.expect_beacon = ch_switch->channel->flags & IEEE80211_CHAN_RADAR;
+	cmd.expect_beacon =
+		ch_switch->chandef.chan->flags & IEEE80211_CHAN_RADAR;
 
 	return iwl_dvm_send_cmd(priv, &hcmd);
 }
@@ -460,13 +461,13 @@ static void iwl6000_nic_config(struct iwl_priv *priv)
 		break;
 	case IWL_DEVICE_FAMILY_6050:
 		/* Indicate calibration version to uCode. */
-		if (priv->eeprom_data->calib_version >= 6)
+		if (priv->nvm_data->calib_version >= 6)
 			iwl_set_bit(priv->trans, CSR_GP_DRIVER_REG,
 					CSR_GP_DRIVER_REG_BIT_CALIB_VERSION6);
 		break;
 	case IWL_DEVICE_FAMILY_6150:
 		/* Indicate calibration version to uCode. */
-		if (priv->eeprom_data->calib_version >= 6)
+		if (priv->nvm_data->calib_version >= 6)
 			iwl_set_bit(priv->trans, CSR_GP_DRIVER_REG,
 					CSR_GP_DRIVER_REG_BIT_CALIB_VERSION6);
 		iwl_set_bit(priv->trans, CSR_GP_DRIVER_REG,
@@ -540,7 +541,7 @@ static int iwl6000_hw_channel_switch(struct iwl_priv *priv,
 	hcmd.data[0] = cmd;
 
 	cmd->band = priv->band == IEEE80211_BAND_2GHZ;
-	ch = ch_switch->channel->hw_value;
+	ch = ch_switch->chandef.chan->hw_value;
 	IWL_DEBUG_11H(priv, "channel switch from %u to %u\n",
 		      ctx->active.channel, ch);
 	cmd->channel = cpu_to_le16(ch);
@@ -575,7 +576,8 @@ static int iwl6000_hw_channel_switch(struct iwl_priv *priv,
 	}
 	IWL_DEBUG_11H(priv, "uCode time for the switch is 0x%x\n",
 		      cmd->switch_time);
-	cmd->expect_beacon = ch_switch->channel->flags & IEEE80211_CHAN_RADAR;
+	cmd->expect_beacon =
+		ch_switch->chandef.chan->flags & IEEE80211_CHAN_RADAR;
 
 	err = iwl_dvm_send_cmd(priv, &hcmd);
 	kfree(cmd);

@@ -47,7 +47,6 @@ static int ade7758_spi_write_reg_16(struct device *dev,
 		u16 value)
 {
 	int ret;
-	struct spi_message msg;
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ade7758_state *st = iio_priv(indio_dev);
 	struct spi_transfer xfers[] = {
@@ -63,9 +62,7 @@ static int ade7758_spi_write_reg_16(struct device *dev,
 	st->tx[1] = (value >> 8) & 0xFF;
 	st->tx[2] = value & 0xFF;
 
-	spi_message_init(&msg);
-	spi_message_add_tail(xfers, &msg);
-	ret = spi_sync(st->us, &msg);
+	ret = spi_sync_transfer(st->us, xfers, ARRAY_SIZE(xfers));
 	mutex_unlock(&st->buf_lock);
 
 	return ret;
@@ -76,7 +73,6 @@ static int ade7758_spi_write_reg_24(struct device *dev,
 		u32 value)
 {
 	int ret;
-	struct spi_message msg;
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ade7758_state *st = iio_priv(indio_dev);
 	struct spi_transfer xfers[] = {
@@ -93,9 +89,7 @@ static int ade7758_spi_write_reg_24(struct device *dev,
 	st->tx[2] = (value >> 8) & 0xFF;
 	st->tx[3] = value & 0xFF;
 
-	spi_message_init(&msg);
-	spi_message_add_tail(xfers, &msg);
-	ret = spi_sync(st->us, &msg);
+	ret = spi_sync_transfer(st->us, xfers, ARRAY_SIZE(xfers));
 	mutex_unlock(&st->buf_lock);
 
 	return ret;
@@ -105,7 +99,6 @@ int ade7758_spi_read_reg_8(struct device *dev,
 		u8 reg_address,
 		u8 *val)
 {
-	struct spi_message msg;
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ade7758_state *st = iio_priv(indio_dev);
 	int ret;
@@ -128,10 +121,7 @@ int ade7758_spi_read_reg_8(struct device *dev,
 	st->tx[0] = ADE7758_READ_REG(reg_address);
 	st->tx[1] = 0;
 
-	spi_message_init(&msg);
-	spi_message_add_tail(&xfers[0], &msg);
-	spi_message_add_tail(&xfers[1], &msg);
-	ret = spi_sync(st->us, &msg);
+	ret = spi_sync_transfer(st->us, xfers, ARRAY_SIZE(xfers));
 	if (ret) {
 		dev_err(&st->us->dev, "problem when reading 8 bit register 0x%02X",
 				reg_address);
@@ -148,7 +138,6 @@ static int ade7758_spi_read_reg_16(struct device *dev,
 		u8 reg_address,
 		u16 *val)
 {
-	struct spi_message msg;
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ade7758_state *st = iio_priv(indio_dev);
 	int ret;
@@ -173,10 +162,7 @@ static int ade7758_spi_read_reg_16(struct device *dev,
 	st->tx[1] = 0;
 	st->tx[2] = 0;
 
-	spi_message_init(&msg);
-	spi_message_add_tail(&xfers[0], &msg);
-	spi_message_add_tail(&xfers[1], &msg);
-	ret = spi_sync(st->us, &msg);
+	ret = spi_sync_transfer(st->us, xfers, ARRAY_SIZE(xfers));
 	if (ret) {
 		dev_err(&st->us->dev, "problem when reading 16 bit register 0x%02X",
 				reg_address);
@@ -194,7 +180,6 @@ static int ade7758_spi_read_reg_24(struct device *dev,
 		u8 reg_address,
 		u32 *val)
 {
-	struct spi_message msg;
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct ade7758_state *st = iio_priv(indio_dev);
 	int ret;
@@ -219,10 +204,7 @@ static int ade7758_spi_read_reg_24(struct device *dev,
 	st->tx[2] = 0;
 	st->tx[3] = 0;
 
-	spi_message_init(&msg);
-	spi_message_add_tail(&xfers[0], &msg);
-	spi_message_add_tail(&xfers[1], &msg);
-	ret = spi_sync(st->us, &msg);
+	ret = spi_sync_transfer(st->us, xfers, ARRAY_SIZE(xfers));
 	if (ret) {
 		dev_err(&st->us->dev, "problem when reading 24 bit register 0x%02X",
 				reg_address);
@@ -661,14 +643,14 @@ static const struct attribute_group ade7758_attribute_group = {
 	.attrs = ade7758_attributes,
 };
 
-static struct iio_chan_spec ade7758_channels[] = {
+static const struct iio_chan_spec ade7758_channels[] = {
 	{
 		.type = IIO_VOLTAGE,
 		.indexed = 1,
 		.channel = 0,
 		.extend_name = "raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_A, AD7758_VOLTAGE),
 		.scan_index = 0,
 		.scan_type = {
@@ -681,8 +663,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 0,
 		.extend_name = "raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_A, AD7758_CURRENT),
 		.scan_index = 1,
 		.scan_type = {
@@ -695,8 +677,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 0,
 		.extend_name = "apparent_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_A, AD7758_APP_PWR),
 		.scan_index = 2,
 		.scan_type = {
@@ -709,8 +691,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 0,
 		.extend_name = "active_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_A, AD7758_ACT_PWR),
 		.scan_index = 3,
 		.scan_type = {
@@ -723,8 +705,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 0,
 		.extend_name = "reactive_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_A, AD7758_REACT_PWR),
 		.scan_index = 4,
 		.scan_type = {
@@ -737,8 +719,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 1,
 		.extend_name = "raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_B, AD7758_VOLTAGE),
 		.scan_index = 5,
 		.scan_type = {
@@ -751,8 +733,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 1,
 		.extend_name = "raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_B, AD7758_CURRENT),
 		.scan_index = 6,
 		.scan_type = {
@@ -765,8 +747,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 1,
 		.extend_name = "apparent_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_B, AD7758_APP_PWR),
 		.scan_index = 7,
 		.scan_type = {
@@ -779,8 +761,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 1,
 		.extend_name = "active_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_B, AD7758_ACT_PWR),
 		.scan_index = 8,
 		.scan_type = {
@@ -793,8 +775,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 1,
 		.extend_name = "reactive_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_B, AD7758_REACT_PWR),
 		.scan_index = 9,
 		.scan_type = {
@@ -807,8 +789,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 2,
 		.extend_name = "raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_C, AD7758_VOLTAGE),
 		.scan_index = 10,
 		.scan_type = {
@@ -821,8 +803,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 2,
 		.extend_name = "raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_C, AD7758_CURRENT),
 		.scan_index = 11,
 		.scan_type = {
@@ -835,8 +817,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 2,
 		.extend_name = "apparent_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_C, AD7758_APP_PWR),
 		.scan_index = 12,
 		.scan_type = {
@@ -849,8 +831,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 2,
 		.extend_name = "active_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_C, AD7758_ACT_PWR),
 		.scan_index = 13,
 		.scan_type = {
@@ -863,8 +845,8 @@ static struct iio_chan_spec ade7758_channels[] = {
 		.indexed = 1,
 		.channel = 2,
 		.extend_name = "reactive_raw",
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			     IIO_CHAN_INFO_SCALE_SHARED_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),
 		.address = AD7758_WT(AD7758_PHASE_C, AD7758_REACT_PWR),
 		.scan_index = 14,
 		.scan_type = {
@@ -881,7 +863,7 @@ static const struct iio_info ade7758_info = {
 	.driver_module = THIS_MODULE,
 };
 
-static int __devinit ade7758_probe(struct spi_device *spi)
+static int ade7758_probe(struct spi_device *spi)
 {
 	int ret;
 	struct ade7758_state *st;
@@ -966,13 +948,9 @@ static int ade7758_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ade7758_state *st = iio_priv(indio_dev);
-	int ret;
 
 	iio_device_unregister(indio_dev);
-	ret = ade7758_stop_device(&indio_dev->dev);
-	if (ret)
-		goto err_ret;
-
+	ade7758_stop_device(&indio_dev->dev);
 	ade7758_remove_trigger(indio_dev);
 	ade7758_uninitialize_ring(indio_dev);
 	ade7758_unconfigure_ring(indio_dev);
@@ -981,8 +959,7 @@ static int ade7758_remove(struct spi_device *spi)
 
 	iio_device_free(indio_dev);
 
-err_ret:
-	return ret;
+	return 0;
 }
 
 static const struct spi_device_id ade7758_id[] = {
@@ -997,7 +974,7 @@ static struct spi_driver ade7758_driver = {
 		.owner = THIS_MODULE,
 	},
 	.probe = ade7758_probe,
-	.remove = __devexit_p(ade7758_remove),
+	.remove = ade7758_remove,
 	.id_table = ade7758_id,
 };
 module_spi_driver(ade7758_driver);

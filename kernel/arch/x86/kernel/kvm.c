@@ -20,6 +20,7 @@
  *   Authors: Anthony Liguori <aliguori@us.ibm.com>
  */
 
+#include <linux/context_tracking.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/kvm_para.h>
@@ -42,6 +43,7 @@
 #include <asm/apic.h>
 #include <asm/apicdef.h>
 #include <asm/hypervisor.h>
+#include <asm/kvm_guest.h>
 
 static int kvmapf = 1;
 
@@ -61,6 +63,15 @@ static int parse_no_stealacc(char *arg)
 }
 
 early_param("no-steal-acc", parse_no_stealacc);
+
+static int kvmclock_vsyscall = 1;
+static int parse_no_kvmclock_vsyscall(char *arg)
+{
+        kvmclock_vsyscall = 0;
+        return 0;
+}
+
+early_param("no-kvmclock-vsyscall", parse_no_kvmclock_vsyscall);
 
 static DEFINE_PER_CPU(struct kvm_vcpu_pv_apf_data, apf_reason) __aligned(64);
 static DEFINE_PER_CPU(struct kvm_steal_time, steal_time) __aligned(64);
@@ -110,11 +121,8 @@ void kvm_async_pf_task_wait(u32 token)
 	struct kvm_task_sleep_head *b = &async_pf_sleepers[key];
 	struct kvm_task_sleep_node n, *e;
 	DEFINE_WAIT(wait);
-	int cpu, idle;
 
-	cpu = get_cpu();
-	idle = idle_cpu(cpu);
-	put_cpu();
+	rcu_irq_enter();
 
 	spin_lock(&b->lock);
 	e = _find_apf_task(b, token);
@@ -123,12 +131,14 @@ void kvm_async_pf_task_wait(u32 token)
 		hlist_del(&e->link);
 		kfree(e);
 		spin_unlock(&b->lock);
+
+		rcu_irq_exit();
 		return;
 	}
 
 	n.token = token;
 	n.cpu = smp_processor_id();
-	n.halted = idle || preempt_count() > 1;
+	n.halted = is_idle_task(current) || preempt_count() > 1;
 	init_waitqueue_head(&n.wq);
 	hlist_add_head(&n.link, &b->list);
 	spin_unlock(&b->lock);
@@ -147,13 +157,16 @@ void kvm_async_pf_task_wait(u32 token)
 			/*
 			 * We cannot reschedule. So halt.
 			 */
+			rcu_irq_exit();
 			native_safe_halt();
+			rcu_irq_enter();
 			local_irq_disable();
 		}
 	}
 	if (!n.halted)
 		finish_wait(&n.wq, &wait);
 
+	rcu_irq_exit();
 	return;
 }
 EXPORT_SYMBOL_GPL(kvm_async_pf_task_wait);
@@ -241,13 +254,18 @@ EXPORT_SYMBOL_GPL(kvm_read_and_reset_pf_reason);
 dotraplinkage void __kprobes
 do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
+	enum ctx_state prev_state;
+
 	switch (kvm_read_and_reset_pf_reason()) {
 	default:
 		do_page_fault(regs, error_code);
 		break;
 	case KVM_PV_REASON_PAGE_NOT_PRESENT:
 		/* page is swapped out by the host. */
+		prev_state = exception_enter();
+		exit_idle();
 		kvm_async_pf_task_wait((u32)read_cr2());
+		exception_exit(prev_state);
 		break;
 	case KVM_PV_REASON_PAGE_READY:
 		rcu_irq_enter();
@@ -281,9 +299,9 @@ static void kvm_register_steal_time(void)
 
 	memset(st, 0, sizeof(*st));
 
-	wrmsrl(MSR_KVM_STEAL_TIME, (__pa(st) | KVM_MSR_ENABLED));
-	printk(KERN_INFO "kvm-stealtime: cpu %d, msr %lx\n",
-		cpu, __pa(st));
+	wrmsrl(MSR_KVM_STEAL_TIME, (slow_virt_to_phys(st) | KVM_MSR_ENABLED));
+	pr_info("kvm-stealtime: cpu %d, msr %llx\n",
+		cpu, (unsigned long long) slow_virt_to_phys(st));
 }
 
 static DEFINE_PER_CPU(unsigned long, kvm_apic_eoi) = KVM_PV_EOI_DISABLED;
@@ -308,7 +326,7 @@ void __cpuinit kvm_guest_cpu_init(void)
 		return;
 
 	if (kvm_para_has_feature(KVM_FEATURE_ASYNC_PF) && kvmapf) {
-		u64 pa = __pa(&__get_cpu_var(apf_reason));
+		u64 pa = slow_virt_to_phys(&__get_cpu_var(apf_reason));
 
 #ifdef CONFIG_PREEMPT
 		pa |= KVM_ASYNC_PF_SEND_ALWAYS;
@@ -324,7 +342,8 @@ void __cpuinit kvm_guest_cpu_init(void)
 		/* Size alignment is implied but just to make it explicit. */
 		BUILD_BUG_ON(__alignof__(kvm_apic_eoi) < 4);
 		__get_cpu_var(kvm_apic_eoi) = 0;
-		pa = __pa(&__get_cpu_var(kvm_apic_eoi)) | KVM_MSR_ENABLED;
+		pa = slow_virt_to_phys(&__get_cpu_var(kvm_apic_eoi))
+			| KVM_MSR_ENABLED;
 		wrmsrl(MSR_KVM_PV_EOI_EN, pa);
 	}
 
@@ -354,6 +373,7 @@ static void kvm_pv_guest_cpu_reboot(void *unused)
 	if (kvm_para_has_feature(KVM_FEATURE_PV_EOI))
 		wrmsrl(MSR_KVM_PV_EOI_EN, 0);
 	kvm_pv_disable_apf();
+	kvm_disable_steal_time();
 }
 
 static int kvm_pv_reboot_notify(struct notifier_block *nb,
@@ -396,9 +416,7 @@ void kvm_disable_steal_time(void)
 #ifdef CONFIG_SMP
 static void __init kvm_smp_prepare_boot_cpu(void)
 {
-#ifdef CONFIG_KVM_CLOCK
 	WARN_ON(kvm_register_clock("primary cpu clock"));
-#endif
 	kvm_guest_cpu_init();
 	native_smp_prepare_boot_cpu();
 }
@@ -469,6 +487,9 @@ void __init kvm_guest_init(void)
 	if (kvm_para_has_feature(KVM_FEATURE_PV_EOI))
 		apic_set_eoi_write(kvm_guest_apic_eoi_write);
 
+	if (kvmclock_vsyscall)
+		kvm_setup_vsyscall_timeinfo();
+
 #ifdef CONFIG_SMP
 	smp_ops.smp_prepare_boot_cpu = kvm_smp_prepare_boot_cpu;
 	register_cpu_notifier(&kvm_cpu_notifier);
@@ -487,6 +508,7 @@ static bool __init kvm_detect(void)
 const struct hypervisor_x86 x86_hyper_kvm __refconst = {
 	.name			= "KVM",
 	.detect			= kvm_detect,
+	.x2apic_available	= kvm_para_available,
 };
 EXPORT_SYMBOL_GPL(x86_hyper_kvm);
 

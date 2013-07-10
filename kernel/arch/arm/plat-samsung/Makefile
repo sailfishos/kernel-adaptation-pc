@@ -12,8 +12,7 @@ obj-				:=
 # Objects we always build independent of SoC choice
 
 obj-y				+= init.o cpu.o
-obj-$(CONFIG_ARCH_USES_GETTIMEOFFSET)   += time.o
-obj-$(CONFIG_S5P_HRT) 		+= s5p-time.o
+obj-$(CONFIG_SAMSUNG_HRT) 	+= samsung-time.o
 
 obj-$(CONFIG_SAMSUNG_CLOCK)	+= clock.o
 obj-$(CONFIG_SAMSUNG_CLOCK)	+= pwm-clock.o
@@ -41,6 +40,7 @@ obj-$(CONFIG_S5P_DEV_UART)	+= s5p-dev-uart.o
 
 obj-$(CONFIG_SAMSUNG_DEV_BACKLIGHT)	+= dev-backlight.o
 
+obj-$(CONFIG_S3C_SETUP_CAMIF)	+= setup-camif.o
 obj-$(CONFIG_S5P_SETUP_MIPIPHY)	+= setup-mipiphy.o
 
 # DMA support

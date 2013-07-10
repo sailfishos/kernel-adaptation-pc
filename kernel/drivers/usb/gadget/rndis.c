@@ -863,26 +863,8 @@ int rndis_msg_parser(u8 configNr, u8 *buf)
 		 */
 		pr_warning("%s: unknown RNDIS message 0x%08X len %d\n",
 			__func__, MsgType, MsgLength);
-		{
-			unsigned i;
-			for (i = 0; i < MsgLength; i += 16) {
-				pr_debug("%03d: "
-					" %02x %02x %02x %02x"
-					" %02x %02x %02x %02x"
-					" %02x %02x %02x %02x"
-					" %02x %02x %02x %02x"
-					"\n",
-					i,
-					buf[i], buf [i+1],
-						buf[i+2], buf[i+3],
-					buf[i+4], buf [i+5],
-						buf[i+6], buf[i+7],
-					buf[i+8], buf [i+9],
-						buf[i+10], buf[i+11],
-					buf[i+12], buf [i+13],
-						buf[i+14], buf[i+15]);
-			}
-		}
+		print_hex_dump_bytes(__func__, DUMP_PREFIX_OFFSET,
+				     buf, MsgLength);
 		break;
 	}
 
@@ -1083,7 +1065,7 @@ static int rndis_proc_show(struct seq_file *m, void *v)
 static ssize_t rndis_proc_write(struct file *file, const char __user *buffer,
 				size_t count, loff_t *ppos)
 {
-	rndis_params *p = PDE(file->f_path.dentry->d_inode)->data;
+	rndis_params *p = PDE_DATA(file_inode(file));
 	u32 speed = 0;
 	int i, fl_speed = 0;
 
@@ -1127,7 +1109,7 @@ static ssize_t rndis_proc_write(struct file *file, const char __user *buffer,
 
 static int rndis_proc_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, rndis_proc_show, PDE(inode)->data);
+	return single_open(file, rndis_proc_show, PDE_DATA(inode));
 }
 
 static const struct file_operations rndis_proc_fops = {

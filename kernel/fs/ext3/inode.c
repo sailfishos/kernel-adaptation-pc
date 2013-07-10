@@ -27,6 +27,7 @@
 #include <linux/writeback.h>
 #include <linux/mpage.h>
 #include <linux/namei.h>
+#include <linux/aio.h>
 #include "ext3.h"
 #include "xattr.h"
 #include "acl.h"
@@ -218,7 +219,8 @@ void ext3_evict_inode (struct inode *inode)
 	 */
 	if (inode->i_nlink && ext3_should_journal_data(inode) &&
 	    EXT3_SB(inode->i_sb)->s_journal &&
-	    (S_ISLNK(inode->i_mode) || S_ISREG(inode->i_mode))) {
+	    (S_ISLNK(inode->i_mode) || S_ISREG(inode->i_mode)) &&
+	    inode->i_ino != EXT3_JOURNAL_INO) {
 		tid_t commit_tid = atomic_read(&ei->i_datasync_tid);
 		journal_t *journal = EXT3_SB(inode->i_sb)->s_journal;
 
@@ -676,6 +678,10 @@ static int ext3_alloc_branch(handle_t *handle, struct inode *inode,
 		 * parent to disk.
 		 */
 		bh = sb_getblk(inode->i_sb, new_blocks[n-1]);
+		if (unlikely(!bh)) {
+			err = -ENOMEM;
+			goto failed;
+		}
 		branch[n].bh = bh;
 		lock_buffer(bh);
 		BUFFER_TRACE(bh, "call get_create_access");
@@ -717,7 +723,7 @@ failed:
 		BUFFER_TRACE(branch[i].bh, "call journal_forget");
 		ext3_journal_forget(handle, branch[i].bh);
 	}
-	for (i = 0; i <indirect_blks; i++)
+	for (i = 0; i < indirect_blks; i++)
 		ext3_free_blocks(handle, inode, new_blocks[i], 1);
 
 	ext3_free_blocks(handle, inode, new_blocks[i], num);
@@ -1071,16 +1077,15 @@ struct buffer_head *ext3_getblk(handle_t *handle, struct inode *inode,
 	 * mapped. 0 in case of a HOLE.
 	 */
 	if (err > 0) {
-		if (err > 1)
-			WARN_ON(1);
+		WARN_ON(err > 1);
 		err = 0;
 	}
 	*errp = err;
 	if (!err && buffer_mapped(&dummy)) {
 		struct buffer_head *bh;
 		bh = sb_getblk(inode->i_sb, dummy.b_blocknr);
-		if (!bh) {
-			*errp = -EIO;
+		if (unlikely(!bh)) {
+			*errp = -ENOMEM;
 			goto err;
 		}
 		if (buffer_new(&dummy)) {
@@ -2730,12 +2735,12 @@ static int __ext3_get_inode_loc(struct inode *inode,
 		return -EIO;
 
 	bh = sb_getblk(inode->i_sb, block);
-	if (!bh) {
+	if (unlikely(!bh)) {
 		ext3_error (inode->i_sb, "ext3_get_inode_loc",
 				"unable to read inode block - "
 				"inode=%lu, block="E3FSBLK,
 				 inode->i_ino, block);
-		return -EIO;
+		return -ENOMEM;
 	}
 	if (!buffer_uptodate(bh)) {
 		lock_buffer(bh);
@@ -2784,7 +2789,7 @@ static int __ext3_get_inode_loc(struct inode *inode,
 
 			bitmap_bh = sb_getblk(inode->i_sb,
 					le32_to_cpu(desc->bg_inode_bitmap));
-			if (!bitmap_bh)
+			if (unlikely(!bitmap_bh))
 				goto make_io;
 
 			/*
@@ -3207,7 +3212,7 @@ out_brelse:
  *
  * - Within generic_file_write() for O_SYNC files.
  *   Here, there will be no transaction running. We wait for any running
- *   trasnaction to commit.
+ *   transaction to commit.
  *
  * - Within sys_sync(), kupdate and such.
  *   We wait on commit, if tol to.

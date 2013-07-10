@@ -136,7 +136,7 @@ struct sctp_packet *sctp_packet_init(struct sctp_packet *packet,
 	packet->overhead = overhead;
 	sctp_packet_reset(packet);
 	packet->vtag = 0;
-	packet->malloced = 0;
+
 	return packet;
 }
 
@@ -151,9 +151,6 @@ void sctp_packet_free(struct sctp_packet *packet)
 		list_del_init(&chunk->list);
 		sctp_chunk_free(chunk);
 	}
-
-	if (packet->malloced)
-		kfree(packet);
 }
 
 /* This routine tries to append the chunk to the offered packet. If adding
@@ -311,6 +308,8 @@ static sctp_xmit_t __sctp_packet_append_chunk(struct sctp_packet *packet,
 
 	    case SCTP_CID_SACK:
 		packet->has_sack = 1;
+		if (chunk->asoc)
+			chunk->asoc->stats.osacks++;
 		break;
 
 	    case SCTP_CID_AUTH:
@@ -584,11 +583,13 @@ int sctp_packet_transmit(struct sctp_packet *packet)
 	 */
 
 	/* Dump that on IP!  */
-	if (asoc && asoc->peer.last_sent_to != tp) {
-		/* Considering the multiple CPU scenario, this is a
-		 * "correcter" place for last_sent_to.  --xguo
-		 */
-		asoc->peer.last_sent_to = tp;
+	if (asoc) {
+		asoc->stats.opackets++;
+		if (asoc->peer.last_sent_to != tp)
+			/* Considering the multiple CPU scenario, this is a
+			 * "correcter" place for last_sent_to.  --xguo
+			 */
+			asoc->peer.last_sent_to = tp;
 	}
 
 	if (has_data) {
@@ -616,7 +617,7 @@ out:
 	return err;
 no_route:
 	kfree_skb(nskb);
-	IP_INC_STATS_BH(&init_net, IPSTATS_MIB_OUTNOROUTES);
+	IP_INC_STATS_BH(sock_net(asoc->base.sk), IPSTATS_MIB_OUTNOROUTES);
 
 	/* FIXME: Returning the 'err' will effect all the associations
 	 * associated with a socket, although only one of the paths of the

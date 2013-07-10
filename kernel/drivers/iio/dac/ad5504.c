@@ -85,11 +85,7 @@ static int ad5504_spi_read(struct spi_device *spi, u8 addr)
 			.rx_buf		= &val,
 			.len		= 2,
 		};
-	struct spi_message	m;
-
-	spi_message_init(&m);
-	spi_message_add_tail(&t, &m);
-	ret = spi_sync(spi, &m);
+	ret = spi_sync_transfer(spi, &t, 1);
 
 	if (ret < 0)
 		return ret;
@@ -263,8 +259,8 @@ static const struct iio_chan_spec_ext_info ad5504_ext_info[] = {
 	.indexed = 1, \
 	.output = 1, \
 	.channel = (_chan), \
-	.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT | \
-		     IIO_CHAN_INFO_SCALE_SHARED_BIT, \
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW), \
+	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE), \
 	.address = AD5504_ADDR_DAC(_chan), \
 	.scan_type = IIO_ST('u', 12, 16, 0), \
 	.ext_info = ad5504_ext_info, \
@@ -277,7 +273,7 @@ static const struct iio_chan_spec ad5504_channels[] = {
 	AD5504_CHANNEL(3),
 };
 
-static int __devinit ad5504_probe(struct spi_device *spi)
+static int ad5504_probe(struct spi_device *spi)
 {
 	struct ad5504_platform_data *pdata = spi->dev.platform_data;
 	struct iio_dev *indio_dev;
@@ -296,7 +292,11 @@ static int __devinit ad5504_probe(struct spi_device *spi)
 		if (ret)
 			goto error_put_reg;
 
-		voltage_uv = regulator_get_voltage(reg);
+		ret = regulator_get_voltage(reg);
+		if (ret < 0)
+			goto error_disable_reg;
+
+		voltage_uv = ret;
 	}
 
 	spi_set_drvdata(spi, indio_dev);
@@ -352,7 +352,7 @@ error_ret:
 	return ret;
 }
 
-static int __devexit ad5504_remove(struct spi_device *spi)
+static int ad5504_remove(struct spi_device *spi)
 {
 	struct iio_dev *indio_dev = spi_get_drvdata(spi);
 	struct ad5504_state *st = iio_priv(indio_dev);
@@ -383,7 +383,7 @@ static struct spi_driver ad5504_driver = {
 		   .owner = THIS_MODULE,
 		   },
 	.probe = ad5504_probe,
-	.remove = __devexit_p(ad5504_remove),
+	.remove = ad5504_remove,
 	.id_table = ad5504_id,
 };
 module_spi_driver(ad5504_driver);

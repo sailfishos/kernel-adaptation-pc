@@ -55,12 +55,11 @@ struct rti802_private {
 	unsigned int ao_readback[8];
 };
 
-#define devpriv ((struct rti802_private *)dev->private)
-
 static int rti802_ao_insn_read(struct comedi_device *dev,
 			       struct comedi_subdevice *s,
 			       struct comedi_insn *insn, unsigned int *data)
 {
+	struct rti802_private *devpriv = dev->private;
 	int i;
 
 	for (i = 0; i < insn->n; i++)
@@ -73,6 +72,7 @@ static int rti802_ao_insn_write(struct comedi_device *dev,
 				struct comedi_subdevice *s,
 				struct comedi_insn *insn, unsigned int *data)
 {
+	struct rti802_private *devpriv = dev->private;
 	int i, d;
 	int chan = CR_CHAN(insn->chanspec);
 
@@ -89,29 +89,25 @@ static int rti802_ao_insn_write(struct comedi_device *dev,
 
 static int rti802_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 {
+	struct rti802_private *devpriv;
 	struct comedi_subdevice *s;
 	int i;
-	unsigned long iobase;
 	int ret;
 
-	iobase = it->options[0];
-	printk(KERN_INFO "comedi%d: rti802: 0x%04lx ", dev->minor, iobase);
-	if (!request_region(iobase, RTI802_SIZE, "rti802")) {
-		printk(KERN_WARNING "I/O port conflict\n");
-		return -EIO;
-	}
-	dev->iobase = iobase;
+	ret = comedi_request_region(dev, it->options[0], RTI802_SIZE);
+	if (ret)
+		return ret;
 
-	dev->board_name = "rti802";
-
-	if (alloc_private(dev, sizeof(struct rti802_private)))
+	devpriv = kzalloc(sizeof(*devpriv), GFP_KERNEL);
+	if (!devpriv)
 		return -ENOMEM;
+	dev->private = devpriv;
 
 	ret = comedi_alloc_subdevices(dev, 1);
 	if (ret)
 		return ret;
 
-	s = dev->subdevices;
+	s = &dev->subdevices[0];
 	/* ao subdevice */
 	s->type = COMEDI_SUBD_AO;
 	s->subdev_flags = SDF_WRITABLE;
@@ -132,17 +128,11 @@ static int rti802_attach(struct comedi_device *dev, struct comedi_devconfig *it)
 	return 0;
 }
 
-static void rti802_detach(struct comedi_device *dev)
-{
-	if (dev->iobase)
-		release_region(dev->iobase, RTI802_SIZE);
-}
-
 static struct comedi_driver rti802_driver = {
 	.driver_name	= "rti802",
 	.module		= THIS_MODULE,
 	.attach		= rti802_attach,
-	.detach		= rti802_detach,
+	.detach		= comedi_legacy_detach,
 };
 module_comedi_driver(rti802_driver);
 

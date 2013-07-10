@@ -49,6 +49,7 @@ enum {
 #include <linux/types.h>
 #include <linux/if_arp.h>
 #include <linux/netdevice.h>
+#include <linux/hash.h>
 
 #include <net/neighbour.h>
 
@@ -75,6 +76,13 @@ struct ra_msg {
         struct icmp6hdr		icmph;
 	__be32			reachable_time;
 	__be32			retrans_timer;
+};
+
+struct rd_msg {
+	struct icmp6hdr icmph;
+	struct in6_addr	target;
+	struct in6_addr	dest;
+	__u8		opt[0];
 };
 
 struct nd_opt_hdr {
@@ -119,13 +127,19 @@ static int ndisc_addr_option_pad(unsigned short type)
 	}
 }
 
+static inline int ndisc_opt_addr_space(struct net_device *dev)
+{
+	return NDISC_OPT_SPACE(dev->addr_len +
+			       ndisc_addr_option_pad(dev->type));
+}
+
 static inline u8 *ndisc_opt_addr_data(struct nd_opt_hdr *p,
 				      struct net_device *dev)
 {
 	u8 *lladdr = (u8 *)(p + 1);
 	int lladdrlen = p->nd_opt_len << 3;
 	int prepad = ndisc_addr_option_pad(dev->type);
-	if (lladdrlen != NDISC_OPT_SPACE(dev->addr_len + prepad))
+	if (lladdrlen != ndisc_opt_addr_space(dev))
 		return NULL;
 	return lladdr + prepad;
 }
@@ -134,21 +148,20 @@ static inline u32 ndisc_hashfn(const void *pkey, const struct net_device *dev, _
 {
 	const u32 *p32 = pkey;
 
-	return (((p32[0] ^ dev->ifindex) * hash_rnd[0]) +
+	return (((p32[0] ^ hash32_ptr(dev)) * hash_rnd[0]) +
 		(p32[1] * hash_rnd[1]) +
 		(p32[2] * hash_rnd[2]) +
 		(p32[3] * hash_rnd[3]));
 }
 
-static inline struct neighbour *__ipv6_neigh_lookup(struct neigh_table *tbl, struct net_device *dev, const void *pkey)
+static inline struct neighbour *__ipv6_neigh_lookup_noref(struct net_device *dev, const void *pkey)
 {
 	struct neigh_hash_table *nht;
 	const u32 *p32 = pkey;
 	struct neighbour *n;
 	u32 hash_val;
 
-	rcu_read_lock_bh();
-	nht = rcu_dereference_bh(tbl->nht);
+	nht = rcu_dereference_bh(nd_tbl.nht);
 	hash_val = ndisc_hashfn(pkey, dev, nht->hash_rnd) >> (32 - nht->hash_shift);
 	for (n = rcu_dereference_bh(nht->hash_buckets[hash_val]);
 	     n != NULL;
@@ -156,12 +169,21 @@ static inline struct neighbour *__ipv6_neigh_lookup(struct neigh_table *tbl, str
 		u32 *n32 = (u32 *) n->primary_key;
 		if (n->dev == dev &&
 		    ((n32[0] ^ p32[0]) | (n32[1] ^ p32[1]) |
-		     (n32[2] ^ p32[2]) | (n32[3] ^ p32[3])) == 0) {
-			if (!atomic_inc_not_zero(&n->refcnt))
-				n = NULL;
-			break;
-		}
+		     (n32[2] ^ p32[2]) | (n32[3] ^ p32[3])) == 0)
+			return n;
 	}
+
+	return NULL;
+}
+
+static inline struct neighbour *__ipv6_neigh_lookup(struct net_device *dev, const void *pkey)
+{
+	struct neighbour *n;
+
+	rcu_read_lock_bh();
+	n = __ipv6_neigh_lookup_noref(dev, pkey);
+	if (n && !atomic_inc_not_zero(&n->refcnt))
+		n = NULL;
 	rcu_read_unlock_bh();
 
 	return n;
@@ -188,21 +210,6 @@ extern void			ndisc_send_redirect(struct sk_buff *skb,
 
 extern int			ndisc_mc_map(const struct in6_addr *addr, char *buf,
 					     struct net_device *dev, int dir);
-
-extern struct sk_buff		*ndisc_build_skb(struct net_device *dev,
-						 const struct in6_addr *daddr,
-						 const struct in6_addr *saddr,
-						 struct icmp6hdr *icmp6h,
-						 const struct in6_addr *target,
-						 int llinfo);
-
-extern void			ndisc_send_skb(struct sk_buff *skb,
-					       struct net_device *dev,
-					       struct neighbour *neigh,
-					       const struct in6_addr *daddr,
-					       const struct in6_addr *saddr,
-					       struct icmp6hdr *icmp6h);
-
 
 
 /*

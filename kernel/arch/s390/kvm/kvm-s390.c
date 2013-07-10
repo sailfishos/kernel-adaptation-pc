@@ -32,6 +32,10 @@
 #include "kvm-s390.h"
 #include "gaccess.h"
 
+#define CREATE_TRACE_POINTS
+#include "trace.h"
+#include "trace-s390.h"
+
 #define VCPU_STAT(x) offsetof(struct kvm_vcpu, stat.x), KVM_STAT_VCPU
 
 struct kvm_stats_debugfs_item debugfs_entries[] = {
@@ -136,14 +140,20 @@ int kvm_dev_ioctl_check_extension(long ext)
 #endif
 	case KVM_CAP_SYNC_REGS:
 	case KVM_CAP_ONE_REG:
+	case KVM_CAP_ENABLE_CAP:
+	case KVM_CAP_S390_CSS_SUPPORT:
+	case KVM_CAP_IOEVENTFD:
 		r = 1;
 		break;
 	case KVM_CAP_NR_VCPUS:
 	case KVM_CAP_MAX_VCPUS:
 		r = KVM_MAX_VCPUS;
 		break;
+	case KVM_CAP_NR_MEMSLOTS:
+		r = KVM_USER_MEM_SLOTS;
+		break;
 	case KVM_CAP_S390_COW:
-		r = sclp_get_fac85() & 0x2;
+		r = MACHINE_HAS_ESOP;
 		break;
 	default:
 		r = 0;
@@ -230,6 +240,9 @@ int kvm_arch_init_vm(struct kvm *kvm, unsigned long type)
 		if (!kvm->arch.gmap)
 			goto out_nogmap;
 	}
+
+	kvm->arch.css_support = 0;
+
 	return 0;
 out_nogmap:
 	debug_unregister(kvm->arch.dbf);
@@ -242,6 +255,7 @@ out_err:
 void kvm_arch_vcpu_destroy(struct kvm_vcpu *vcpu)
 {
 	VCPU_EVENT(vcpu, 3, "%s", "free cpu");
+	trace_kvm_s390_destroy_vcpu(vcpu->vcpu_id);
 	if (!kvm_is_ucontrol(vcpu->kvm)) {
 		clear_bit(63 - vcpu->vcpu_id,
 			  (unsigned long *) &vcpu->kvm->arch.sca->mcn);
@@ -350,6 +364,11 @@ static void kvm_s390_vcpu_initial_reset(struct kvm_vcpu *vcpu)
 	atomic_set_mask(CPUSTAT_STOPPED, &vcpu->arch.sie_block->cpuflags);
 }
 
+int kvm_arch_vcpu_postcreate(struct kvm_vcpu *vcpu)
+{
+	return 0;
+}
+
 int kvm_arch_vcpu_setup(struct kvm_vcpu *vcpu)
 {
 	atomic_set(&vcpu->arch.sie_block->cpuflags, CPUSTAT_ZARCH |
@@ -417,6 +436,7 @@ struct kvm_vcpu *kvm_arch_vcpu_create(struct kvm *kvm,
 		goto out_free_sie_block;
 	VM_EVENT(kvm, 3, "create cpu %d at %p, sie block at %p", id, vcpu,
 		 vcpu->arch.sie_block);
+	trace_kvm_s390_create_vcpu(id, vcpu, vcpu->arch.sie_block);
 
 	return vcpu;
 out_free_sie_block:
@@ -602,26 +622,27 @@ static int __vcpu_run(struct kvm_vcpu *vcpu)
 		kvm_s390_deliver_pending_interrupts(vcpu);
 
 	vcpu->arch.sie_block->icptcode = 0;
-	local_irq_disable();
+	preempt_disable();
 	kvm_guest_enter();
-	local_irq_enable();
+	preempt_enable();
 	VCPU_EVENT(vcpu, 6, "entering sie flags %x",
 		   atomic_read(&vcpu->arch.sie_block->cpuflags));
+	trace_kvm_s390_sie_enter(vcpu,
+				 atomic_read(&vcpu->arch.sie_block->cpuflags));
 	rc = sie64a(vcpu->arch.sie_block, vcpu->run->s.regs.gprs);
 	if (rc) {
 		if (kvm_is_ucontrol(vcpu->kvm)) {
 			rc = SIE_INTERCEPT_UCONTROL;
 		} else {
 			VCPU_EVENT(vcpu, 3, "%s", "fault in sie instruction");
-			kvm_s390_inject_program_int(vcpu, PGM_ADDRESSING);
-			rc = 0;
+			trace_kvm_s390_sie_fault(vcpu);
+			rc = kvm_s390_inject_program_int(vcpu, PGM_ADDRESSING);
 		}
 	}
 	VCPU_EVENT(vcpu, 6, "exit sie icptcode %d",
 		   vcpu->arch.sie_block->icptcode);
-	local_irq_disable();
+	trace_kvm_s390_sie_exit(vcpu, vcpu->arch.sie_block->icptcode);
 	kvm_guest_exit();
-	local_irq_enable();
 
 	memcpy(&vcpu->run->s.regs.gprs[14], &vcpu->arch.sie_block->gg14, 16);
 	return rc;
@@ -646,6 +667,7 @@ rerun_vcpu:
 	case KVM_EXIT_INTR:
 	case KVM_EXIT_S390_RESET:
 	case KVM_EXIT_S390_UCONTROL:
+	case KVM_EXIT_S390_TSCH:
 		break;
 	default:
 		BUG();
@@ -753,6 +775,14 @@ int kvm_s390_vcpu_store_status(struct kvm_vcpu *vcpu, unsigned long addr)
 	} else
 		prefix = 0;
 
+	/*
+	 * The guest FPRS and ACRS are in the host FPRS/ACRS due to the lazy
+	 * copying in vcpu load/put. Lets update our copies before we save
+	 * it into the save area
+	 */
+	save_fp_regs(&vcpu->arch.guest_fpregs);
+	save_access_regs(vcpu->run->s.regs.acrs);
+
 	if (__guestcopy(vcpu, addr + offsetof(struct save_area, fp_regs),
 			vcpu->arch.guest_fpregs.fprs, 128, prefix))
 		return -EFAULT;
@@ -795,6 +825,29 @@ int kvm_s390_vcpu_store_status(struct kvm_vcpu *vcpu, unsigned long addr)
 			&vcpu->arch.sie_block->gcr, 128, prefix))
 		return -EFAULT;
 	return 0;
+}
+
+static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
+				     struct kvm_enable_cap *cap)
+{
+	int r;
+
+	if (cap->flags)
+		return -EINVAL;
+
+	switch (cap->cap) {
+	case KVM_CAP_S390_CSS_SUPPORT:
+		if (!vcpu->kvm->arch.css_support) {
+			vcpu->kvm->arch.css_support = 1;
+			trace_kvm_s390_enable_css(vcpu->kvm);
+		}
+		r = 0;
+		break;
+	default:
+		r = -EINVAL;
+		break;
+	}
+	return r;
 }
 
 long kvm_arch_vcpu_ioctl(struct file *filp,
@@ -883,6 +936,15 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 			r = 0;
 		break;
 	}
+	case KVM_ENABLE_CAP:
+	{
+		struct kvm_enable_cap cap;
+		r = -EFAULT;
+		if (copy_from_user(&cap, argp, sizeof(cap)))
+			break;
+		r = kvm_vcpu_ioctl_enable_cap(vcpu, &cap);
+		break;
+	}
 	default:
 		r = -ENOTTY;
 	}
@@ -915,22 +977,13 @@ int kvm_arch_create_memslot(struct kvm_memory_slot *slot, unsigned long npages)
 /* Section: memory related */
 int kvm_arch_prepare_memory_region(struct kvm *kvm,
 				   struct kvm_memory_slot *memslot,
-				   struct kvm_memory_slot old,
 				   struct kvm_userspace_memory_region *mem,
-				   int user_alloc)
+				   enum kvm_mr_change change)
 {
-	/* A few sanity checks. We can have exactly one memory slot which has
-	   to start at guest virtual zero and which has to be located at a
-	   page boundary in userland and which has to end at a page boundary.
-	   The memory in userland is ok to be fragmented into various different
-	   vmas. It is okay to mmap() and munmap() stuff in this slot after
-	   doing this call at any time */
-
-	if (mem->slot)
-		return -EINVAL;
-
-	if (mem->guest_phys_addr)
-		return -EINVAL;
+	/* A few sanity checks. We can have memory slots which have to be
+	   located/ended at a segment boundary (1MB). The memory in userland is
+	   ok to be fragmented into various different vmas. It is okay to mmap()
+	   and munmap() stuff in this slot after doing this call at any time */
 
 	if (mem->userspace_addr & 0xffffful)
 		return -EINVAL;
@@ -938,19 +991,26 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	if (mem->memory_size & 0xffffful)
 		return -EINVAL;
 
-	if (!user_alloc)
-		return -EINVAL;
-
 	return 0;
 }
 
 void kvm_arch_commit_memory_region(struct kvm *kvm,
 				struct kvm_userspace_memory_region *mem,
-				struct kvm_memory_slot old,
-				int user_alloc)
+				const struct kvm_memory_slot *old,
+				enum kvm_mr_change change)
 {
 	int rc;
 
+	/* If the basics of the memslot do not change, we do not want
+	 * to update the gmap. Every update causes several unnecessary
+	 * segment translation exceptions. This is usually handled just
+	 * fine by the normal fault handler + gmap, but it will also
+	 * cause faults on the prefix page of running guest CPUs.
+	 */
+	if (old->userspace_addr == mem->userspace_addr &&
+	    old->base_gfn * PAGE_SIZE == mem->guest_phys_addr &&
+	    old->npages * PAGE_SIZE == mem->memory_size)
+		return;
 
 	rc = gmap_map_segment(kvm->arch.gmap, mem->userspace_addr,
 		mem->guest_phys_addr, mem->memory_size);
@@ -959,7 +1019,12 @@ void kvm_arch_commit_memory_region(struct kvm *kvm,
 	return;
 }
 
-void kvm_arch_flush_shadow(struct kvm *kvm)
+void kvm_arch_flush_shadow_all(struct kvm *kvm)
+{
+}
+
+void kvm_arch_flush_shadow_memslot(struct kvm *kvm,
+				   struct kvm_memory_slot *slot)
 {
 }
 
@@ -982,7 +1047,7 @@ static int __init kvm_s390_init(void)
 	}
 	memcpy(facilities, S390_lowcore.stfle_fac_list, 16);
 	facilities[0] &= 0xff00fff3f47c0000ULL;
-	facilities[1] &= 0x201c000000000000ULL;
+	facilities[1] &= 0x001c000000000000ULL;
 	return 0;
 }
 

@@ -65,7 +65,7 @@ void bcma_core_set_clockmode(struct bcma_device *core,
 	switch (clkmode) {
 	case BCMA_CLKMODE_FAST:
 		bcma_set32(core, BCMA_CLKCTLST, BCMA_CLKCTLST_FORCEHT);
-		udelay(64);
+		usleep_range(64, 300);
 		for (i = 0; i < 1500; i++) {
 			if (bcma_read32(core, BCMA_CLKCTLST) &
 			    BCMA_CLKCTLST_HAVEHT) {
@@ -104,7 +104,13 @@ void bcma_core_pll_ctl(struct bcma_device *core, u32 req, u32 status, bool on)
 		if (i)
 			bcma_err(core->bus, "PLL enable timeout\n");
 	} else {
-		bcma_warn(core->bus, "Disabling PLL not supported yet!\n");
+		/*
+		 * Mask the PLL but don't wait for it to be disabled. PLL may be
+		 * shared between cores and will be still up if there is another
+		 * core using it.
+		 */
+		bcma_mask32(core, BCMA_CLKCTLST, ~req);
+		bcma_read32(core, BCMA_CLKCTLST);
 	}
 }
 EXPORT_SYMBOL_GPL(bcma_core_pll_ctl);

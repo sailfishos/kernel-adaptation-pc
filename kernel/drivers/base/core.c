@@ -171,6 +171,27 @@ ssize_t device_show_int(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(device_show_int);
 
+ssize_t device_store_bool(struct device *dev, struct device_attribute *attr,
+			  const char *buf, size_t size)
+{
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
+
+	if (strtobool(buf, ea->var) < 0)
+		return -EINVAL;
+
+	return size;
+}
+EXPORT_SYMBOL_GPL(device_store_bool);
+
+ssize_t device_show_bool(struct device *dev, struct device_attribute *attr,
+			 char *buf)
+{
+	struct dev_ext_attribute *ea = to_ext_attr(attr);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", *(bool *)(ea->var));
+}
+EXPORT_SYMBOL_GPL(device_show_bool);
+
 /**
  *	device_release - free device structure.
  *	@kobj:	device's kobject.
@@ -183,6 +204,17 @@ static void device_release(struct kobject *kobj)
 {
 	struct device *dev = kobj_to_dev(kobj);
 	struct device_private *p = dev->p;
+
+	/*
+	 * Some platform devices are driven without driver attached
+	 * and managed resources may have been acquired.  Make sure
+	 * all resources are released.
+	 *
+	 * Drivers still can add resources into device after device
+	 * is deleted but alive, so release devres here to avoid
+	 * possible memory leak.
+	 */
+	devres_release_all(dev);
 
 	if (dev->release)
 		dev->release(dev);
@@ -251,15 +283,21 @@ static int dev_uevent(struct kset *kset, struct kobject *kobj,
 		const char *tmp;
 		const char *name;
 		umode_t mode = 0;
+		kuid_t uid = GLOBAL_ROOT_UID;
+		kgid_t gid = GLOBAL_ROOT_GID;
 
 		add_uevent_var(env, "MAJOR=%u", MAJOR(dev->devt));
 		add_uevent_var(env, "MINOR=%u", MINOR(dev->devt));
-		name = device_get_devnode(dev, &mode, &tmp);
+		name = device_get_devnode(dev, &mode, &uid, &gid, &tmp);
 		if (name) {
 			add_uevent_var(env, "DEVNAME=%s", name);
-			kfree(tmp);
 			if (mode)
 				add_uevent_var(env, "DEVMODE=%#o", mode & 0777);
+			if (!uid_eq(uid, GLOBAL_ROOT_UID))
+				add_uevent_var(env, "DEVUID=%u", from_kuid(&init_user_ns, uid));
+			if (!gid_eq(gid, GLOBAL_ROOT_GID))
+				add_uevent_var(env, "DEVGID=%u", from_kgid(&init_user_ns, gid));
+			kfree(tmp);
 		}
 	}
 
@@ -531,8 +569,17 @@ int device_create_file(struct device *dev,
 		       const struct device_attribute *attr)
 {
 	int error = 0;
-	if (dev)
+
+	if (dev) {
+		WARN(((attr->attr.mode & S_IWUGO) && !attr->store),
+			"Attribute %s: write permission without 'store'\n",
+			attr->attr.name);
+		WARN(((attr->attr.mode & S_IRUGO) && !attr->show),
+			"Attribute %s: read permission without 'show'\n",
+			attr->attr.name);
 		error = sysfs_create_file(&dev->kobj, &attr->attr);
+	}
+
 	return error;
 }
 
@@ -658,7 +705,7 @@ void device_initialize(struct device *dev)
 	set_dev_node(dev, -1);
 }
 
-static struct kobject *virtual_device_parent(struct device *dev)
+struct kobject *virtual_device_parent(struct device *dev)
 {
 	static struct kobject *virtual_dir = NULL;
 
@@ -1169,7 +1216,6 @@ void device_del(struct device *dev)
 	if (dev->bus)
 		blocking_notifier_call_chain(&dev->bus->p->bus_notifier,
 					     BUS_NOTIFY_DEL_DEVICE, dev);
-	device_pm_remove(dev);
 	dpm_sysfs_remove(dev);
 	if (parent)
 		klist_del(&dev->p->knode_parent);
@@ -1194,14 +1240,8 @@ void device_del(struct device *dev)
 	device_remove_file(dev, &uevent_attr);
 	device_remove_attrs(dev);
 	bus_remove_device(dev);
+	device_pm_remove(dev);
 	driver_deferred_probe_del(dev);
-
-	/*
-	 * Some platform devices are driven without driver attached
-	 * and managed resources may have been acquired.  Make sure
-	 * all resources are released.
-	 */
-	devres_release_all(dev);
 
 	/* Notify the platform of the removal, in case they
 	 * need to do anything...
@@ -1249,6 +1289,8 @@ static struct device *next_device(struct klist_iter *i)
  * device_get_devnode - path of device node file
  * @dev: device
  * @mode: returned file access mode
+ * @uid: returned file owner
+ * @gid: returned file group
  * @tmp: possibly allocated string
  *
  * Return the relative path of a possible device node.
@@ -1257,7 +1299,8 @@ static struct device *next_device(struct klist_iter *i)
  * freed by the caller.
  */
 const char *device_get_devnode(struct device *dev,
-			       umode_t *mode, const char **tmp)
+			       umode_t *mode, kuid_t *uid, kgid_t *gid,
+			       const char **tmp)
 {
 	char *s;
 
@@ -1265,7 +1308,7 @@ const char *device_get_devnode(struct device *dev,
 
 	/* the device type may provide a specific name */
 	if (dev->type && dev->type->devnode)
-		*tmp = dev->type->devnode(dev, mode);
+		*tmp = dev->type->devnode(dev, mode, uid, gid);
 	if (*tmp)
 		return *tmp;
 
@@ -1395,7 +1438,7 @@ struct root_device {
 	struct module *owner;
 };
 
-inline struct root_device *to_root_device(struct device *d)
+static inline struct root_device *to_root_device(struct device *d)
 {
 	return container_of(d, struct root_device, dev);
 }
@@ -1592,9 +1635,9 @@ struct device *device_create(struct class *class, struct device *parent,
 }
 EXPORT_SYMBOL_GPL(device_create);
 
-static int __match_devt(struct device *dev, void *data)
+static int __match_devt(struct device *dev, const void *data)
 {
-	dev_t *devt = data;
+	const dev_t *devt = data;
 
 	return dev->devt == *devt;
 }
@@ -1660,8 +1703,6 @@ EXPORT_SYMBOL_GPL(device_destroy);
  */
 int device_rename(struct device *dev, const char *new_name)
 {
-	char *old_class_name = NULL;
-	char *new_class_name = NULL;
 	char *old_device_name = NULL;
 	int error;
 
@@ -1692,8 +1733,6 @@ int device_rename(struct device *dev, const char *new_name)
 out:
 	put_device(dev);
 
-	kfree(new_class_name);
-	kfree(old_class_name);
 	kfree(old_device_name);
 
 	return error;
@@ -1836,10 +1875,12 @@ void device_shutdown(void)
 		pm_runtime_barrier(dev);
 
 		if (dev->bus && dev->bus->shutdown) {
-			dev_dbg(dev, "shutdown\n");
+			if (initcall_debug)
+				dev_info(dev, "shutdown\n");
 			dev->bus->shutdown(dev);
 		} else if (dev->driver && dev->driver->shutdown) {
-			dev_dbg(dev, "shutdown\n");
+			if (initcall_debug)
+				dev_info(dev, "shutdown\n");
 			dev->driver->shutdown(dev);
 		}
 
@@ -1861,26 +1902,20 @@ void device_shutdown(void)
  */
 
 #ifdef CONFIG_PRINTK
-int __dev_printk(const char *level, const struct device *dev,
-		 struct va_format *vaf)
+static int
+create_syslog_header(const struct device *dev, char *hdr, size_t hdrlen)
 {
-	char dict[128];
-	const char *level_extra = "";
-	size_t dictlen = 0;
 	const char *subsys;
-
-	if (!dev)
-		return printk("%s(NULL device *): %pV", level, vaf);
+	size_t pos = 0;
 
 	if (dev->class)
 		subsys = dev->class->name;
 	else if (dev->bus)
 		subsys = dev->bus->name;
 	else
-		goto skip;
+		return 0;
 
-	dictlen += snprintf(dict + dictlen, sizeof(dict) - dictlen,
-			    "SUBSYSTEM=%s", subsys);
+	pos += snprintf(hdr + pos, hdrlen - pos, "SUBSYSTEM=%s", subsys);
 
 	/*
 	 * Add device identifier DEVICE=:
@@ -1896,32 +1931,63 @@ int __dev_printk(const char *level, const struct device *dev,
 			c = 'b';
 		else
 			c = 'c';
-		dictlen++;
-		dictlen += snprintf(dict + dictlen, sizeof(dict) - dictlen,
-				   "DEVICE=%c%u:%u",
-				   c, MAJOR(dev->devt), MINOR(dev->devt));
+		pos++;
+		pos += snprintf(hdr + pos, hdrlen - pos,
+				"DEVICE=%c%u:%u",
+				c, MAJOR(dev->devt), MINOR(dev->devt));
 	} else if (strcmp(subsys, "net") == 0) {
 		struct net_device *net = to_net_dev(dev);
 
-		dictlen++;
-		dictlen += snprintf(dict + dictlen, sizeof(dict) - dictlen,
-				    "DEVICE=n%u", net->ifindex);
+		pos++;
+		pos += snprintf(hdr + pos, hdrlen - pos,
+				"DEVICE=n%u", net->ifindex);
 	} else {
-		dictlen++;
-		dictlen += snprintf(dict + dictlen, sizeof(dict) - dictlen,
-				    "DEVICE=+%s:%s", subsys, dev_name(dev));
+		pos++;
+		pos += snprintf(hdr + pos, hdrlen - pos,
+				"DEVICE=+%s:%s", subsys, dev_name(dev));
 	}
-skip:
-	if (level[2])
-		level_extra = &level[2]; /* skip past KERN_SOH "L" */
 
-	return printk_emit(0, level[1] - '0',
-			   dictlen ? dict : NULL, dictlen,
-			   "%s %s: %s%pV",
-			   dev_driver_string(dev), dev_name(dev),
-			   level_extra, vaf);
+	return pos;
 }
-EXPORT_SYMBOL(__dev_printk);
+EXPORT_SYMBOL(create_syslog_header);
+
+int dev_vprintk_emit(int level, const struct device *dev,
+		     const char *fmt, va_list args)
+{
+	char hdr[128];
+	size_t hdrlen;
+
+	hdrlen = create_syslog_header(dev, hdr, sizeof(hdr));
+
+	return vprintk_emit(0, level, hdrlen ? hdr : NULL, hdrlen, fmt, args);
+}
+EXPORT_SYMBOL(dev_vprintk_emit);
+
+int dev_printk_emit(int level, const struct device *dev, const char *fmt, ...)
+{
+	va_list args;
+	int r;
+
+	va_start(args, fmt);
+
+	r = dev_vprintk_emit(level, dev, fmt, args);
+
+	va_end(args);
+
+	return r;
+}
+EXPORT_SYMBOL(dev_printk_emit);
+
+static int __dev_printk(const char *level, const struct device *dev,
+			struct va_format *vaf)
+{
+	if (!dev)
+		return printk("%s(NULL device *): %pV", level, vaf);
+
+	return dev_printk_emit(level[1] - '0', dev,
+			       "%s %s: %pV",
+			       dev_driver_string(dev), dev_name(dev), vaf);
+}
 
 int dev_printk(const char *level, const struct device *dev,
 	       const char *fmt, ...)
@@ -1936,6 +2002,7 @@ int dev_printk(const char *level, const struct device *dev,
 	vaf.va = &args;
 
 	r = __dev_printk(level, dev, &vaf);
+
 	va_end(args);
 
 	return r;
@@ -1955,6 +2022,7 @@ int func(const struct device *dev, const char *fmt, ...)	\
 	vaf.va = &args;						\
 								\
 	r = __dev_printk(kern_level, dev, &vaf);		\
+								\
 	va_end(args);						\
 								\
 	return r;						\

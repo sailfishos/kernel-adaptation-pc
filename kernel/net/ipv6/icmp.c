@@ -81,10 +81,22 @@ static inline struct sock *icmpv6_sk(struct net *net)
 	return net->ipv6.icmp_sk[smp_processor_id()];
 }
 
+static void icmpv6_err(struct sk_buff *skb, struct inet6_skb_parm *opt,
+		       u8 type, u8 code, int offset, __be32 info)
+{
+	struct net *net = dev_net(skb->dev);
+
+	if (type == ICMPV6_PKT_TOOBIG)
+		ip6_update_pmtu(skb, net, info, 0, 0);
+	else if (type == NDISC_REDIRECT)
+		ip6_redirect(skb, net, 0, 0);
+}
+
 static int icmpv6_rcv(struct sk_buff *skb);
 
 static const struct inet6_protocol icmpv6_protocol = {
 	.handler	=	icmpv6_rcv,
+	.err_handler	=	icmpv6_err,
 	.flags		=	INET6_PROTO_NOPOLICY|INET6_PROTO_FINAL,
 };
 
@@ -109,15 +121,6 @@ static __inline__ struct sock *icmpv6_xmit_lock(struct net *net)
 static __inline__ void icmpv6_xmit_unlock(struct sock *sk)
 {
 	spin_unlock_bh(&sk->sk_lock.slock);
-}
-
-/*
- * Slightly more convenient version of icmpv6_send.
- */
-void icmpv6_param_prob(struct sk_buff *skb, u8 code, int pos)
-{
-	icmpv6_send(skb, ICMPV6_PARAMPROB, code, pos);
-	kfree_skb(skb);
 }
 
 /*
@@ -280,7 +283,7 @@ static int icmpv6_getfrag(void *from, char *to, int offset, int len, int odd, st
 	return 0;
 }
 
-#if defined(CONFIG_IPV6_MIP6) || defined(CONFIG_IPV6_MIP6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6_MIP6)
 static void mip6_addr_swap(struct sk_buff *skb)
 {
 	struct ipv6hdr *iph = ipv6_hdr(skb);
@@ -320,7 +323,7 @@ static struct dst_entry *icmpv6_route_lookup(struct net *net, struct sk_buff *sk
 	 * anycast.
 	 */
 	if (((struct rt6_info *)dst)->rt6i_flags & RTF_ANYCAST) {
-		LIMIT_NETDEBUG(KERN_DEBUG "icmpv6_send: acast source\n");
+		LIMIT_NETDEBUG(KERN_DEBUG "icmp6_send: acast source\n");
 		dst_release(dst);
 		return ERR_PTR(-EINVAL);
 	}
@@ -369,7 +372,7 @@ relookup_failed:
 /*
  *	Send an ICMP message in response to a packet in error
  */
-void icmpv6_send(struct sk_buff *skb, u8 type, u8 code, __u32 info)
+static void icmp6_send(struct sk_buff *skb, u8 type, u8 code, __u32 info)
 {
 	struct net *net = dev_net(skb->dev);
 	struct inet6_dev *idev = NULL;
@@ -394,7 +397,7 @@ void icmpv6_send(struct sk_buff *skb, u8 type, u8 code, __u32 info)
 	/*
 	 *	Make sure we respect the rules
 	 *	i.e. RFC 1885 2.4(e)
-	 *	Rule (e.1) is enforced by not using icmpv6_send
+	 *	Rule (e.1) is enforced by not using icmp6_send
 	 *	in any code that processes icmp errors.
 	 */
 	addr_type = ipv6_addr_type(&hdr->daddr);
@@ -422,7 +425,7 @@ void icmpv6_send(struct sk_buff *skb, u8 type, u8 code, __u32 info)
 	 *	Source addr check
 	 */
 
-	if (addr_type & IPV6_ADDR_LINKLOCAL)
+	if (__ipv6_addr_needs_scope_id(addr_type))
 		iif = skb->dev->ifindex;
 
 	/*
@@ -432,7 +435,7 @@ void icmpv6_send(struct sk_buff *skb, u8 type, u8 code, __u32 info)
 	 *	and anycast addresses will be checked later.
 	 */
 	if ((addr_type == IPV6_ADDR_ANY) || (addr_type & IPV6_ADDR_MULTICAST)) {
-		LIMIT_NETDEBUG(KERN_DEBUG "icmpv6_send: addr_any/mcast source\n");
+		LIMIT_NETDEBUG(KERN_DEBUG "icmp6_send: addr_any/mcast source\n");
 		return;
 	}
 
@@ -440,7 +443,7 @@ void icmpv6_send(struct sk_buff *skb, u8 type, u8 code, __u32 info)
 	 *	Never answer to a ICMP packet.
 	 */
 	if (is_ineligible(skb)) {
-		LIMIT_NETDEBUG(KERN_DEBUG "icmpv6_send: no reply to icmp error\n");
+		LIMIT_NETDEBUG(KERN_DEBUG "icmp6_send: no reply to icmp error\n");
 		return;
 	}
 
@@ -517,7 +520,14 @@ out_dst_release:
 out:
 	icmpv6_xmit_unlock(sk);
 }
-EXPORT_SYMBOL(icmpv6_send);
+
+/* Slightly more convenient version of icmp6_send.
+ */
+void icmpv6_param_prob(struct sk_buff *skb, u8 code, int pos)
+{
+	icmp6_send(skb, ICMPV6_PARAMPROB, code, pos);
+	kfree_skb(skb);
+}
 
 static void icmpv6_echo_reply(struct sk_buff *skb)
 {
@@ -689,7 +699,7 @@ static int icmpv6_rcv(struct sk_buff *skb)
 		if (__skb_checksum_complete(skb)) {
 			LIMIT_NETDEBUG(KERN_DEBUG "ICMPv6 checksum failed [%pI6 > %pI6]\n",
 				       saddr, daddr);
-			goto discard_it;
+			goto csum_error;
 		}
 	}
 
@@ -775,6 +785,8 @@ static int icmpv6_rcv(struct sk_buff *skb)
 	kfree_skb(skb);
 	return 0;
 
+csum_error:
+	ICMP6_INC_STATS_BH(dev_net(dev), idev, ICMP6_MIB_CSUMERRORS);
 discard_it:
 	ICMP6_INC_STATS_BH(dev_net(dev), idev, ICMP6_MIB_INERRORS);
 drop_no_count:
@@ -873,8 +885,14 @@ int __init icmpv6_init(void)
 	err = -EAGAIN;
 	if (inet6_add_protocol(&icmpv6_protocol, IPPROTO_ICMPV6) < 0)
 		goto fail;
+
+	err = inet6_register_icmp_sender(icmp6_send);
+	if (err)
+		goto sender_reg_err;
 	return 0;
 
+sender_reg_err:
+	inet6_del_protocol(&icmpv6_protocol, IPPROTO_ICMPV6);
 fail:
 	pr_err("Failed to register ICMP6 protocol\n");
 	unregister_pernet_subsys(&icmpv6_sk_ops);
@@ -883,6 +901,7 @@ fail:
 
 void icmpv6_cleanup(void)
 {
+	inet6_unregister_icmp_sender(icmp6_send);
 	unregister_pernet_subsys(&icmpv6_sk_ops);
 	inet6_del_protocol(&icmpv6_protocol, IPPROTO_ICMPV6);
 }

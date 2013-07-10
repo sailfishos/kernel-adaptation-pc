@@ -40,6 +40,7 @@
 #include <linux/i2c.h>
 #include <linux/gpio.h>
 #include <linux/regulator/consumer.h>
+#include <linux/of_gpio.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -84,6 +85,9 @@ struct aic3x_priv {
 #define AIC3X_MODEL_33 1
 #define AIC3X_MODEL_3007 2
 	u16 model;
+
+	/* Selects the micbias voltage */
+	enum aic3x_micbias_voltage micbias_vg;
 };
 
 /*
@@ -183,15 +187,46 @@ static int snd_soc_dapm_put_volsw_aic3x(struct snd_kcontrol *kcontrol,
 
 			break;
 		}
-
-		if (found)
-			snd_soc_dapm_sync(widget->dapm);
 	}
 
-	ret = snd_soc_update_bits(widget->codec, reg, val_mask, val);
-
 	mutex_unlock(&widget->codec->mutex);
+
+	if (found)
+		snd_soc_dapm_sync(widget->dapm);
+
+	ret = snd_soc_update_bits_locked(widget->codec, reg, val_mask, val);
 	return ret;
+}
+
+/*
+ * mic bias power on/off share the same register bits with
+ * output voltage of mic bias. when power on mic bias, we
+ * need reclaim it to voltage value.
+ * 0x0 = Powered off
+ * 0x1 = MICBIAS output is powered to 2.0V,
+ * 0x2 = MICBIAS output is powered to 2.5V
+ * 0x3 = MICBIAS output is connected to AVDD
+ */
+static int mic_bias_event(struct snd_soc_dapm_widget *w,
+	struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_codec *codec = w->codec;
+	struct aic3x_priv *aic3x = snd_soc_codec_get_drvdata(codec);
+
+	switch (event) {
+	case SND_SOC_DAPM_POST_PMU:
+		/* change mic bias voltage to user defined */
+		snd_soc_update_bits(codec, MICBIAS_CTRL,
+				MICBIAS_LEVEL_MASK,
+				aic3x->micbias_vg << MICBIAS_LEVEL_SHIFT);
+		break;
+
+	case SND_SOC_DAPM_PRE_PMD:
+		snd_soc_update_bits(codec, MICBIAS_CTRL,
+				MICBIAS_LEVEL_MASK, 0);
+		break;
+	}
+	return 0;
 }
 
 static const char *aic3x_left_dac_mux[] = { "DAC_L1", "DAC_L3", "DAC_L2" };
@@ -595,12 +630,9 @@ static const struct snd_soc_dapm_widget aic3x_dapm_widgets[] = {
 			 AIC3X_ASD_INTF_CTRLA, 0, 3, 3, 0),
 
 	/* Mic Bias */
-	SND_SOC_DAPM_REG(snd_soc_dapm_micbias, "Mic Bias 2V",
-			 MICBIAS_CTRL, 6, 3, 1, 0),
-	SND_SOC_DAPM_REG(snd_soc_dapm_micbias, "Mic Bias 2.5V",
-			 MICBIAS_CTRL, 6, 3, 2, 0),
-	SND_SOC_DAPM_REG(snd_soc_dapm_micbias, "Mic Bias AVDD",
-			 MICBIAS_CTRL, 6, 3, 3, 0),
+	SND_SOC_DAPM_SUPPLY("Mic Bias", MICBIAS_CTRL, 6, 0,
+			 mic_bias_event,
+			 SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_PRE_PMD),
 
 	/* Output mixers */
 	SND_SOC_DAPM_MIXER("Left Line Mixer", SND_SOC_NOPM, 0, 0,
@@ -1209,13 +1241,13 @@ static struct snd_soc_dai_driver aic3x_dai = {
 	.name = "tlv320aic3x-hifi",
 	.playback = {
 		.stream_name = "Playback",
-		.channels_min = 1,
+		.channels_min = 2,
 		.channels_max = 2,
 		.rates = AIC3X_RATES,
 		.formats = AIC3X_FORMATS,},
 	.capture = {
 		.stream_name = "Capture",
-		.channels_min = 1,
+		.channels_min = 2,
 		.channels_max = 2,
 		.rates = AIC3X_RATES,
 		.formats = AIC3X_FORMATS,},
@@ -1385,6 +1417,24 @@ static int aic3x_probe(struct snd_soc_codec *codec)
 	if (aic3x->model == AIC3X_MODEL_3007)
 		snd_soc_add_codec_controls(codec, &aic3x_classd_amp_gain_ctrl, 1);
 
+	/* set mic bias voltage */
+	switch (aic3x->micbias_vg) {
+	case AIC3X_MICBIAS_2_0V:
+	case AIC3X_MICBIAS_2_5V:
+	case AIC3X_MICBIAS_AVDDV:
+		snd_soc_update_bits(codec, MICBIAS_CTRL,
+				    MICBIAS_LEVEL_MASK,
+				    (aic3x->micbias_vg) << MICBIAS_LEVEL_SHIFT);
+		break;
+	case AIC3X_MICBIAS_OFF:
+		/*
+		 * noting to do. target won't enter here. This is just to avoid
+		 * compile time warning "warning: enumeration value
+		 * 'AIC3X_MICBIAS_OFF' not handled in switch"
+		 */
+		break;
+	}
+
 	aic3x_add_widgets(codec);
 	list_add(&aic3x->list, &reset_list);
 
@@ -1457,7 +1507,10 @@ static int aic3x_i2c_probe(struct i2c_client *i2c,
 {
 	struct aic3x_pdata *pdata = i2c->dev.platform_data;
 	struct aic3x_priv *aic3x;
+	struct aic3x_setup_data *ai3x_setup;
+	struct device_node *np = i2c->dev.of_node;
 	int ret;
+	u32 value;
 
 	aic3x = devm_kzalloc(&i2c->dev, sizeof(struct aic3x_priv), GFP_KERNEL);
 	if (aic3x == NULL) {
@@ -1471,6 +1524,46 @@ static int aic3x_i2c_probe(struct i2c_client *i2c,
 	if (pdata) {
 		aic3x->gpio_reset = pdata->gpio_reset;
 		aic3x->setup = pdata->setup;
+		aic3x->micbias_vg = pdata->micbias_vg;
+	} else if (np) {
+		ai3x_setup = devm_kzalloc(&i2c->dev, sizeof(*ai3x_setup),
+								GFP_KERNEL);
+		if (ai3x_setup == NULL) {
+			dev_err(&i2c->dev, "failed to create private data\n");
+			return -ENOMEM;
+		}
+
+		ret = of_get_named_gpio(np, "gpio-reset", 0);
+		if (ret >= 0)
+			aic3x->gpio_reset = ret;
+		else
+			aic3x->gpio_reset = -1;
+
+		if (of_property_read_u32_array(np, "ai3x-gpio-func",
+					ai3x_setup->gpio_func, 2) >= 0) {
+			aic3x->setup = ai3x_setup;
+		}
+
+		if (!of_property_read_u32(np, "ai3x-micbias-vg", &value)) {
+			switch (value) {
+			case 1 :
+				aic3x->micbias_vg = AIC3X_MICBIAS_2_0V;
+				break;
+			case 2 :
+				aic3x->micbias_vg = AIC3X_MICBIAS_2_5V;
+				break;
+			case 3 :
+				aic3x->micbias_vg = AIC3X_MICBIAS_AVDDV;
+				break;
+			default :
+				aic3x->micbias_vg = AIC3X_MICBIAS_OFF;
+				dev_err(&i2c->dev, "Unsuitable MicBias voltage "
+							"found in DT\n");
+			}
+		} else {
+			aic3x->micbias_vg = AIC3X_MICBIAS_OFF;
+		}
+
 	} else {
 		aic3x->gpio_reset = -1;
 	}
@@ -1488,34 +1581,27 @@ static int aic3x_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
+#if defined(CONFIG_OF)
+static const struct of_device_id tlv320aic3x_of_match[] = {
+	{ .compatible = "ti,tlv320aic3x", },
+	{},
+};
+MODULE_DEVICE_TABLE(of, tlv320aic3x_of_match);
+#endif
+
 /* machine i2c codec control layer */
 static struct i2c_driver aic3x_i2c_driver = {
 	.driver = {
 		.name = "tlv320aic3x-codec",
 		.owner = THIS_MODULE,
+		.of_match_table = of_match_ptr(tlv320aic3x_of_match),
 	},
 	.probe	= aic3x_i2c_probe,
 	.remove = aic3x_i2c_remove,
 	.id_table = aic3x_i2c_id,
 };
 
-static int __init aic3x_modinit(void)
-{
-	int ret = 0;
-	ret = i2c_add_driver(&aic3x_i2c_driver);
-	if (ret != 0) {
-		printk(KERN_ERR "Failed to register TLV320AIC3x I2C driver: %d\n",
-		       ret);
-	}
-	return ret;
-}
-module_init(aic3x_modinit);
-
-static void __exit aic3x_exit(void)
-{
-	i2c_del_driver(&aic3x_i2c_driver);
-}
-module_exit(aic3x_exit);
+module_i2c_driver(aic3x_i2c_driver);
 
 MODULE_DESCRIPTION("ASoC TLV320AIC3X codec driver");
 MODULE_AUTHOR("Vladimir Barinov");
