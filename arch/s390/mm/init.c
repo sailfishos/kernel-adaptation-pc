@@ -135,17 +135,30 @@ void __init paging_init(void)
 
 void __init mem_init(void)
 {
-        max_mapnr = max_low_pfn;
+	unsigned long codesize, reservedpages, datasize, initsize;
+
+        max_mapnr = num_physpages = max_low_pfn;
         high_memory = (void *) __va(max_low_pfn * PAGE_SIZE);
 
 	/* Setup guest page hinting */
 	cmma_init();
 
 	/* this will put all low memory onto the freelists */
-	free_all_bootmem();
+	totalram_pages += free_all_bootmem();
 	setup_zero_pages();	/* Setup zeroed pages. */
 
-	mem_init_print_info(NULL);
+	reservedpages = 0;
+
+	codesize =  (unsigned long) &_etext - (unsigned long) &_text;
+	datasize =  (unsigned long) &_edata - (unsigned long) &_etext;
+	initsize =  (unsigned long) &__init_end - (unsigned long) &__init_begin;
+        printk("Memory: %luk/%luk available (%ldk kernel code, %ldk reserved, %ldk data, %ldk init)\n",
+		nr_free_pages() << (PAGE_SHIFT-10),
+                max_mapnr << (PAGE_SHIFT-10),
+                codesize >> 10,
+                reservedpages << (PAGE_SHIFT-10),
+                datasize >>10,
+                initsize >> 10);
 	printk("Write protected kernel read-only data: %#lx - %#lx\n",
 	       (unsigned long)&_stext,
 	       PFN_ALIGN((unsigned long)&_eshared) - 1);
@@ -153,14 +166,13 @@ void __init mem_init(void)
 
 void free_initmem(void)
 {
-	free_initmem_default(POISON_FREE_INITMEM);
+	free_initmem_default(0);
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD
 void __init free_initrd_mem(unsigned long start, unsigned long end)
 {
-	free_reserved_area((void *)start, (void *)end, POISON_FREE_INITMEM,
-			   "initrd");
+	free_reserved_area(start, end, POISON_FREE_INITMEM, "initrd");
 }
 #endif
 

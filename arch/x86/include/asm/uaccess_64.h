@@ -235,7 +235,7 @@ extern long __copy_user_nocache(void *dst, const void __user *src,
 static inline int
 __copy_from_user_nocache(void *dst, const void __user *src, unsigned size)
 {
-	might_fault();
+	might_sleep();
 	return __copy_user_nocache(dst, src, size, 1);
 }
 

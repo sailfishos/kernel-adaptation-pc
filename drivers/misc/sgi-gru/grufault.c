@@ -876,9 +876,8 @@ int gru_set_context_option(unsigned long arg)
 	switch (req.op) {
 	case sco_blade_chiplet:
 		/* Select blade/chiplet for GRU context */
-		if (req.val0 < -1 || req.val0 >= GRU_CHIPLETS_PER_HUB ||
-		    req.val1 < -1 || req.val1 >= GRU_MAX_BLADES ||
-		    (req.val1 >= 0 && !gru_base[req.val1])) {
+		if (req.val1 < -1 || req.val1 >= GRU_MAX_BLADES || !gru_base[req.val1] ||
+		    req.val0 < -1 || req.val0 >= GRU_CHIPLETS_PER_HUB) {
 			ret = -EINVAL;
 		} else {
 			gts->ts_user_blade_id = req.val1;

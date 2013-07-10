@@ -817,8 +817,7 @@ static struct exynos_tmu_platform_data const exynos4210_default_tmu_data = {
 #define EXYNOS4210_TMU_DRV_DATA (NULL)
 #endif
 
-#if defined(CONFIG_SOC_EXYNOS5250) || defined(CONFIG_SOC_EXYNOS4412) || \
-	defined(CONFIG_SOC_EXYNOS4212)
+#if defined(CONFIG_SOC_EXYNOS5250) || defined(CONFIG_SOC_EXYNOS4412)
 static struct exynos_tmu_platform_data const exynos_default_tmu_data = {
 	.threshold_falling = 10,
 	.trigger_levels[0] = 85,

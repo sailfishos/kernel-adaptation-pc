@@ -180,8 +180,7 @@ static void iwl_mvm_set_tx_cmd_rate(struct iwl_mvm *mvm,
 		tx_cmd->tx_flags |= cpu_to_le32(TX_CMD_FLG_STA_RATE);
 		return;
 	} else if (ieee80211_is_back_req(fc)) {
-		tx_cmd->tx_flags |=
-			cpu_to_le32(TX_CMD_FLG_ACK | TX_CMD_FLG_BAR);
+		tx_cmd->tx_flags |= cpu_to_le32(TX_CMD_FLG_STA_RATE);
 	}
 
 	/* HT rate doesn't make sense for a non data frame */

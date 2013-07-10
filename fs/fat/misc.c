@@ -30,7 +30,7 @@ void __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...)
 		va_start(args, fmt);
 		vaf.fmt = fmt;
 		vaf.va = &args;
-		fat_msg(sb, KERN_ERR, "error, %pV", &vaf);
+		printk(KERN_ERR "FAT-fs (%s): error, %pV\n", sb->s_id, &vaf);
 		va_end(args);
 	}
 
@@ -38,7 +38,8 @@ void __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...)
 		panic("FAT-fs (%s): fs panic from previous error\n", sb->s_id);
 	else if (opts->errors == FAT_ERRORS_RO && !(sb->s_flags & MS_RDONLY)) {
 		sb->s_flags |= MS_RDONLY;
-		fat_msg(sb, KERN_ERR, "Filesystem has been set read-only");
+		printk(KERN_ERR "FAT-fs (%s): Filesystem has been "
+				"set read-only\n", sb->s_id);
 	}
 }
 EXPORT_SYMBOL_GPL(__fat_fs_error);

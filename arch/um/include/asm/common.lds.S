@@ -57,6 +57,7 @@
 	*(.uml.initcall.init)
 	__uml_initcall_end = .;
   }
+  __init_end = .;
 
   SECURITY_INIT
 

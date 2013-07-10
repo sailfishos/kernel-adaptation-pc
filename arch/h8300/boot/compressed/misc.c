@@ -79,6 +79,7 @@ static void error(char *m);
 
 int puts(const char *);
 
+extern int _text;		/* Defined in vmlinux.lds.S */
 extern int _end;
 static unsigned long free_mem_ptr;
 static unsigned long free_mem_end_ptr;

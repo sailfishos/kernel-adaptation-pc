@@ -1047,7 +1047,7 @@ static int mos7720_open(struct tty_struct *tty, struct usb_serial_port *port)
 	  *
 	  * 0x08 : SP1/2 Control Reg
 	  */
-	port_number = port->port_number;
+	port_number = port->number - port->serial->minor;
 	read_mos_reg(serial, port_number, LSR, &data);
 
 	dev_dbg(&port->dev, "SS::%p LSR:%x\n", mos7720_port, data);
@@ -1066,7 +1066,7 @@ static int mos7720_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	write_mos_reg(serial, port_number, SP_CONTROL_REG, 0x00);
 	read_mos_reg(serial, dummy, SP_CONTROL_REG, &data);
-	data = data | (port->port_number + 1);
+	data = data | (port->number - port->serial->minor + 1);
 	write_mos_reg(serial, dummy, SP_CONTROL_REG, data);
 	mos7720_port->shadowLCR = 0x83;
 	write_mos_reg(serial, port_number, LCR, mos7720_port->shadowLCR);
@@ -1147,8 +1147,8 @@ static void mos7720_close(struct usb_serial_port *port)
 	usb_kill_urb(port->write_urb);
 	usb_kill_urb(port->read_urb);
 
-	write_mos_reg(serial, port->port_number, MCR, 0x00);
-	write_mos_reg(serial, port->port_number, IER, 0x00);
+	write_mos_reg(serial, port->number - port->serial->minor, MCR, 0x00);
+	write_mos_reg(serial, port->number - port->serial->minor, IER, 0x00);
 
 	mos7720_port->open = 0;
 }
@@ -1172,7 +1172,8 @@ static void mos7720_break(struct tty_struct *tty, int break_state)
 		data = mos7720_port->shadowLCR & ~UART_LCR_SBC;
 
 	mos7720_port->shadowLCR  = data;
-	write_mos_reg(serial, port->port_number, LCR, mos7720_port->shadowLCR);
+	write_mos_reg(serial, port->number - port->serial->minor,
+		      LCR, mos7720_port->shadowLCR);
 }
 
 /*
@@ -1303,8 +1304,8 @@ static void mos7720_throttle(struct tty_struct *tty)
 	/* if we are implementing RTS/CTS, toggle that line */
 	if (tty->termios.c_cflag & CRTSCTS) {
 		mos7720_port->shadowMCR &= ~UART_MCR_RTS;
-		write_mos_reg(port->serial, port->port_number, MCR,
-			      mos7720_port->shadowMCR);
+		write_mos_reg(port->serial, port->number - port->serial->minor,
+			      MCR, mos7720_port->shadowMCR);
 		if (status != 0)
 			return;
 	}
@@ -1335,8 +1336,8 @@ static void mos7720_unthrottle(struct tty_struct *tty)
 	/* if we are implementing RTS/CTS, toggle that line */
 	if (tty->termios.c_cflag & CRTSCTS) {
 		mos7720_port->shadowMCR |= UART_MCR_RTS;
-		write_mos_reg(port->serial, port->port_number, MCR,
-			      mos7720_port->shadowMCR);
+		write_mos_reg(port->serial, port->number - port->serial->minor,
+			      MCR, mos7720_port->shadowMCR);
 		if (status != 0)
 			return;
 	}
@@ -1360,7 +1361,7 @@ static int set_higher_rates(struct moschip_port *mos7720_port,
 	 *      Init Sequence for higher rates
 	 ***********************************************/
 	dev_dbg(&port->dev, "Sending Setting Commands ..........\n");
-	port_number = port->port_number;
+	port_number = port->number - port->serial->minor;
 
 	write_mos_reg(serial, port_number, IER, 0x00);
 	write_mos_reg(serial, port_number, FCR, 0x00);
@@ -1486,7 +1487,7 @@ static int send_cmd_write_baud_rate(struct moschip_port *mos7720_port,
 	port = mos7720_port->port;
 	serial = port->serial;
 
-	number = port->port_number;
+	number = port->number - port->serial->minor;
 	dev_dbg(&port->dev, "%s - baud = %d\n", __func__, baudrate);
 
 	/* Calculate the Divisor */
@@ -1537,7 +1538,7 @@ static void change_port_settings(struct tty_struct *tty,
 
 	port = mos7720_port->port;
 	serial = port->serial;
-	port_number = port->port_number;
+	port_number = port->number - port->serial->minor;
 
 	if (!mos7720_port->open) {
 		dev_dbg(&port->dev, "%s - port not opened\n", __func__);
@@ -1730,7 +1731,7 @@ static int get_lsr_info(struct tty_struct *tty,
 	struct usb_serial_port *port = tty->driver_data;
 	unsigned int result = 0;
 	unsigned char data = 0;
-	int port_number = port->port_number;
+	int port_number = port->number - port->serial->minor;
 	int count;
 
 	count = mos7720_chars_in_buffer(tty);
@@ -1792,8 +1793,8 @@ static int mos7720_tiocmset(struct tty_struct *tty,
 		mcr &= ~UART_MCR_LOOP;
 
 	mos7720_port->shadowMCR = mcr;
-	write_mos_reg(port->serial, port->port_number, MCR,
-		      mos7720_port->shadowMCR);
+	write_mos_reg(port->serial, port->number - port->serial->minor,
+		      MCR, mos7720_port->shadowMCR);
 
 	return 0;
 }
@@ -1837,8 +1838,8 @@ static int set_modem_info(struct moschip_port *mos7720_port, unsigned int cmd,
 	}
 
 	mos7720_port->shadowMCR = mcr;
-	write_mos_reg(port->serial, port->port_number, MCR,
-		      mos7720_port->shadowMCR);
+	write_mos_reg(port->serial, port->number - port->serial->minor,
+		      MCR, mos7720_port->shadowMCR);
 
 	return 0;
 }
@@ -1854,8 +1855,8 @@ static int get_serial_info(struct moschip_port *mos7720_port,
 	memset(&tmp, 0, sizeof(tmp));
 
 	tmp.type		= PORT_16550A;
-	tmp.line		= mos7720_port->port->minor;
-	tmp.port		= mos7720_port->port->port_number;
+	tmp.line		= mos7720_port->port->serial->minor;
+	tmp.port		= mos7720_port->port->number;
 	tmp.irq			= 0;
 	tmp.flags		= ASYNC_SKIP_TEST | ASYNC_AUTO_IRQ;
 	tmp.xmit_fifo_size	= NUM_URBS * URB_TRANSFER_BUFFER_SIZE;

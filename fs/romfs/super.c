@@ -145,18 +145,19 @@ static const struct address_space_operations romfs_aops = {
 /*
  * read the entries from a directory
  */
-static int romfs_readdir(struct file *file, struct dir_context *ctx)
+static int romfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	struct inode *i = file_inode(file);
+	struct inode *i = file_inode(filp);
 	struct romfs_inode ri;
 	unsigned long offset, maxoff;
 	int j, ino, nextfh;
+	int stored = 0;
 	char fsname[ROMFS_MAXFN];	/* XXX dynamic? */
 	int ret;
 
 	maxoff = romfs_maxsize(i->i_sb);
 
-	offset = ctx->pos;
+	offset = filp->f_pos;
 	if (!offset) {
 		offset = i->i_ino & ROMFH_MASK;
 		ret = romfs_dev_read(i->i_sb, offset, &ri, ROMFH_SIZE);
@@ -169,10 +170,10 @@ static int romfs_readdir(struct file *file, struct dir_context *ctx)
 	for (;;) {
 		if (!offset || offset >= maxoff) {
 			offset = maxoff;
-			ctx->pos = offset;
+			filp->f_pos = offset;
 			goto out;
 		}
-		ctx->pos = offset;
+		filp->f_pos = offset;
 
 		/* Fetch inode info */
 		ret = romfs_dev_read(i->i_sb, offset, &ri, ROMFH_SIZE);
@@ -193,14 +194,16 @@ static int romfs_readdir(struct file *file, struct dir_context *ctx)
 		nextfh = be32_to_cpu(ri.next);
 		if ((nextfh & ROMFH_TYPE) == ROMFH_HRD)
 			ino = be32_to_cpu(ri.spec);
-		if (!dir_emit(ctx, fsname, j, ino,
-			    romfs_dtype_table[nextfh & ROMFH_TYPE]))
+		if (filldir(dirent, fsname, j, offset, ino,
+			    romfs_dtype_table[nextfh & ROMFH_TYPE]) < 0)
 			goto out;
 
+		stored++;
 		offset = nextfh & ROMFH_MASK;
 	}
+
 out:
-	return 0;
+	return stored;
 }
 
 /*
@@ -278,7 +281,7 @@ error:
 
 static const struct file_operations romfs_dir_operations = {
 	.read		= generic_read_dir,
-	.iterate	= romfs_readdir,
+	.readdir	= romfs_readdir,
 	.llseek		= default_llseek,
 };
 

@@ -1941,7 +1941,6 @@ void ocfs2_orphan_scan_start(struct ocfs2_super *osb)
 }
 
 struct ocfs2_orphan_filldir_priv {
-	struct dir_context	ctx;
 	struct inode		*head;
 	struct ocfs2_super	*osb;
 };
@@ -1978,11 +1977,11 @@ static int ocfs2_queue_orphans(struct ocfs2_super *osb,
 {
 	int status;
 	struct inode *orphan_dir_inode = NULL;
-	struct ocfs2_orphan_filldir_priv priv = {
-		.ctx.actor = ocfs2_orphan_filldir,
-		.osb = osb,
-		.head = *head
-	};
+	struct ocfs2_orphan_filldir_priv priv;
+	loff_t pos = 0;
+
+	priv.osb = osb;
+	priv.head = *head;
 
 	orphan_dir_inode = ocfs2_get_system_file_inode(osb,
 						       ORPHAN_DIR_SYSTEM_INODE,
@@ -2000,7 +1999,8 @@ static int ocfs2_queue_orphans(struct ocfs2_super *osb,
 		goto out;
 	}
 
-	status = ocfs2_dir_foreach(orphan_dir_inode, &priv.ctx);
+	status = ocfs2_dir_foreach(orphan_dir_inode, &pos, &priv,
+				   ocfs2_orphan_filldir);
 	if (status) {
 		mlog_errno(status);
 		goto out_cluster;

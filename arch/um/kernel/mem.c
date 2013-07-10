@@ -65,13 +65,15 @@ void __init mem_init(void)
 	uml_reserved = brk_end;
 
 	/* this will put all low memory onto the freelists */
-	free_all_bootmem();
+	totalram_pages = free_all_bootmem();
 	max_low_pfn = totalram_pages;
 #ifdef CONFIG_HIGHMEM
 	setup_highmem(end_iomem, highmem);
 #endif
+	num_physpages = totalram_pages;
 	max_pfn = totalram_pages;
-	mem_init_print_info(NULL);
+	printk(KERN_INFO "Memory: %luk available\n",
+	       nr_free_pages() << (PAGE_SHIFT-10));
 	kmalloc_ok = 1;
 }
 
@@ -242,7 +244,7 @@ void free_initmem(void)
 #ifdef CONFIG_BLK_DEV_INITRD
 void free_initrd_mem(unsigned long start, unsigned long end)
 {
-	free_reserved_area((void *)start, (void *)end, -1, "initrd");
+	free_reserved_area(start, end, 0, "initrd");
 }
 #endif
 

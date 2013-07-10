@@ -312,14 +312,11 @@ cifs_show_address(struct seq_file *s, struct TCP_Server_Info *server)
 }
 
 static void
-cifs_show_security(struct seq_file *s, struct cifs_ses *ses)
+cifs_show_security(struct seq_file *s, struct TCP_Server_Info *server)
 {
-	if (ses->sectype == Unspecified)
-		return;
-
 	seq_printf(s, ",sec=");
 
-	switch (ses->sectype) {
+	switch (server->secType) {
 	case LANMAN:
 		seq_printf(s, "lanman");
 		break;
@@ -341,7 +338,7 @@ cifs_show_security(struct seq_file *s, struct cifs_ses *ses)
 		break;
 	}
 
-	if (ses->sign)
+	if (server->sec_mode & (SECMODE_SIGN_REQUIRED | SECMODE_SIGN_ENABLED))
 		seq_printf(s, "i");
 }
 
@@ -372,7 +369,7 @@ cifs_show_options(struct seq_file *s, struct dentry *root)
 	srcaddr = (struct sockaddr *)&tcon->ses->server->srcaddr;
 
 	seq_printf(s, ",vers=%s", tcon->ses->server->vals->version_string);
-	cifs_show_security(s, tcon->ses);
+	cifs_show_security(s, tcon->ses->server);
 	cifs_show_cache_flavor(s, cifs_sb);
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MULTIUSER)
@@ -768,7 +765,7 @@ static loff_t cifs_llseek(struct file *file, loff_t offset, int whence)
 
 static int cifs_setlease(struct file *file, long arg, struct file_lock **lease)
 {
-	/* note that this is called by vfs setlease with i_lock held
+	/* note that this is called by vfs setlease with lock_flocks held
 	   to protect *lease from going away */
 	struct inode *inode = file_inode(file);
 	struct cifsFileInfo *cfile = file->private_data;
@@ -971,7 +968,7 @@ const struct file_operations cifs_file_direct_nobrl_ops = {
 };
 
 const struct file_operations cifs_dir_ops = {
-	.iterate = cifs_readdir,
+	.readdir = cifs_readdir,
 	.release = cifs_closedir,
 	.read    = generic_read_dir,
 	.unlocked_ioctl  = cifs_ioctl,

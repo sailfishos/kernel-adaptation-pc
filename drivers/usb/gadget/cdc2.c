@@ -15,7 +15,6 @@
 
 #include "u_ether.h"
 #include "u_serial.h"
-#include "u_ecm.h"
 
 
 #define DRIVER_DESC		"CDC Composite Gadget"
@@ -33,9 +32,18 @@
 #define CDC_VENDOR_NUM		0x0525	/* NetChip */
 #define CDC_PRODUCT_NUM		0xa4aa	/* CDC Composite: ECM + ACM */
 
+/*-------------------------------------------------------------------------*/
 USB_GADGET_COMPOSITE_OPTIONS();
 
-USB_ETHERNET_MODULE_PARAMETERS();
+/*
+ * Kbuild is not very cooperative with respect to linking separately
+ * compiled library objects into one module.  So for now we won't use
+ * separate compilation ... ensuring init/exit sections work to shrink
+ * the runtime footprint, and giving us at least some parts of what
+ * a "gcc --combine ... part1.c part2.c part3.c ... " build would.
+ */
+#include "f_ecm.c"
+#include "u_ether.c"
 
 /*-------------------------------------------------------------------------*/
 
@@ -94,12 +102,11 @@ static struct usb_gadget_strings *dev_strings[] = {
 	NULL,
 };
 
+static u8 hostaddr[ETH_ALEN];
+static struct eth_dev *the_dev;
 /*-------------------------------------------------------------------------*/
 static struct usb_function *f_acm;
 static struct usb_function_instance *fi_serial;
-
-static struct usb_function *f_ecm;
-static struct usb_function_instance *fi_ecm;
 
 /*
  * We _always_ have both CDC ECM and CDC ACM functions.
@@ -113,27 +120,13 @@ static int __init cdc_do_config(struct usb_configuration *c)
 		c->bmAttributes |= USB_CONFIG_ATT_WAKEUP;
 	}
 
-	fi_ecm = usb_get_function_instance("ecm");
-	if (IS_ERR(fi_ecm)) {
-		status = PTR_ERR(fi_ecm);
-		goto err_func_ecm;
-	}
-
-	f_ecm = usb_get_function(fi_ecm);
-	if (IS_ERR(f_ecm)) {
-		status = PTR_ERR(f_ecm);
-		goto err_get_ecm;
-	}
-
-	status = usb_add_function(c, f_ecm);
-	if (status)
-		goto err_add_ecm;
+	status = ecm_bind_config(c, hostaddr, the_dev);
+	if (status < 0)
+		return status;
 
 	fi_serial = usb_get_function_instance("acm");
-	if (IS_ERR(fi_serial)) {
-		status = PTR_ERR(fi_serial);
-		goto err_get_acm;
-	}
+	if (IS_ERR(fi_serial))
+		return PTR_ERR(fi_serial);
 
 	f_acm = usb_get_function(fi_serial);
 	if (IS_ERR(f_acm)) {
@@ -143,21 +136,12 @@ static int __init cdc_do_config(struct usb_configuration *c)
 
 	status = usb_add_function(c, f_acm);
 	if (status)
-		goto err_add_acm;
-
+		goto err_conf;
 	return 0;
-
-err_add_acm:
+err_conf:
 	usb_put_function(f_acm);
 err_func_acm:
 	usb_put_function_instance(fi_serial);
-err_get_acm:
-	usb_remove_function(c, f_ecm);
-err_add_ecm:
-	usb_put_function(f_ecm);
-err_get_ecm:
-	usb_put_function_instance(fi_ecm);
-err_func_ecm:
 	return status;
 }
 
@@ -173,7 +157,6 @@ static struct usb_configuration cdc_config_driver = {
 static int __init cdc_bind(struct usb_composite_dev *cdev)
 {
 	struct usb_gadget	*gadget = cdev->gadget;
-	struct f_ecm_opts	*ecm_opts;
 	int			status;
 
 	if (!can_support_ecm(cdev->gadget)) {
@@ -182,23 +165,10 @@ static int __init cdc_bind(struct usb_composite_dev *cdev)
 		return -EINVAL;
 	}
 
-	fi_ecm = usb_get_function_instance("ecm");
-	if (IS_ERR(fi_ecm))
-		return PTR_ERR(fi_ecm);
-
-	ecm_opts = container_of(fi_ecm, struct f_ecm_opts, func_inst);
-
-	gether_set_qmult(ecm_opts->net, qmult);
-	if (!gether_set_host_addr(ecm_opts->net, host_addr))
-		pr_info("using host ethernet address: %s", host_addr);
-	if (!gether_set_dev_addr(ecm_opts->net, dev_addr))
-		pr_info("using self ethernet address: %s", dev_addr);
-
-	fi_serial = usb_get_function_instance("acm");
-	if (IS_ERR(fi_serial)) {
-		status = PTR_ERR(fi_serial);
-		goto fail;
-	}
+	/* set up network link layer */
+	the_dev = gether_setup(cdev->gadget, hostaddr);
+	if (IS_ERR(the_dev))
+		return PTR_ERR(the_dev);
 
 	/* Allocate string descriptor numbers ... note that string
 	 * contents can be overridden by the composite_dev glue.
@@ -222,9 +192,7 @@ static int __init cdc_bind(struct usb_composite_dev *cdev)
 	return 0;
 
 fail1:
-	usb_put_function_instance(fi_serial);
-fail:
-	usb_put_function_instance(fi_ecm);
+	gether_cleanup(the_dev);
 	return status;
 }
 
@@ -232,10 +200,7 @@ static int __exit cdc_unbind(struct usb_composite_dev *cdev)
 {
 	usb_put_function(f_acm);
 	usb_put_function_instance(fi_serial);
-	if (!IS_ERR_OR_NULL(f_ecm))
-		usb_put_function(f_ecm);
-	if (!IS_ERR_OR_NULL(fi_ecm))
-		usb_put_function_instance(fi_ecm);
+	gether_cleanup(the_dev);
 	return 0;
 }
 

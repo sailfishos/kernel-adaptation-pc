@@ -41,19 +41,8 @@ static inline int unsigned_offsets(struct file *file)
 	return file->f_mode & FMODE_UNSIGNED_OFFSET;
 }
 
-/**
- * vfs_setpos - update the file offset for lseek
- * @file:	file structure in question
- * @offset:	file offset to seek to
- * @maxsize:	maximum file size
- *
- * This is a low-level filesystem helper for updating the file offset to
- * the value specified by @offset if the given offset is valid and it is
- * not equal to the current file offset.
- *
- * Return the specified offset on success and -EINVAL on invalid offset.
- */
-loff_t vfs_setpos(struct file *file, loff_t offset, loff_t maxsize)
+static loff_t lseek_execute(struct file *file, struct inode *inode,
+		loff_t offset, loff_t maxsize)
 {
 	if (offset < 0 && !unsigned_offsets(file))
 		return -EINVAL;
@@ -66,7 +55,6 @@ loff_t vfs_setpos(struct file *file, loff_t offset, loff_t maxsize)
 	}
 	return offset;
 }
-EXPORT_SYMBOL(vfs_setpos);
 
 /**
  * generic_file_llseek_size - generic llseek implementation for regular files
@@ -88,6 +76,8 @@ loff_t
 generic_file_llseek_size(struct file *file, loff_t offset, int whence,
 		loff_t maxsize, loff_t eof)
 {
+	struct inode *inode = file->f_mapping->host;
+
 	switch (whence) {
 	case SEEK_END:
 		offset += eof;
@@ -107,7 +97,8 @@ generic_file_llseek_size(struct file *file, loff_t offset, int whence,
 		 * like SEEK_SET.
 		 */
 		spin_lock(&file->f_lock);
-		offset = vfs_setpos(file, file->f_pos + offset, maxsize);
+		offset = lseek_execute(file, inode, file->f_pos + offset,
+				       maxsize);
 		spin_unlock(&file->f_lock);
 		return offset;
 	case SEEK_DATA:
@@ -129,7 +120,7 @@ generic_file_llseek_size(struct file *file, loff_t offset, int whence,
 		break;
 	}
 
-	return vfs_setpos(file, offset, maxsize);
+	return lseek_execute(file, inode, offset, maxsize);
 }
 EXPORT_SYMBOL(generic_file_llseek_size);
 
@@ -152,26 +143,6 @@ loff_t generic_file_llseek(struct file *file, loff_t offset, int whence)
 					i_size_read(inode));
 }
 EXPORT_SYMBOL(generic_file_llseek);
-
-/**
- * fixed_size_llseek - llseek implementation for fixed-sized devices
- * @file:	file structure to seek on
- * @offset:	file offset to seek to
- * @whence:	type of seek
- * @size:	size of the file
- *
- */
-loff_t fixed_size_llseek(struct file *file, loff_t offset, int whence, loff_t size)
-{
-	switch (whence) {
-	case SEEK_SET: case SEEK_CUR: case SEEK_END:
-		return generic_file_llseek_size(file, offset, whence,
-						size, size);
-	default:
-		return -EINVAL;
-	}
-}
-EXPORT_SYMBOL(fixed_size_llseek);
 
 /**
  * noop_llseek - No Operation Performed llseek implementation
@@ -325,7 +296,7 @@ out_putf:
  * them to something that fits in "int" so that others
  * won't have to do range checks all the time.
  */
-int rw_verify_area(int read_write, struct file *file, const loff_t *ppos, size_t count)
+int rw_verify_area(int read_write, struct file *file, loff_t *ppos, size_t count)
 {
 	struct inode *inode;
 	loff_t pos;
@@ -506,8 +477,7 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);
 		ret = vfs_read(f.file, buf, count, &pos);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		file_pos_write(f.file, pos);
 		fdput(f);
 	}
 	return ret;
@@ -522,8 +492,7 @@ SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);
 		ret = vfs_write(f.file, buf, count, &pos);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		file_pos_write(f.file, pos);
 		fdput(f);
 	}
 
@@ -811,8 +780,7 @@ SYSCALL_DEFINE3(readv, unsigned long, fd, const struct iovec __user *, vec,
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);
 		ret = vfs_readv(f.file, vec, vlen, &pos);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		file_pos_write(f.file, pos);
 		fdput(f);
 	}
 
@@ -831,8 +799,7 @@ SYSCALL_DEFINE3(writev, unsigned long, fd, const struct iovec __user *, vec,
 	if (f.file) {
 		loff_t pos = file_pos_read(f.file);
 		ret = vfs_writev(f.file, vec, vlen, &pos);
-		if (ret >= 0)
-			file_pos_write(f.file, pos);
+		file_pos_write(f.file, pos);
 		fdput(f);
 	}
 
@@ -992,8 +959,7 @@ COMPAT_SYSCALL_DEFINE3(readv, unsigned long, fd,
 		return -EBADF;
 	pos = f.file->f_pos;
 	ret = compat_readv(f.file, vec, vlen, &pos);
-	if (ret >= 0)
-		f.file->f_pos = pos;
+	f.file->f_pos = pos;
 	fdput(f);
 	return ret;
 }
@@ -1059,8 +1025,7 @@ COMPAT_SYSCALL_DEFINE3(writev, unsigned long, fd,
 		return -EBADF;
 	pos = f.file->f_pos;
 	ret = compat_writev(f.file, vec, vlen, &pos);
-	if (ret >= 0)
-		f.file->f_pos = pos;
+	f.file->f_pos = pos;
 	fdput(f);
 	return ret;
 }
@@ -1164,9 +1129,7 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	if (in.file->f_flags & O_NONBLOCK)
 		fl = SPLICE_F_NONBLOCK;
 #endif
-	file_start_write(out.file);
 	retval = do_splice_direct(in.file, &pos, out.file, &out_pos, count, fl);
-	file_end_write(out.file);
 
 	if (retval > 0) {
 		add_rchar(current, retval);

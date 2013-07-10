@@ -665,22 +665,20 @@ static int ptrace_peek_siginfo(struct task_struct *child,
 		if (unlikely(is_compat_task())) {
 			compat_siginfo_t __user *uinfo = compat_ptr(data);
 
-			if (copy_siginfo_to_user32(uinfo, &info) ||
-			    __put_user(info.si_code, &uinfo->si_code)) {
-				ret = -EFAULT;
-				break;
-			}
-
+			ret = copy_siginfo_to_user32(uinfo, &info);
+			ret |= __put_user(info.si_code, &uinfo->si_code);
 		} else
 #endif
 		{
 			siginfo_t __user *uinfo = (siginfo_t __user *) data;
 
-			if (copy_siginfo_to_user(uinfo, &info) ||
-			    __put_user(info.si_code, &uinfo->si_code)) {
-				ret = -EFAULT;
-				break;
-			}
+			ret = copy_siginfo_to_user(uinfo, &info);
+			ret |= __put_user(info.si_code, &uinfo->si_code);
+		}
+
+		if (ret) {
+			ret = -EFAULT;
+			break;
 		}
 
 		data += sizeof(siginfo_t);
@@ -844,47 +842,6 @@ int ptrace_request(struct task_struct *child, long request,
 			ret = ptrace_setsiginfo(child, &siginfo);
 		break;
 
-	case PTRACE_GETSIGMASK:
-		if (addr != sizeof(sigset_t)) {
-			ret = -EINVAL;
-			break;
-		}
-
-		if (copy_to_user(datavp, &child->blocked, sizeof(sigset_t)))
-			ret = -EFAULT;
-		else
-			ret = 0;
-
-		break;
-
-	case PTRACE_SETSIGMASK: {
-		sigset_t new_set;
-
-		if (addr != sizeof(sigset_t)) {
-			ret = -EINVAL;
-			break;
-		}
-
-		if (copy_from_user(&new_set, datavp, sizeof(sigset_t))) {
-			ret = -EFAULT;
-			break;
-		}
-
-		sigdelsetmask(&new_set, sigmask(SIGKILL)|sigmask(SIGSTOP));
-
-		/*
-		 * Every thread does recalc_sigpending() after resume, so
-		 * retarget_shared_pending() and recalc_sigpending() are not
-		 * called here.
-		 */
-		spin_lock_irq(&child->sighand->siglock);
-		child->blocked = new_set;
-		spin_unlock_irq(&child->sighand->siglock);
-
-		ret = 0;
-		break;
-	}
-
 	case PTRACE_INTERRUPT:
 		/*
 		 * Stop tracee without any side-effect on signal or job
@@ -989,7 +946,8 @@ int ptrace_request(struct task_struct *child, long request,
 
 #ifdef CONFIG_HAVE_ARCH_TRACEHOOK
 	case PTRACE_GETREGSET:
-	case PTRACE_SETREGSET: {
+	case PTRACE_SETREGSET:
+	{
 		struct iovec kiov;
 		struct iovec __user *uiov = datavp;
 

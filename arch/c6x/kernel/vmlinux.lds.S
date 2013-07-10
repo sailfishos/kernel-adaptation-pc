@@ -54,15 +54,16 @@ SECTIONS
 	}
 
 	. = ALIGN(PAGE_SIZE);
-	__init_begin = .;
 	.init :
 	{
+		_stext = .;
 		_sinittext = .;
 		HEAD_TEXT
 		INIT_TEXT
 		_einittext = .;
 	}
 
+	__init_begin = _stext;
 	INIT_DATA_SECTION(16)
 
 	PERCPU_SECTION(128)
@@ -73,7 +74,6 @@ SECTIONS
 	.text :
 	{
 		_text = .;
-		_stext = .;
 		TEXT_TEXT
 		SCHED_TEXT
 		LOCK_TEXT

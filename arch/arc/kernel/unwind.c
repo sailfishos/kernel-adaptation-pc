@@ -289,8 +289,6 @@ static void __init setup_unwind_table(struct unwind_table *table,
 			 * instead of the initial loc addr
 			 * return;
 			 */
-			WARN(1, "unwinder: FDE->initial_location NULL %p\n",
-				(const u8 *)(fde + 1) + *fde);
 		}
 		++n;
 	}

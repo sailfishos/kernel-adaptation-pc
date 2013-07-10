@@ -101,15 +101,16 @@ static struct p9_rdir *v9fs_alloc_rdir_buf(struct file *filp, int buflen)
 }
 
 /**
- * v9fs_dir_readdir - iterate through a directory
- * @file: opened file structure
- * @ctx: actor we feed the entries to
+ * v9fs_dir_readdir - read a directory
+ * @filp: opened file structure
+ * @dirent: directory structure ???
+ * @filldir: function to populate directory structure ???
  *
  */
 
-static int v9fs_dir_readdir(struct file *file, struct dir_context *ctx)
+static int v9fs_dir_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	bool over;
+	int over;
 	struct p9_wstat st;
 	int err = 0;
 	struct p9_fid *fid;
@@ -117,19 +118,19 @@ static int v9fs_dir_readdir(struct file *file, struct dir_context *ctx)
 	int reclen = 0;
 	struct p9_rdir *rdir;
 
-	p9_debug(P9_DEBUG_VFS, "name %s\n", file->f_path.dentry->d_name.name);
-	fid = file->private_data;
+	p9_debug(P9_DEBUG_VFS, "name %s\n", filp->f_path.dentry->d_name.name);
+	fid = filp->private_data;
 
 	buflen = fid->clnt->msize - P9_IOHDRSZ;
 
-	rdir = v9fs_alloc_rdir_buf(file, buflen);
+	rdir = v9fs_alloc_rdir_buf(filp, buflen);
 	if (!rdir)
 		return -ENOMEM;
 
 	while (1) {
 		if (rdir->tail == rdir->head) {
-			err = v9fs_file_readn(file, rdir->buf, NULL,
-							buflen, ctx->pos);
+			err = v9fs_file_readn(filp, rdir->buf, NULL,
+							buflen, filp->f_pos);
 			if (err <= 0)
 				return err;
 
@@ -147,45 +148,51 @@ static int v9fs_dir_readdir(struct file *file, struct dir_context *ctx)
 			}
 			reclen = st.size+2;
 
-			over = !dir_emit(ctx, st.name, strlen(st.name),
-					 v9fs_qid2ino(&st.qid), dt_type(&st));
+			over = filldir(dirent, st.name, strlen(st.name),
+			    filp->f_pos, v9fs_qid2ino(&st.qid), dt_type(&st));
+
 			p9stat_free(&st);
+
 			if (over)
 				return 0;
 
 			rdir->head += reclen;
-			ctx->pos += reclen;
+			filp->f_pos += reclen;
 		}
 	}
 }
 
 /**
- * v9fs_dir_readdir_dotl - iterate through a directory
- * @file: opened file structure
- * @ctx: actor we feed the entries to
+ * v9fs_dir_readdir_dotl - read a directory
+ * @filp: opened file structure
+ * @dirent: buffer to fill dirent structures
+ * @filldir: function to populate dirent structures
  *
  */
-static int v9fs_dir_readdir_dotl(struct file *file, struct dir_context *ctx)
+static int v9fs_dir_readdir_dotl(struct file *filp, void *dirent,
+						filldir_t filldir)
 {
+	int over;
 	int err = 0;
 	struct p9_fid *fid;
 	int buflen;
 	struct p9_rdir *rdir;
 	struct p9_dirent curdirent;
+	u64 oldoffset = 0;
 
-	p9_debug(P9_DEBUG_VFS, "name %s\n", file->f_path.dentry->d_name.name);
-	fid = file->private_data;
+	p9_debug(P9_DEBUG_VFS, "name %s\n", filp->f_path.dentry->d_name.name);
+	fid = filp->private_data;
 
 	buflen = fid->clnt->msize - P9_READDIRHDRSZ;
 
-	rdir = v9fs_alloc_rdir_buf(file, buflen);
+	rdir = v9fs_alloc_rdir_buf(filp, buflen);
 	if (!rdir)
 		return -ENOMEM;
 
 	while (1) {
 		if (rdir->tail == rdir->head) {
 			err = p9_client_readdir(fid, rdir->buf, buflen,
-						ctx->pos);
+						filp->f_pos);
 			if (err <= 0)
 				return err;
 
@@ -203,13 +210,22 @@ static int v9fs_dir_readdir_dotl(struct file *file, struct dir_context *ctx)
 				return -EIO;
 			}
 
-			if (!dir_emit(ctx, curdirent.d_name,
-				      strlen(curdirent.d_name),
-				      v9fs_qid2ino(&curdirent.qid),
-				      curdirent.d_type))
+			/* d_off in dirent structure tracks the offset into
+			 * the next dirent in the dir. However, filldir()
+			 * expects offset into the current dirent. Hence
+			 * while calling filldir send the offset from the
+			 * previous dirent structure.
+			 */
+			over = filldir(dirent, curdirent.d_name,
+					strlen(curdirent.d_name),
+					oldoffset, v9fs_qid2ino(&curdirent.qid),
+					curdirent.d_type);
+			oldoffset = curdirent.d_off;
+
+			if (over)
 				return 0;
 
-			ctx->pos = curdirent.d_off;
+			filp->f_pos = curdirent.d_off;
 			rdir->head += err;
 		}
 	}
@@ -238,7 +254,7 @@ int v9fs_dir_release(struct inode *inode, struct file *filp)
 const struct file_operations v9fs_dir_operations = {
 	.read = generic_read_dir,
 	.llseek = generic_file_llseek,
-	.iterate = v9fs_dir_readdir,
+	.readdir = v9fs_dir_readdir,
 	.open = v9fs_file_open,
 	.release = v9fs_dir_release,
 };
@@ -246,7 +262,7 @@ const struct file_operations v9fs_dir_operations = {
 const struct file_operations v9fs_dir_operations_dotl = {
 	.read = generic_read_dir,
 	.llseek = generic_file_llseek,
-	.iterate = v9fs_dir_readdir_dotl,
+	.readdir = v9fs_dir_readdir_dotl,
 	.open = v9fs_file_open,
 	.release = v9fs_dir_release,
         .fsync = v9fs_file_fsync_dotl,

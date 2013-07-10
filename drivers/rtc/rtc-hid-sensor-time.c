@@ -76,20 +76,6 @@ static int hid_time_proc_event(struct hid_sensor_hub_device *hsdev,
 	return 0;
 }
 
-static u32 hid_time_value(size_t raw_len, char *raw_data)
-{
-	switch (raw_len) {
-	case 1:
-		return *(u8 *)raw_data;
-	case 2:
-		return *(u16 *)raw_data;
-	case 4:
-		return *(u32 *)raw_data;
-	default:
-		return (u32)(~0U); /* 0xff... or -1 to denote an error */
-	}
-}
-
 static int hid_time_capture_sample(struct hid_sensor_hub_device *hsdev,
 				unsigned usage_id, size_t raw_len,
 				char *raw_data, void *priv)
@@ -99,35 +85,26 @@ static int hid_time_capture_sample(struct hid_sensor_hub_device *hsdev,
 
 	switch (usage_id) {
 	case HID_USAGE_SENSOR_TIME_YEAR:
-		/*
-		 * The draft for HID-sensors (HUTRR39) currently doesn't define
-		 * the range for the year attribute. Therefor we support
-		 * 8 bit (0-99) and 16 or 32 bits (full) as size for the year.
-		 */
-		if (raw_len == 1) {
-			time_buf->tm_year = *(u8 *)raw_data;
-			if (time_buf->tm_year < 70)
-				/* assume we are in 1970...2069 */
-				time_buf->tm_year += 100;
-		} else
-			time_buf->tm_year =
-				(int)hid_time_value(raw_len, raw_data)-1900;
+		time_buf->tm_year = *(u8 *)raw_data;
+		if (time_buf->tm_year < 70)
+			/* assume we are in 1970...2069 */
+			time_buf->tm_year += 100;
 		break;
 	case HID_USAGE_SENSOR_TIME_MONTH:
-		/* sensors are sending the month as 1-12, we need 0-11 */
-		time_buf->tm_mon = (int)hid_time_value(raw_len, raw_data)-1;
+		/* sensor sending the month as 1-12, we need 0-11 */
+		time_buf->tm_mon = *(u8 *)raw_data-1;
 		break;
 	case HID_USAGE_SENSOR_TIME_DAY:
-		time_buf->tm_mday = (int)hid_time_value(raw_len, raw_data);
+		time_buf->tm_mday = *(u8 *)raw_data;
 		break;
 	case HID_USAGE_SENSOR_TIME_HOUR:
-		time_buf->tm_hour = (int)hid_time_value(raw_len, raw_data);
+		time_buf->tm_hour = *(u8 *)raw_data;
 		break;
 	case HID_USAGE_SENSOR_TIME_MINUTE:
-		time_buf->tm_min = (int)hid_time_value(raw_len, raw_data);
+		time_buf->tm_min = *(u8 *)raw_data;
 		break;
 	case HID_USAGE_SENSOR_TIME_SECOND:
-		time_buf->tm_sec = (int)hid_time_value(raw_len, raw_data);
+		time_buf->tm_sec = *(u8 *)raw_data;
 		break;
 	default:
 		return -EINVAL;
@@ -173,10 +150,9 @@ static int hid_time_parse_report(struct platform_device *pdev,
 				"not all needed attributes inside the same report!\n");
 			return -EINVAL;
 		}
-		if (time_state->info[i].size == 3 ||
-				time_state->info[i].size > 4) {
+		if (time_state->info[i].size != 1) {
 			dev_err(&pdev->dev,
-				"attribute '%s' not 8, 16 or 32 bits wide!\n",
+				"attribute '%s' not 8 bits wide!\n",
 				hid_time_attrib_name(
 					time_state->info[i].attrib_id));
 			return -EINVAL;

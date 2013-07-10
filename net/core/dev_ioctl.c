@@ -19,8 +19,9 @@
 
 static int dev_ifname(struct net *net, struct ifreq __user *arg)
 {
+	struct net_device *dev;
 	struct ifreq ifr;
-	int error;
+	unsigned seq;
 
 	/*
 	 *	Fetch the caller's info block.
@@ -29,9 +30,19 @@ static int dev_ifname(struct net *net, struct ifreq __user *arg)
 	if (copy_from_user(&ifr, arg, sizeof(struct ifreq)))
 		return -EFAULT;
 
-	error = netdev_get_name(net, ifr.ifr_name, ifr.ifr_ifindex);
-	if (error)
-		return error;
+retry:
+	seq = read_seqcount_begin(&devnet_rename_seq);
+	rcu_read_lock();
+	dev = dev_get_by_index_rcu(net, ifr.ifr_ifindex);
+	if (!dev) {
+		rcu_read_unlock();
+		return -ENODEV;
+	}
+
+	strcpy(ifr.ifr_name, dev->name);
+	rcu_read_unlock();
+	if (read_seqcount_retry(&devnet_rename_seq, seq))
+		goto retry;
 
 	if (copy_to_user(arg, &ifr, sizeof(struct ifreq)))
 		return -EFAULT;

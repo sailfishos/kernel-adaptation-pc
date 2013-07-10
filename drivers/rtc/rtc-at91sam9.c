@@ -324,14 +324,16 @@ static int at91_rtc_probe(struct platform_device *pdev)
 	rtc->rtt = devm_ioremap(&pdev->dev, r->start, resource_size(r));
 	if (!rtc->rtt) {
 		dev_err(&pdev->dev, "failed to map registers, aborting.\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto fail;
 	}
 
 	rtc->gpbr = devm_ioremap(&pdev->dev, r_gpbr->start,
 				resource_size(r_gpbr));
 	if (!rtc->gpbr) {
 		dev_err(&pdev->dev, "failed to map gpbr registers, aborting.\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto fail;
 	}
 
 	mr = rtt_readl(rtc, MR);
@@ -348,15 +350,17 @@ static int at91_rtc_probe(struct platform_device *pdev)
 
 	rtc->rtcdev = devm_rtc_device_register(&pdev->dev, pdev->name,
 					&at91_rtc_ops, THIS_MODULE);
-	if (IS_ERR(rtc->rtcdev))
-		return PTR_ERR(rtc->rtcdev);
+	if (IS_ERR(rtc->rtcdev)) {
+		ret = PTR_ERR(rtc->rtcdev);
+		goto fail;
+	}
 
 	/* register irq handler after we know what name we'll use */
 	ret = devm_request_irq(&pdev->dev, rtc->irq, at91_rtc_interrupt,
 				IRQF_SHARED, dev_name(&rtc->rtcdev->dev), rtc);
 	if (ret) {
 		dev_dbg(&pdev->dev, "can't share IRQ %d?\n", rtc->irq);
-		return ret;
+		goto fail;
 	}
 
 	/* NOTE:  sam9260 rev A silicon has a ROM bug which resets the
@@ -370,6 +374,10 @@ static int at91_rtc_probe(struct platform_device *pdev)
 				dev_name(&rtc->rtcdev->dev));
 
 	return 0;
+
+fail:
+	platform_set_drvdata(pdev, NULL);
+	return ret;
 }
 
 /*
@@ -383,6 +391,7 @@ static int at91_rtc_remove(struct platform_device *pdev)
 	/* disable all interrupts */
 	rtt_writel(rtc, MR, mr & ~(AT91_RTT_ALMIEN | AT91_RTT_RTTINCIEN));
 
+	platform_set_drvdata(pdev, NULL);
 	return 0;
 }
 

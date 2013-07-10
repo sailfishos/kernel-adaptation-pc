@@ -843,12 +843,10 @@ xfs_cluster_write(
 STATIC void
 xfs_vm_invalidatepage(
 	struct page		*page,
-	unsigned int		offset,
-	unsigned int		length)
+	unsigned long		offset)
 {
-	trace_xfs_invalidatepage(page->mapping->host, page, offset,
-				 length);
-	block_invalidatepage(page, offset, length);
+	trace_xfs_invalidatepage(page->mapping->host, page, offset);
+	block_invalidatepage(page, offset);
 }
 
 /*
@@ -912,7 +910,7 @@ next_buffer:
 
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
 out_invalidate:
-	xfs_vm_invalidatepage(page, 0, PAGE_CACHE_SIZE);
+	xfs_vm_invalidatepage(page, 0);
 	return;
 }
 
@@ -942,7 +940,7 @@ xfs_vm_writepage(
 	int			count = 0;
 	int			nonblocking = 0;
 
-	trace_xfs_writepage(inode, page, 0, 0);
+	trace_xfs_writepage(inode, page, 0);
 
 	ASSERT(page_has_buffers(page));
 
@@ -1173,7 +1171,7 @@ xfs_vm_releasepage(
 {
 	int			delalloc, unwritten;
 
-	trace_xfs_releasepage(page->mapping->host, page, 0, 0);
+	trace_xfs_releasepage(page->mapping->host, page, 0);
 
 	xfs_count_page_state(page, &delalloc, &unwritten);
 

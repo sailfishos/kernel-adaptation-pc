@@ -884,7 +884,18 @@ static struct pci_driver r852_pci_driver = {
 	.driver.pm	= &r592_pm_ops,
 };
 
-module_pci_driver(r852_pci_driver);
+static __init int r592_module_init(void)
+{
+	return pci_register_driver(&r852_pci_driver);
+}
+
+static void __exit r592_module_exit(void)
+{
+	pci_unregister_driver(&r852_pci_driver);
+}
+
+module_init(r592_module_init);
+module_exit(r592_module_exit);
 
 module_param_named(enable_dma, r592_enable_dma, bool, S_IRUGO);
 MODULE_PARM_DESC(enable_dma, "Enable usage of the DMA (default)");

@@ -370,6 +370,8 @@ err_reset_irq_status:
 err_reset_irq_request:
 
 		mc13xxx_unlock(mc13xxx);
+
+		platform_set_drvdata(pdev, NULL);
 	}
 
 	return ret;
@@ -386,6 +388,8 @@ static int __exit mc13xxx_rtc_remove(struct platform_device *pdev)
 	mc13xxx_irq_free(priv->mc13xxx, MC13XXX_IRQ_RTCRST, priv);
 
 	mc13xxx_unlock(priv->mc13xxx);
+
+	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }

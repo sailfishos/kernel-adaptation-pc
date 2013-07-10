@@ -256,18 +256,22 @@ static void nilfs_set_de_type(struct nilfs_dir_entry *de, struct inode *inode)
 	de->file_type = nilfs_type_by_mode[(mode & S_IFMT)>>S_SHIFT];
 }
 
-static int nilfs_readdir(struct file *file, struct dir_context *ctx)
+static int nilfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	loff_t pos = ctx->pos;
-	struct inode *inode = file_inode(file);
+	loff_t pos = filp->f_pos;
+	struct inode *inode = file_inode(filp);
 	struct super_block *sb = inode->i_sb;
 	unsigned int offset = pos & ~PAGE_CACHE_MASK;
 	unsigned long n = pos >> PAGE_CACHE_SHIFT;
 	unsigned long npages = dir_pages(inode);
 /*	unsigned chunk_mask = ~(nilfs_chunk_size(inode)-1); */
+	unsigned char *types = NULL;
+	int ret;
 
 	if (pos > inode->i_size - NILFS_DIR_REC_LEN(1))
-		return 0;
+		goto success;
+
+	types = nilfs_filetype_table;
 
 	for ( ; n < npages; n++, offset = 0) {
 		char *kaddr, *limit;
@@ -277,8 +281,9 @@ static int nilfs_readdir(struct file *file, struct dir_context *ctx)
 		if (IS_ERR(page)) {
 			nilfs_error(sb, __func__, "bad page in #%lu",
 				    inode->i_ino);
-			ctx->pos += PAGE_CACHE_SIZE - offset;
-			return -EIO;
+			filp->f_pos += PAGE_CACHE_SIZE - offset;
+			ret = -EIO;
+			goto done;
 		}
 		kaddr = page_address(page);
 		de = (struct nilfs_dir_entry *)(kaddr + offset);
@@ -288,28 +293,35 @@ static int nilfs_readdir(struct file *file, struct dir_context *ctx)
 			if (de->rec_len == 0) {
 				nilfs_error(sb, __func__,
 					    "zero-length directory entry");
+				ret = -EIO;
 				nilfs_put_page(page);
-				return -EIO;
+				goto done;
 			}
 			if (de->inode) {
-				unsigned char t;
+				int over;
+				unsigned char d_type = DT_UNKNOWN;
 
-				if (de->file_type < NILFS_FT_MAX)
-					t = nilfs_filetype_table[de->file_type];
-				else
-					t = DT_UNKNOWN;
+				if (types && de->file_type < NILFS_FT_MAX)
+					d_type = types[de->file_type];
 
-				if (!dir_emit(ctx, de->name, de->name_len,
-						le64_to_cpu(de->inode), t)) {
+				offset = (char *)de - kaddr;
+				over = filldir(dirent, de->name, de->name_len,
+						(n<<PAGE_CACHE_SHIFT) | offset,
+						le64_to_cpu(de->inode), d_type);
+				if (over) {
 					nilfs_put_page(page);
-					return 0;
+					goto success;
 				}
 			}
-			ctx->pos += nilfs_rec_len_from_disk(de->rec_len);
+			filp->f_pos += nilfs_rec_len_from_disk(de->rec_len);
 		}
 		nilfs_put_page(page);
 	}
-	return 0;
+
+success:
+	ret = 0;
+done:
+	return ret;
 }
 
 /*
@@ -666,7 +678,7 @@ not_empty:
 const struct file_operations nilfs_dir_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
-	.iterate	= nilfs_readdir,
+	.readdir	= nilfs_readdir,
 	.unlocked_ioctl	= nilfs_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= nilfs_compat_ioctl,

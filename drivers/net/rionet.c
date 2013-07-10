@@ -208,17 +208,6 @@ static int rionet_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		if (nets[rnet->mport->id].active[destid])
 			rionet_queue_tx_msg(skb, ndev,
 					nets[rnet->mport->id].active[destid]);
-		else {
-			/*
-			 * If the target device was removed from the list of
-			 * active peers but we still have TX packets targeting
-			 * it just report sending a packet to the target
-			 * (without actual packet transfer).
-			 */
-			dev_kfree_skb_any(skb);
-			ndev->stats.tx_packets++;
-			ndev->stats.tx_bytes += skb->len;
-		}
 	}
 
 	spin_unlock_irqrestore(&rnet->tx_lock, flags);
@@ -396,28 +385,24 @@ static int rionet_close(struct net_device *ndev)
 	return 0;
 }
 
-static int rionet_remove_dev(struct device *dev, struct subsys_interface *sif)
+static void rionet_remove(struct rio_dev *rdev)
 {
-	struct rio_dev *rdev = to_rio_dev(dev);
+	struct net_device *ndev = rio_get_drvdata(rdev);
 	unsigned char netid = rdev->net->hport->id;
 	struct rionet_peer *peer, *tmp;
 
-	if (dev_rionet_capable(rdev)) {
-		list_for_each_entry_safe(peer, tmp, &nets[netid].peers, node) {
-			if (peer->rdev == rdev) {
-				if (nets[netid].active[rdev->destid]) {
-					nets[netid].active[rdev->destid] = NULL;
-					nets[netid].nact--;
-				}
+	unregister_netdev(ndev);
 
-				list_del(&peer->node);
-				kfree(peer);
-				break;
-			}
-		}
+	free_pages((unsigned long)nets[netid].active, get_order(sizeof(void *) *
+			RIO_MAX_ROUTE_ENTRIES(rdev->net->hport->sys_size)));
+	nets[netid].active = NULL;
+
+	list_for_each_entry_safe(peer, tmp, &nets[netid].peers, node) {
+		list_del(&peer->node);
+		kfree(peer);
 	}
 
-	return 0;
+	free_netdev(ndev);
 }
 
 static void rionet_get_drvinfo(struct net_device *ndev,
@@ -518,13 +503,12 @@ static int rionet_setup_netdev(struct rio_mport *mport, struct net_device *ndev)
 
 static unsigned long net_table[RIONET_MAX_NETS/sizeof(unsigned long) + 1];
 
-static int rionet_add_dev(struct device *dev, struct subsys_interface *sif)
+static int rionet_probe(struct rio_dev *rdev, const struct rio_device_id *id)
 {
 	int rc = -ENODEV;
 	u32 lsrc_ops, ldst_ops;
 	struct rionet_peer *peer;
 	struct net_device *ndev = NULL;
-	struct rio_dev *rdev = to_rio_dev(dev);
 	unsigned char netid = rdev->net->hport->id;
 	int oldnet;
 
@@ -534,9 +518,8 @@ static int rionet_add_dev(struct device *dev, struct subsys_interface *sif)
 	oldnet = test_and_set_bit(netid, net_table);
 
 	/*
-	 * If first time through this net, make sure local device is rionet
-	 * capable and setup netdev (this step will be skipped in later probes
-	 * on the same net).
+	 * First time through, make sure local device is rionet
+	 * capable, setup netdev (will be skipped on later probes)
 	 */
 	if (!oldnet) {
 		rio_local_read_config_32(rdev->net->hport, RIO_SRC_OPS_CAR,
@@ -558,12 +541,6 @@ static int rionet_add_dev(struct device *dev, struct subsys_interface *sif)
 		}
 		nets[netid].ndev = ndev;
 		rc = rionet_setup_netdev(rdev->net->hport, ndev);
-		if (rc) {
-			printk(KERN_ERR "%s: failed to setup netdev (rc=%d)\n",
-			       DRV_NAME, rc);
-			goto out;
-		}
-
 		INIT_LIST_HEAD(&nets[netid].peers);
 		nets[netid].nact = 0;
 	} else if (nets[netid].ndev == NULL)
@@ -582,61 +559,31 @@ static int rionet_add_dev(struct device *dev, struct subsys_interface *sif)
 		list_add_tail(&peer->node, &nets[netid].peers);
 	}
 
-	return 0;
-out:
+	rio_set_drvdata(rdev, nets[netid].ndev);
+
+      out:
 	return rc;
 }
 
-#ifdef MODULE
 static struct rio_device_id rionet_id_table[] = {
-	{RIO_DEVICE(RIO_ANY_ID, RIO_ANY_ID)},
-	{ 0, }	/* terminate list */
+	{RIO_DEVICE(RIO_ANY_ID, RIO_ANY_ID)}
 };
 
-MODULE_DEVICE_TABLE(rapidio, rionet_id_table);
-#endif
-
-static struct subsys_interface rionet_interface = {
-	.name		= "rionet",
-	.subsys		= &rio_bus_type,
-	.add_dev	= rionet_add_dev,
-	.remove_dev	= rionet_remove_dev,
+static struct rio_driver rionet_driver = {
+	.name = "rionet",
+	.id_table = rionet_id_table,
+	.probe = rionet_probe,
+	.remove = rionet_remove,
 };
 
 static int __init rionet_init(void)
 {
-	return subsys_interface_register(&rionet_interface);
+	return rio_register_driver(&rionet_driver);
 }
 
 static void __exit rionet_exit(void)
 {
-	struct rionet_private *rnet;
-	struct net_device *ndev;
-	struct rionet_peer *peer, *tmp;
-	int i;
-
-	for (i = 0; i < RIONET_MAX_NETS; i++) {
-		if (nets[i].ndev != NULL) {
-			ndev = nets[i].ndev;
-			rnet = netdev_priv(ndev);
-			unregister_netdev(ndev);
-
-			list_for_each_entry_safe(peer,
-						 tmp, &nets[i].peers, node) {
-				list_del(&peer->node);
-				kfree(peer);
-			}
-
-			free_pages((unsigned long)nets[i].active,
-				 get_order(sizeof(void *) *
-				 RIO_MAX_ROUTE_ENTRIES(rnet->mport->sys_size)));
-			nets[i].active = NULL;
-
-			free_netdev(ndev);
-		}
-	}
-
-	subsys_interface_unregister(&rionet_interface);
+	rio_unregister_driver(&rionet_driver);
 }
 
 late_initcall(rionet_init);

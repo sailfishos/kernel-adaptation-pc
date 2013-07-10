@@ -1529,7 +1529,7 @@ const struct inode_operations jfs_dir_inode_operations = {
 
 const struct file_operations jfs_dir_operations = {
 	.read		= generic_read_dir,
-	.iterate	= jfs_readdir,
+	.readdir	= jfs_readdir,
 	.fsync		= jfs_fsync,
 	.unlocked_ioctl = jfs_ioctl,
 #ifdef CONFIG_COMPAT
@@ -1538,7 +1538,8 @@ const struct file_operations jfs_dir_operations = {
 	.llseek		= generic_file_llseek,
 };
 
-static int jfs_ci_hash(const struct dentry *dir, struct qstr *this)
+static int jfs_ci_hash(const struct dentry *dir, const struct inode *inode,
+		struct qstr *this)
 {
 	unsigned long hash;
 	int i;
@@ -1551,7 +1552,9 @@ static int jfs_ci_hash(const struct dentry *dir, struct qstr *this)
 	return 0;
 }
 
-static int jfs_ci_compare(const struct dentry *parent, const struct dentry *dentry,
+static int jfs_ci_compare(const struct dentry *parent,
+		const struct inode *pinode,
+		const struct dentry *dentry, const struct inode *inode,
 		unsigned int len, const char *str, const struct qstr *name)
 {
 	int i, result = 1;

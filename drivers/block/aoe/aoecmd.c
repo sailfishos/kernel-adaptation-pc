@@ -1,4 +1,4 @@
-/* Copyright (c) 2013 Coraid, Inc.  See COPYING for GPL terms. */
+/* Copyright (c) 2012 Coraid, Inc.  See COPYING for GPL terms. */
 /*
  * aoecmd.c
  * Filesystem request handling methods
@@ -35,27 +35,14 @@ module_param(aoe_maxout, int, 0644);
 MODULE_PARM_DESC(aoe_maxout,
 	"Only aoe_maxout outstanding packets for every MAC on eX.Y.");
 
-/* The number of online cpus during module initialization gives us a
- * convenient heuristic cap on the parallelism used for ktio threads
- * doing I/O completion.  It is not important that the cap equal the
- * actual number of running CPUs at any given time, but because of CPU
- * hotplug, we take care to use ncpus instead of using
- * num_online_cpus() after module initialization.
- */
-static int ncpus;
-
-/* mutex lock used for synchronization while thread spawning */
-static DEFINE_MUTEX(ktio_spawn_lock);
-
-static wait_queue_head_t *ktiowq;
-static struct ktstate *kts;
+static wait_queue_head_t ktiowq;
+static struct ktstate kts;
 
 /* io completion queue */
-struct iocq_ktio {
+static struct {
 	struct list_head head;
 	spinlock_t lock;
-};
-static struct iocq_ktio *iocq;
+} iocq;
 
 static struct page *empty_page;
 
@@ -1291,36 +1278,23 @@ out:
  * Returns true iff responses needing processing remain.
  */
 static int
-ktio(int id)
+ktio(void)
 {
 	struct frame *f;
 	struct list_head *pos;
 	int i;
-	int actual_id;
 
 	for (i = 0; ; ++i) {
 		if (i == MAXIOC)
 			return 1;
-		if (list_empty(&iocq[id].head))
+		if (list_empty(&iocq.head))
 			return 0;
-		pos = iocq[id].head.next;
+		pos = iocq.head.next;
 		list_del(pos);
+		spin_unlock_irq(&iocq.lock);
 		f = list_entry(pos, struct frame, head);
-		spin_unlock_irq(&iocq[id].lock);
 		ktiocomplete(f);
-
-		/* Figure out if extra threads are required. */
-		actual_id = f->t->d->aoeminor % ncpus;
-
-		if (!kts[actual_id].active) {
-			BUG_ON(id != 0);
-			mutex_lock(&ktio_spawn_lock);
-			if (!kts[actual_id].active
-				&& aoe_ktstart(&kts[actual_id]) == 0)
-				kts[actual_id].active = 1;
-			mutex_unlock(&ktio_spawn_lock);
-		}
-		spin_lock_irq(&iocq[id].lock);
+		spin_lock_irq(&iocq.lock);
 	}
 }
 
@@ -1337,7 +1311,7 @@ kthread(void *vp)
 	complete(&k->rendez);	/* tell spawner we're running */
 	do {
 		spin_lock_irq(k->lock);
-		more = k->fn(k->id);
+		more = k->fn();
 		if (!more) {
 			add_wait_queue(k->waitq, &wait);
 			__set_current_state(TASK_INTERRUPTIBLE);
@@ -1366,7 +1340,7 @@ aoe_ktstart(struct ktstate *k)
 	struct task_struct *task;
 
 	init_completion(&k->rendez);
-	task = kthread_run(kthread, k, "%s", k->name);
+	task = kthread_run(kthread, k, k->name);
 	if (task == NULL || IS_ERR(task))
 		return -ENOMEM;
 	k->task = task;
@@ -1379,24 +1353,13 @@ aoe_ktstart(struct ktstate *k)
 static void
 ktcomplete(struct frame *f, struct sk_buff *skb)
 {
-	int id;
 	ulong flags;
 
 	f->r_skb = skb;
-	id = f->t->d->aoeminor % ncpus;
-	spin_lock_irqsave(&iocq[id].lock, flags);
-	if (!kts[id].active) {
-		spin_unlock_irqrestore(&iocq[id].lock, flags);
-		/* The thread with id has not been spawned yet,
-		 * so delegate the work to the main thread and
-		 * try spawning a new thread.
-		 */
-		id = 0;
-		spin_lock_irqsave(&iocq[id].lock, flags);
-	}
-	list_add_tail(&f->head, &iocq[id].head);
-	spin_unlock_irqrestore(&iocq[id].lock, flags);
-	wake_up(&ktiowq[id]);
+	spin_lock_irqsave(&iocq.lock, flags);
+	list_add_tail(&f->head, &iocq.head);
+	spin_unlock_irqrestore(&iocq.lock, flags);
+	wake_up(&ktiowq);
 }
 
 struct sk_buff *
@@ -1743,17 +1706,6 @@ aoe_failbuf(struct aoedev *d, struct buf *buf)
 void
 aoe_flush_iocq(void)
 {
-	int i;
-
-	for (i = 0; i < ncpus; i++) {
-		if (kts[i].active)
-			aoe_flush_iocq_by_index(i);
-	}
-}
-
-void
-aoe_flush_iocq_by_index(int id)
-{
 	struct frame *f;
 	struct aoedev *d;
 	LIST_HEAD(flist);
@@ -1761,9 +1713,9 @@ aoe_flush_iocq_by_index(int id)
 	struct sk_buff *skb;
 	ulong flags;
 
-	spin_lock_irqsave(&iocq[id].lock, flags);
-	list_splice_init(&iocq[id].head, &flist);
-	spin_unlock_irqrestore(&iocq[id].lock, flags);
+	spin_lock_irqsave(&iocq.lock, flags);
+	list_splice_init(&iocq.head, &flist);
+	spin_unlock_irqrestore(&iocq.lock, flags);
 	while (!list_empty(&flist)) {
 		pos = flist.next;
 		list_del(pos);
@@ -1786,8 +1738,6 @@ int __init
 aoecmd_init(void)
 {
 	void *p;
-	int i;
-	int ret;
 
 	/* get_zeroed_page returns page with ref count 1 */
 	p = (void *) get_zeroed_page(GFP_KERNEL | __GFP_REPEAT);
@@ -1795,71 +1745,21 @@ aoecmd_init(void)
 		return -ENOMEM;
 	empty_page = virt_to_page(p);
 
-	ncpus = num_online_cpus();
-
-	iocq = kcalloc(ncpus, sizeof(struct iocq_ktio), GFP_KERNEL);
-	if (!iocq)
-		return -ENOMEM;
-
-	kts = kcalloc(ncpus, sizeof(struct ktstate), GFP_KERNEL);
-	if (!kts) {
-		ret = -ENOMEM;
-		goto kts_fail;
-	}
-
-	ktiowq = kcalloc(ncpus, sizeof(wait_queue_head_t), GFP_KERNEL);
-	if (!ktiowq) {
-		ret = -ENOMEM;
-		goto ktiowq_fail;
-	}
-
-	mutex_init(&ktio_spawn_lock);
-
-	for (i = 0; i < ncpus; i++) {
-		INIT_LIST_HEAD(&iocq[i].head);
-		spin_lock_init(&iocq[i].lock);
-		init_waitqueue_head(&ktiowq[i]);
-		snprintf(kts[i].name, sizeof(kts[i].name), "aoe_ktio%d", i);
-		kts[i].fn = ktio;
-		kts[i].waitq = &ktiowq[i];
-		kts[i].lock = &iocq[i].lock;
-		kts[i].id = i;
-		kts[i].active = 0;
-	}
-	kts[0].active = 1;
-	if (aoe_ktstart(&kts[0])) {
-		ret = -ENOMEM;
-		goto ktstart_fail;
-	}
-	return 0;
-
-ktstart_fail:
-	kfree(ktiowq);
-ktiowq_fail:
-	kfree(kts);
-kts_fail:
-	kfree(iocq);
-
-	return ret;
+	INIT_LIST_HEAD(&iocq.head);
+	spin_lock_init(&iocq.lock);
+	init_waitqueue_head(&ktiowq);
+	kts.name = "aoe_ktio";
+	kts.fn = ktio;
+	kts.waitq = &ktiowq;
+	kts.lock = &iocq.lock;
+	return aoe_ktstart(&kts);
 }
 
 void
 aoecmd_exit(void)
 {
-	int i;
-
-	for (i = 0; i < ncpus; i++)
-		if (kts[i].active)
-			aoe_ktstop(&kts[i]);
-
+	aoe_ktstop(&kts);
 	aoe_flush_iocq();
-
-	/* Free up the iocq and thread speicific configuration
-	* allocated during startup.
-	*/
-	kfree(iocq);
-	kfree(kts);
-	kfree(ktiowq);
 
 	free_page((unsigned long) page_address(empty_page));
 	empty_page = NULL;

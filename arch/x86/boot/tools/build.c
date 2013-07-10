@@ -243,7 +243,6 @@ static void parse_zoffset(char *fname)
 	c = fread(buf, 1, sizeof(buf) - 1, file);
 	if (ferror(file))
 		die("read-error on `zoffset.h'");
-	fclose(file);
 	buf[c] = 0;
 
 	p = (char *)buf;

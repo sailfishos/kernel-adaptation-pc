@@ -906,10 +906,11 @@ xfs_file_release(
 
 STATIC int
 xfs_file_readdir(
-	struct file	*file,
-	struct dir_context *ctx)
+	struct file	*filp,
+	void		*dirent,
+	filldir_t	filldir)
 {
-	struct inode	*inode = file_inode(file);
+	struct inode	*inode = file_inode(filp);
 	xfs_inode_t	*ip = XFS_I(inode);
 	int		error;
 	size_t		bufsize;
@@ -928,7 +929,8 @@ xfs_file_readdir(
 	 */
 	bufsize = (size_t)min_t(loff_t, 32768, ip->i_d.di_size);
 
-	error = xfs_readdir(ip, ctx, bufsize);
+	error = xfs_readdir(ip, dirent, bufsize,
+				(xfs_off_t *)&filp->f_pos, filldir);
 	if (error)
 		return -error;
 	return 0;
@@ -1268,7 +1270,8 @@ xfs_seek_data(
 	}
 
 out:
-	offset = vfs_setpos(file, offset, inode->i_sb->s_maxbytes);
+	if (offset != file->f_pos)
+		file->f_pos = offset;
 
 out_unlock:
 	xfs_iunlock_map_shared(ip, lock);
@@ -1376,7 +1379,8 @@ out:
 	 * situation in particular.
 	 */
 	offset = min_t(loff_t, offset, isize);
-	offset = vfs_setpos(file, offset, inode->i_sb->s_maxbytes);
+	if (offset != file->f_pos)
+		file->f_pos = offset;
 
 out_unlock:
 	xfs_iunlock_map_shared(ip, lock);
@@ -1428,7 +1432,7 @@ const struct file_operations xfs_file_operations = {
 const struct file_operations xfs_dir_file_operations = {
 	.open		= xfs_dir_open,
 	.read		= generic_read_dir,
-	.iterate	= xfs_file_readdir,
+	.readdir	= xfs_file_readdir,
 	.llseek		= generic_file_llseek,
 	.unlocked_ioctl	= xfs_file_ioctl,
 #ifdef CONFIG_COMPAT

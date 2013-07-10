@@ -1864,7 +1864,7 @@ static int kvmppc_hv_setup_htab_rma(struct kvm_vcpu *vcpu)
 
  up_out:
 	up_read(&current->mm->mmap_sem);
-	goto out_srcu;
+	goto out;
 }
 
 int kvmppc_core_init_vm(struct kvm *kvm)

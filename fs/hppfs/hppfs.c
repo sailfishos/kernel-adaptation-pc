@@ -69,7 +69,7 @@ static char *dentry_name(struct dentry *dentry, int extra)
 	struct dentry *parent;
 	char *root, *name;
 	const char *seg_name;
-	int len, seg_len, root_len;
+	int len, seg_len;
 
 	len = 0;
 	parent = dentry;
@@ -81,8 +81,7 @@ static char *dentry_name(struct dentry *dentry, int extra)
 	}
 
 	root = "proc";
-	root_len = strlen(root);
-	len += root_len;
+	len += strlen(root);
 	name = kmalloc(len + extra + 1, GFP_KERNEL);
 	if (name == NULL)
 		return NULL;
@@ -92,7 +91,7 @@ static char *dentry_name(struct dentry *dentry, int extra)
 	while (parent->d_parent != parent) {
 		if (is_pid(parent)) {
 			seg_name = "pid";
-			seg_len = strlen(seg_name);
+			seg_len = strlen("pid");
 		}
 		else {
 			seg_name = parent->d_name.name;
@@ -101,10 +100,10 @@ static char *dentry_name(struct dentry *dentry, int extra)
 
 		len -= seg_len + 1;
 		name[len] = '/';
-		memcpy(&name[len + 1], seg_name, seg_len);
+		strncpy(&name[len + 1], seg_name, seg_len);
 		parent = parent->d_parent;
 	}
-	memcpy(name, root, root_len);
+	strncpy(name, root, strlen(root));
 	return name;
 }
 
@@ -543,8 +542,8 @@ static const struct file_operations hppfs_file_fops = {
 };
 
 struct hppfs_dirent {
-	struct dir_context ctx;
-	struct dir_context *caller;
+	void *vfs_dirent;
+	filldir_t filldir;
 	struct dentry *dentry;
 };
 
@@ -556,29 +555,34 @@ static int hppfs_filldir(void *d, const char *name, int size,
 	if (file_removed(dirent->dentry, name))
 		return 0;
 
-	dirent->caller->pos = dirent->ctx.pos;
-	return !dir_emit(dirent->caller, name, size, inode, type);
+	return (*dirent->filldir)(dirent->vfs_dirent, name, size, offset,
+				  inode, type);
 }
 
-static int hppfs_readdir(struct file *file, struct dir_context *ctx)
+static int hppfs_readdir(struct file *file, void *ent, filldir_t filldir)
 {
 	struct hppfs_private *data = file->private_data;
 	struct file *proc_file = data->proc_file;
-	struct hppfs_dirent d = {
-		.ctx.actor	= hppfs_filldir,
-		.caller		= ctx,
-		.dentry  	= file->f_path.dentry
-	};
+	int (*readdir)(struct file *, void *, filldir_t);
+	struct hppfs_dirent dirent = ((struct hppfs_dirent)
+		                      { .vfs_dirent  	= ent,
+					.filldir 	= filldir,
+					.dentry  	= file->f_path.dentry
+				      });
 	int err;
-	proc_file->f_pos = ctx->pos;
-	err = iterate_dir(proc_file, &d.ctx);
-	ctx->pos = d.ctx.pos;
+
+	readdir = file_inode(proc_file)->i_fop->readdir;
+
+	proc_file->f_pos = file->f_pos;
+	err = (*readdir)(proc_file, &dirent, hppfs_filldir);
+	file->f_pos = proc_file->f_pos;
+
 	return err;
 }
 
 static const struct file_operations hppfs_dir_fops = {
 	.owner		= NULL,
-	.iterate	= hppfs_readdir,
+	.readdir	= hppfs_readdir,
 	.open		= hppfs_dir_open,
 	.llseek		= default_llseek,
 	.release	= hppfs_release,

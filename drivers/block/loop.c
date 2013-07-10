@@ -63,6 +63,7 @@
 #include <linux/init.h>
 #include <linux/swap.h>
 #include <linux/slab.h>
+#include <linux/loop.h>
 #include <linux/compat.h>
 #include <linux/suspend.h>
 #include <linux/freezer.h>
@@ -75,7 +76,6 @@
 #include <linux/sysfs.h>
 #include <linux/miscdevice.h>
 #include <linux/falloc.h>
-#include "loop.h"
 
 #include <asm/uaccess.h>
 

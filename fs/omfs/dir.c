@@ -327,23 +327,26 @@ int omfs_is_bad(struct omfs_sb_info *sbi, struct omfs_header *header,
 	return is_bad;
 }
 
-static bool omfs_fill_chain(struct inode *dir, struct dir_context *ctx,
+static int omfs_fill_chain(struct file *filp, void *dirent, filldir_t filldir,
 		u64 fsblock, int hindex)
 {
+	struct inode *dir = file_inode(filp);
+	struct buffer_head *bh;
+	struct omfs_inode *oi;
+	u64 self;
+	int res = 0;
+	unsigned char d_type;
+
 	/* follow chain in this bucket */
 	while (fsblock != ~0) {
-		struct buffer_head *bh = omfs_bread(dir->i_sb, fsblock);
-		struct omfs_inode *oi;
-		u64 self;
-		unsigned char d_type;
-
+		bh = omfs_bread(dir->i_sb, fsblock);
 		if (!bh)
-			return true;
+			goto out;
 
 		oi = (struct omfs_inode *) bh->b_data;
 		if (omfs_is_bad(OMFS_SB(dir->i_sb), &oi->i_head, fsblock)) {
 			brelse(bh);
-			return true;
+			goto out;
 		}
 
 		self = fsblock;
@@ -358,16 +361,15 @@ static bool omfs_fill_chain(struct inode *dir, struct dir_context *ctx,
 
 		d_type = (oi->i_type == OMFS_DIR) ? DT_DIR : DT_REG;
 
-		if (!dir_emit(ctx, oi->i_name,
-			      strnlen(oi->i_name, OMFS_NAMELEN),
-			      self, d_type)) {
-			brelse(bh);
-			return false;
-		}
+		res = filldir(dirent, oi->i_name, strnlen(oi->i_name,
+			OMFS_NAMELEN), filp->f_pos, self, d_type);
 		brelse(bh);
-		ctx->pos++;
+		if (res < 0)
+			break;
+		filp->f_pos++;
 	}
-	return true;
+out:
+	return res;
 }
 
 static int omfs_rename(struct inode *old_dir, struct dentry *old_dentry,
@@ -401,44 +403,60 @@ out:
 	return err;
 }
 
-static int omfs_readdir(struct file *file, struct dir_context *ctx)
+static int omfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	struct inode *dir = file_inode(file);
+	struct inode *dir = file_inode(filp);
 	struct buffer_head *bh;
-	__be64 *p;
+	loff_t offset, res;
 	unsigned int hchain, hindex;
 	int nbuckets;
+	u64 fsblock;
+	int ret = -EINVAL;
 
-	if (ctx->pos >> 32)
-		return -EINVAL;
+	if (filp->f_pos >> 32)
+		goto success;
 
-	if (ctx->pos < 1 << 20) {
-		if (!dir_emit_dots(file, ctx))
-			return 0;
-		ctx->pos = 1 << 20;
+	switch ((unsigned long) filp->f_pos) {
+	case 0:
+		if (filldir(dirent, ".", 1, 0, dir->i_ino, DT_DIR) < 0)
+			goto success;
+		filp->f_pos++;
+		/* fall through */
+	case 1:
+		if (filldir(dirent, "..", 2, 1,
+		    parent_ino(filp->f_dentry), DT_DIR) < 0)
+			goto success;
+		filp->f_pos = 1 << 20;
+		/* fall through */
 	}
 
 	nbuckets = (dir->i_size - OMFS_DIR_START) / 8;
 
 	/* high 12 bits store bucket + 1 and low 20 bits store hash index */
-	hchain = (ctx->pos >> 20) - 1;
-	hindex = ctx->pos & 0xfffff;
+	hchain = (filp->f_pos >> 20) - 1;
+	hindex = filp->f_pos & 0xfffff;
 
 	bh = omfs_bread(dir->i_sb, dir->i_ino);
 	if (!bh)
-		return -EINVAL;
+		goto out;
 
-	p = (__be64 *)(bh->b_data + OMFS_DIR_START) + hchain;
+	offset = OMFS_DIR_START + hchain * 8;
 
-	for (; hchain < nbuckets; hchain++) {
-		__u64 fsblock = be64_to_cpu(*p++);
-		if (!omfs_fill_chain(dir, ctx, fsblock, hindex))
-			break;
+	for (; hchain < nbuckets; hchain++, offset += 8) {
+		fsblock = be64_to_cpu(*((__be64 *) &bh->b_data[offset]));
+
+		res = omfs_fill_chain(filp, dirent, filldir, fsblock, hindex);
 		hindex = 0;
-		ctx->pos = (hchain+2) << 20;
+		if (res < 0)
+			break;
+
+		filp->f_pos = (hchain+2) << 20;
 	}
 	brelse(bh);
-	return 0;
+success:
+	ret = 0;
+out:
+	return ret;
 }
 
 const struct inode_operations omfs_dir_inops = {
@@ -452,6 +470,6 @@ const struct inode_operations omfs_dir_inops = {
 
 const struct file_operations omfs_dir_operations = {
 	.read = generic_read_dir,
-	.iterate = omfs_readdir,
+	.readdir = omfs_readdir,
 	.llseek = generic_file_llseek,
 };
