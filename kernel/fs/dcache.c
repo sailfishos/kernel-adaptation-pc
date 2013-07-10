@@ -1612,10 +1612,6 @@ EXPORT_SYMBOL(d_obtain_alias);
  * If a dentry was found and moved, then it is returned.  Otherwise NULL
  * is returned.  This matches the expected return value of ->lookup.
  *
- * Cluster filesystems may call this function with a negative, hashed dentry.
- * In that case, we know that the inode will be a regular file, and also this
- * will only occur during atomic_open. So we need to check for the dentry
- * being already hashed only in the final case.
  */
 struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 {
@@ -1640,11 +1636,8 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 			security_d_instantiate(dentry, inode);
 			d_rehash(dentry);
 		}
-	} else {
-		d_instantiate(dentry, inode);
-		if (d_unhashed(dentry))
-			d_rehash(dentry);
-	}
+	} else
+		d_add(dentry, inode);
 	return new;
 }
 EXPORT_SYMBOL(d_splice_alias);
@@ -1730,7 +1723,7 @@ EXPORT_SYMBOL(d_add_ci);
  * Do the slow-case of the dentry name compare.
  *
  * Unlike the dentry_cmp() function, we need to atomically
- * load the name and length information, so that the
+ * load the name, length and inode information, so that the
  * filesystem can rely on them, and can use the 'name' and
  * 'len' information without worrying about walking off the
  * end of memory etc.
@@ -1748,18 +1741,22 @@ enum slow_d_compare {
 
 static noinline enum slow_d_compare slow_dentry_cmp(
 		const struct dentry *parent,
+		struct inode *inode,
 		struct dentry *dentry,
 		unsigned int seq,
 		const struct qstr *name)
 {
 	int tlen = dentry->d_name.len;
 	const char *tname = dentry->d_name.name;
+	struct inode *i = dentry->d_inode;
 
 	if (read_seqcount_retry(&dentry->d_seq, seq)) {
 		cpu_relax();
 		return D_COMP_SEQRETRY;
 	}
-	if (parent->d_op->d_compare(parent, dentry, tlen, tname, name))
+	if (parent->d_op->d_compare(parent, inode,
+				dentry, i,
+				tlen, tname, name))
 		return D_COMP_NOMATCH;
 	return D_COMP_OK;
 }
@@ -1769,6 +1766,7 @@ static noinline enum slow_d_compare slow_dentry_cmp(
  * @parent: parent dentry
  * @name: qstr of name we wish to find
  * @seqp: returns d_seq value at the point where the dentry was found
+ * @inode: returns dentry->d_inode when the inode was found valid.
  * Returns: dentry, or NULL
  *
  * __d_lookup_rcu is the dcache lookup function for rcu-walk name
@@ -1795,7 +1793,7 @@ static noinline enum slow_d_compare slow_dentry_cmp(
  */
 struct dentry *__d_lookup_rcu(const struct dentry *parent,
 				const struct qstr *name,
-				unsigned *seqp)
+				unsigned *seqp, struct inode *inode)
 {
 	u64 hashlen = name->hash_len;
 	const unsigned char *str = name->name;
@@ -1829,10 +1827,11 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 seqretry:
 		/*
 		 * The dentry sequence count protects us from concurrent
-		 * renames, and thus protects parent and name fields.
+		 * renames, and thus protects inode, parent and name fields.
 		 *
 		 * The caller must perform a seqcount check in order
-		 * to do anything useful with the returned dentry.
+		 * to do anything useful with the returned dentry,
+		 * including using the 'd_inode' pointer.
 		 *
 		 * NOTE! We do a "raw" seqcount_begin here. That means that
 		 * we don't wait for the sequence count to stabilize if it
@@ -1846,12 +1845,12 @@ seqretry:
 			continue;
 		if (d_unhashed(dentry))
 			continue;
+		*seqp = seq;
 
 		if (unlikely(parent->d_flags & DCACHE_OP_COMPARE)) {
 			if (dentry->d_name.hash != hashlen_hash(hashlen))
 				continue;
-			*seqp = seq;
-			switch (slow_dentry_cmp(parent, dentry, seq, name)) {
+			switch (slow_dentry_cmp(parent, inode, dentry, seq, name)) {
 			case D_COMP_OK:
 				return dentry;
 			case D_COMP_NOMATCH:
@@ -1863,7 +1862,6 @@ seqretry:
 
 		if (dentry->d_name.hash_len != hashlen)
 			continue;
-		*seqp = seq;
 		if (!dentry_cmp(dentry, str, hashlen_len(hashlen)))
 			return dentry;
 	}
@@ -1961,7 +1959,9 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 		if (parent->d_flags & DCACHE_OP_COMPARE) {
 			int tlen = dentry->d_name.len;
 			const char *tname = dentry->d_name.name;
-			if (parent->d_op->d_compare(parent, dentry, tlen, tname, name))
+			if (parent->d_op->d_compare(parent, parent->d_inode,
+						dentry, dentry->d_inode,
+						tlen, tname, name))
 				goto next;
 		} else {
 			if (dentry->d_name.len != len)
@@ -1998,7 +1998,7 @@ struct dentry *d_hash_and_lookup(struct dentry *dir, struct qstr *name)
 	 */
 	name->hash = full_name_hash(name->name, name->len);
 	if (dir->d_flags & DCACHE_OP_HASH) {
-		int err = dir->d_op->d_hash(dir, name);
+		int err = dir->d_op->d_hash(dir, dir->d_inode, name);
 		if (unlikely(err < 0))
 			return ERR_PTR(err);
 	}
@@ -2968,21 +2968,34 @@ rename_retry:
 	goto again;
 }
 
-void d_tmpfile(struct dentry *dentry, struct inode *inode)
+/**
+ * find_inode_number - check for dentry with name
+ * @dir: directory to check
+ * @name: Name to find.
+ *
+ * Check whether a dentry already exists for the given name,
+ * and return the inode number if it has an inode. Otherwise
+ * 0 is returned.
+ *
+ * This routine is used to post-process directory listings for
+ * filesystems using synthetic inode numbers, and is necessary
+ * to keep getcwd() working.
+ */
+ 
+ino_t find_inode_number(struct dentry *dir, struct qstr *name)
 {
-	inode_dec_link_count(inode);
-	BUG_ON(dentry->d_name.name != dentry->d_iname ||
-		!hlist_unhashed(&dentry->d_alias) ||
-		!d_unlinked(dentry));
-	spin_lock(&dentry->d_parent->d_lock);
-	spin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);
-	dentry->d_name.len = sprintf(dentry->d_iname, "#%llu",
-				(unsigned long long)inode->i_ino);
-	spin_unlock(&dentry->d_lock);
-	spin_unlock(&dentry->d_parent->d_lock);
-	d_instantiate(dentry, inode);
+	struct dentry * dentry;
+	ino_t ino = 0;
+
+	dentry = d_hash_and_lookup(dir, name);
+	if (!IS_ERR_OR_NULL(dentry)) {
+		if (dentry->d_inode)
+			ino = dentry->d_inode->i_ino;
+		dput(dentry);
+	}
+	return ino;
 }
-EXPORT_SYMBOL(d_tmpfile);
+EXPORT_SYMBOL(find_inode_number);
 
 static __initdata unsigned long dhash_entries;
 static int __init set_dhash_entries(char *str)

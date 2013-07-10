@@ -5137,9 +5137,10 @@ unsigned char btrfs_filetype_table[] = {
 	DT_UNKNOWN, DT_REG, DT_DIR, DT_CHR, DT_BLK, DT_FIFO, DT_SOCK, DT_LNK
 };
 
-static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
+static int btrfs_real_readdir(struct file *filp, void *dirent,
+			      filldir_t filldir)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file_inode(filp);
 	struct btrfs_root *root = BTRFS_I(inode)->root;
 	struct btrfs_item *item;
 	struct btrfs_dir_item *di;
@@ -5160,15 +5161,29 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 	char tmp_name[32];
 	char *name_ptr;
 	int name_len;
-	int is_curr = 0;	/* ctx->pos points to the current index? */
+	int is_curr = 0;	/* filp->f_pos points to the current index? */
 
 	/* FIXME, use a real flag for deciding about the key type */
 	if (root->fs_info->tree_root == root)
 		key_type = BTRFS_DIR_ITEM_KEY;
 
-	if (!dir_emit_dots(file, ctx))
-		return 0;
-
+	/* special case for "." */
+	if (filp->f_pos == 0) {
+		over = filldir(dirent, ".", 1,
+			       filp->f_pos, btrfs_ino(inode), DT_DIR);
+		if (over)
+			return 0;
+		filp->f_pos = 1;
+	}
+	/* special case for .., just use the back ref */
+	if (filp->f_pos == 1) {
+		u64 pino = parent_ino(filp->f_path.dentry);
+		over = filldir(dirent, "..", 2,
+			       filp->f_pos, pino, DT_DIR);
+		if (over)
+			return 0;
+		filp->f_pos = 2;
+	}
 	path = btrfs_alloc_path();
 	if (!path)
 		return -ENOMEM;
@@ -5182,7 +5197,7 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 	}
 
 	btrfs_set_key_type(&key, key_type);
-	key.offset = ctx->pos;
+	key.offset = filp->f_pos;
 	key.objectid = btrfs_ino(inode);
 
 	ret = btrfs_search_slot(NULL, root, &key, path, 0, 0);
@@ -5208,14 +5223,14 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 			break;
 		if (btrfs_key_type(&found_key) != key_type)
 			break;
-		if (found_key.offset < ctx->pos)
+		if (found_key.offset < filp->f_pos)
 			goto next;
 		if (key_type == BTRFS_DIR_INDEX_KEY &&
 		    btrfs_should_delete_dir_index(&del_list,
 						  found_key.offset))
 			goto next;
 
-		ctx->pos = found_key.offset;
+		filp->f_pos = found_key.offset;
 		is_curr = 1;
 
 		di = btrfs_item_ptr(leaf, slot, struct btrfs_dir_item);
@@ -5259,8 +5274,9 @@ static int btrfs_real_readdir(struct file *file, struct dir_context *ctx)
 				over = 0;
 				goto skip;
 			}
-			over = !dir_emit(ctx, name_ptr, name_len,
-				       location.objectid, d_type);
+			over = filldir(dirent, name_ptr, name_len,
+				       found_key.offset, location.objectid,
+				       d_type);
 
 skip:
 			if (name_ptr != tmp_name)
@@ -5279,8 +5295,9 @@ next:
 
 	if (key_type == BTRFS_DIR_INDEX_KEY) {
 		if (is_curr)
-			ctx->pos++;
-		ret = btrfs_readdir_delayed_dir_index(ctx, &ins_list);
+			filp->f_pos++;
+		ret = btrfs_readdir_delayed_dir_index(filp, dirent, filldir,
+						      &ins_list);
 		if (ret)
 			goto nopos;
 	}
@@ -5291,9 +5308,9 @@ next:
 		 * 32-bit glibc will use getdents64, but then strtol -
 		 * so the last number we can serve is this.
 		 */
-		ctx->pos = 0x7fffffff;
+		filp->f_pos = 0x7fffffff;
 	else
-		ctx->pos++;
+		filp->f_pos++;
 nopos:
 	ret = 0;
 err:
@@ -7493,8 +7510,7 @@ static int btrfs_releasepage(struct page *page, gfp_t gfp_flags)
 	return __btrfs_releasepage(page, gfp_flags & GFP_NOFS);
 }
 
-static void btrfs_invalidatepage(struct page *page, unsigned int offset,
-				 unsigned int length)
+static void btrfs_invalidatepage(struct page *page, unsigned long offset)
 {
 	struct inode *inode = page->mapping->host;
 	struct extent_io_tree *tree;
@@ -8715,7 +8731,7 @@ static const struct inode_operations btrfs_dir_ro_inode_operations = {
 static const struct file_operations btrfs_dir_file_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
-	.iterate	= btrfs_real_readdir,
+	.readdir	= btrfs_real_readdir,
 	.unlocked_ioctl	= btrfs_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= btrfs_ioctl,

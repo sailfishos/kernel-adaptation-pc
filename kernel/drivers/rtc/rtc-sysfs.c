@@ -164,7 +164,6 @@ rtc_sysfs_set_wakealarm(struct device *dev, struct device_attribute *attr,
 {
 	ssize_t retval;
 	unsigned long now, alarm;
-	unsigned long push = 0;
 	struct rtc_wkalrm alm;
 	struct rtc_device *rtc = to_rtc_device(dev);
 	char *buf_ptr;
@@ -181,17 +180,13 @@ rtc_sysfs_set_wakealarm(struct device *dev, struct device_attribute *attr,
 	buf_ptr = (char *)buf;
 	if (*buf_ptr == '+') {
 		buf_ptr++;
-		if (*buf_ptr == '=') {
-			buf_ptr++;
-			push = 1;
-		} else
-			adjust = 1;
+		adjust = 1;
 	}
 	alarm = simple_strtoul(buf_ptr, NULL, 0);
 	if (adjust) {
 		alarm += now;
 	}
-	if (alarm > now || push) {
+	if (alarm > now) {
 		/* Avoid accidentally clobbering active alarms; we can't
 		 * entirely prevent that here, without even the minimal
 		 * locking from the /dev/rtcN api.
@@ -199,14 +194,9 @@ rtc_sysfs_set_wakealarm(struct device *dev, struct device_attribute *attr,
 		retval = rtc_read_alarm(rtc, &alm);
 		if (retval < 0)
 			return retval;
-		if (alm.enabled) {
-			if (push) {
-				rtc_tm_to_time(&alm.time, &push);
-				alarm += push;
-			} else
-				return -EBUSY;
-		} else if (push)
-			return -EINVAL;
+		if (alm.enabled)
+			return -EBUSY;
+
 		alm.enabled = 1;
 	} else {
 		alm.enabled = 0;

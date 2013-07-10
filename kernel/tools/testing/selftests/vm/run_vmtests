@@ -4,7 +4,6 @@
 #we need 256M, below is the size in kB
 needmem=262144
 mnt=./huge
-exitcode=0
 
 #get pagesize and freepages from /proc/meminfo
 while read name size unit; do
@@ -42,7 +41,6 @@ echo "--------------------"
 ./hugepage-mmap
 if [ $? -ne 0 ]; then
 	echo "[FAIL]"
-	exitcode=1
 else
 	echo "[PASS]"
 fi
@@ -57,7 +55,6 @@ echo "--------------------"
 ./hugepage-shm
 if [ $? -ne 0 ]; then
 	echo "[FAIL]"
-	exitcode=1
 else
 	echo "[PASS]"
 fi
@@ -70,18 +67,6 @@ echo "--------------------"
 ./map_hugetlb
 if [ $? -ne 0 ]; then
 	echo "[FAIL]"
-	exitcode=1
-else
-	echo "[PASS]"
-fi
-
-echo "--------------------"
-echo "running hugetlbfstest"
-echo "--------------------"
-./hugetlbfstest
-if [ $? -ne 0 ]; then
-	echo "[FAIL]"
-	exitcode=1
 else
 	echo "[PASS]"
 fi
@@ -90,4 +75,3 @@ fi
 umount $mnt
 rm -rf $mnt
 echo $nr_hugepgs > /proc/sys/vm/nr_hugepages
-exit $exitcode

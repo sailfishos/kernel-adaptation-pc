@@ -365,14 +365,10 @@ int __kprobes __copy_instruction(u8 *dest, u8 *src)
 	return insn.length;
 }
 
-static int __kprobes arch_copy_kprobe(struct kprobe *p)
+static void __kprobes arch_copy_kprobe(struct kprobe *p)
 {
-	int ret;
-
 	/* Copy an instruction with recovering if other optprobe modifies it.*/
-	ret = __copy_instruction(p->ainsn.insn, p->addr);
-	if (!ret)
-		return -EINVAL;
+	__copy_instruction(p->ainsn.insn, p->addr);
 
 	/*
 	 * __copy_instruction can modify the displacement of the instruction,
@@ -388,8 +384,6 @@ static int __kprobes arch_copy_kprobe(struct kprobe *p)
 
 	/* Also, displacement change doesn't affect the first byte */
 	p->opcode = p->ainsn.insn[0];
-
-	return 0;
 }
 
 int __kprobes arch_prepare_kprobe(struct kprobe *p)
@@ -403,8 +397,8 @@ int __kprobes arch_prepare_kprobe(struct kprobe *p)
 	p->ainsn.insn = get_insn_slot();
 	if (!p->ainsn.insn)
 		return -ENOMEM;
-
-	return arch_copy_kprobe(p);
+	arch_copy_kprobe(p);
+	return 0;
 }
 
 void __kprobes arch_arm_kprobe(struct kprobe *p)

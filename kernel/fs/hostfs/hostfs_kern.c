@@ -277,7 +277,7 @@ static const struct super_operations hostfs_sbops = {
 	.show_options	= hostfs_show_options,
 };
 
-int hostfs_readdir(struct file *file, struct dir_context *ctx)
+int hostfs_readdir(struct file *file, void *ent, filldir_t filldir)
 {
 	void *dir;
 	char *name;
@@ -292,11 +292,12 @@ int hostfs_readdir(struct file *file, struct dir_context *ctx)
 	__putname(name);
 	if (dir == NULL)
 		return -error;
-	next = ctx->pos;
+	next = file->f_pos;
 	while ((name = read_dir(dir, &next, &ino, &len, &type)) != NULL) {
-		if (!dir_emit(ctx, name, len, ino, type))
-			break;
-		ctx->pos = next;
+		error = (*filldir)(ent, name, len, file->f_pos,
+				   ino, type);
+		if (error) break;
+		file->f_pos = next;
 	}
 	close_dir(dir);
 	return 0;
@@ -392,7 +393,7 @@ static const struct file_operations hostfs_file_fops = {
 
 static const struct file_operations hostfs_dir_fops = {
 	.llseek		= generic_file_llseek,
-	.iterate	= hostfs_readdir,
+	.readdir	= hostfs_readdir,
 	.read		= generic_read_dir,
 };
 

@@ -392,19 +392,14 @@ setup_return(struct pt_regs *regs, struct ksignal *ksig,
 		if (ksig->ka.sa.sa_flags & SA_SIGINFO)
 			idx += 3;
 
-		/*
-		 * Put the sigreturn code on the stack no matter which return
-		 * mechanism we use in order to remain ABI compliant
-		 */
 		if (__put_user(sigreturn_codes[idx],   rc) ||
 		    __put_user(sigreturn_codes[idx+1], rc+1))
 			return 1;
 
-		if ((cpsr & MODE32_BIT) && !IS_ENABLED(CONFIG_ARM_MPU)) {
+		if (cpsr & MODE32_BIT) {
 			/*
 			 * 32-bit code can use the new high-page
-			 * signal return code support except when the MPU has
-			 * protected the vectors page from PL0
+			 * signal return code support.
 			 */
 			retcode = KERN_SIGRETURN_CODE + (idx << 2) + thumb;
 		} else {

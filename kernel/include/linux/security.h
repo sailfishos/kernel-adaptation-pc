@@ -1392,8 +1392,7 @@ static inline void security_free_mnt_opts(struct security_mnt_opts *opts)
  * 	@ctxlen contains the length of @ctx.
  *
  * @inode_getsecctx:
- *	On success, returns 0 and fills out @ctx and @ctxlen with the security
- *	context for the given @inode.
+ *	Returns a string containing all relevant security context information
  *
  * 	@inode we wish to get the security context of.
  *	@ctx is a pointer in which to place the allocated security context.

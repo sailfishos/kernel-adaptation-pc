@@ -23,13 +23,12 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/irqchip.h>
-#include <linux/clk-provider.h>
+#include <linux/clk/tegra.h>
 
 #include <asm/hardware/cache-l2x0.h>
 
 #include "board.h"
 #include "common.h"
-#include "cpuidle.h"
 #include "fuse.h"
 #include "iomap.h"
 #include "irq.h"
@@ -60,7 +59,7 @@ u32 tegra_uart_config[4] = {
 #ifdef CONFIG_OF
 void __init tegra_dt_init_irq(void)
 {
-	of_clk_init(NULL);
+	tegra_clocks_init();
 	tegra_pmc_init();
 	tegra_init_irq();
 	irqchip_init();
@@ -109,6 +108,5 @@ void __init tegra_init_early(void)
 void __init tegra_init_late(void)
 {
 	tegra_init_suspend();
-	tegra_cpuidle_init();
 	tegra_powergate_debugfs_init();
 }

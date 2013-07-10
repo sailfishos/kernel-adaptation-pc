@@ -816,7 +816,6 @@ out:
 		rs_sta->last_txrate_idx = idx;
 		info->control.rates[0].idx = rs_sta->last_txrate_idx;
 	}
-	info->control.rates[0].count = 1;
 
 	D_RATE("leave: %d\n", idx);
 }

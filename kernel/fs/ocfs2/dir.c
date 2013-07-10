@@ -1761,10 +1761,11 @@ bail:
 
 static int ocfs2_dir_foreach_blk_id(struct inode *inode,
 				    u64 *f_version,
-				    struct dir_context *ctx)
+				    loff_t *f_pos, void *priv,
+				    filldir_t filldir, int *filldir_err)
 {
-	int ret, i;
-	unsigned long offset = ctx->pos;
+	int ret, i, filldir_ret;
+	unsigned long offset = *f_pos;
 	struct buffer_head *di_bh = NULL;
 	struct ocfs2_dinode *di;
 	struct ocfs2_inline_data *data;
@@ -1780,7 +1781,8 @@ static int ocfs2_dir_foreach_blk_id(struct inode *inode,
 	di = (struct ocfs2_dinode *)di_bh->b_data;
 	data = &di->id2.i_data;
 
-	while (ctx->pos < i_size_read(inode)) {
+	while (*f_pos < i_size_read(inode)) {
+revalidate:
 		/* If the dir block has changed since the last call to
 		 * readdir(2), then we might be pointing to an invalid
 		 * dirent right now.  Scan from the start of the block
@@ -1800,31 +1802,50 @@ static int ocfs2_dir_foreach_blk_id(struct inode *inode,
 					break;
 				i += le16_to_cpu(de->rec_len);
 			}
-			ctx->pos = offset = i;
+			*f_pos = offset = i;
 			*f_version = inode->i_version;
 		}
 
-		de = (struct ocfs2_dir_entry *) (data->id_data + ctx->pos);
-		if (!ocfs2_check_dir_entry(inode, de, di_bh, ctx->pos)) {
+		de = (struct ocfs2_dir_entry *) (data->id_data + *f_pos);
+		if (!ocfs2_check_dir_entry(inode, de, di_bh, *f_pos)) {
 			/* On error, skip the f_pos to the end. */
-			ctx->pos = i_size_read(inode);
-			break;
+			*f_pos = i_size_read(inode);
+			goto out;
 		}
 		offset += le16_to_cpu(de->rec_len);
 		if (le64_to_cpu(de->inode)) {
+			/* We might block in the next section
+			 * if the data destination is
+			 * currently swapped out.  So, use a
+			 * version stamp to detect whether or
+			 * not the directory has been modified
+			 * during the copy operation.
+			 */
+			u64 version = *f_version;
 			unsigned char d_type = DT_UNKNOWN;
 
 			if (de->file_type < OCFS2_FT_MAX)
 				d_type = ocfs2_filetype_table[de->file_type];
 
-			if (!dir_emit(ctx, de->name, de->name_len,
-				      le64_to_cpu(de->inode), d_type))
-				goto out;
+			filldir_ret = filldir(priv, de->name,
+					      de->name_len,
+					      *f_pos,
+					      le64_to_cpu(de->inode),
+					      d_type);
+			if (filldir_ret) {
+				if (filldir_err)
+					*filldir_err = filldir_ret;
+				break;
+			}
+			if (version != *f_version)
+				goto revalidate;
 		}
-		ctx->pos += le16_to_cpu(de->rec_len);
+		*f_pos += le16_to_cpu(de->rec_len);
 	}
+
 out:
 	brelse(di_bh);
+
 	return 0;
 }
 
@@ -1834,26 +1855,27 @@ out:
  */
 static int ocfs2_dir_foreach_blk_el(struct inode *inode,
 				    u64 *f_version,
-				    struct dir_context *ctx,
-				    bool persist)
+				    loff_t *f_pos, void *priv,
+				    filldir_t filldir, int *filldir_err)
 {
+	int error = 0;
 	unsigned long offset, blk, last_ra_blk = 0;
-	int i;
+	int i, stored;
 	struct buffer_head * bh, * tmp;
 	struct ocfs2_dir_entry * de;
 	struct super_block * sb = inode->i_sb;
 	unsigned int ra_sectors = 16;
-	int stored = 0;
 
+	stored = 0;
 	bh = NULL;
 
-	offset = ctx->pos & (sb->s_blocksize - 1);
+	offset = (*f_pos) & (sb->s_blocksize - 1);
 
-	while (ctx->pos < i_size_read(inode)) {
-		blk = ctx->pos >> sb->s_blocksize_bits;
+	while (!error && !stored && *f_pos < i_size_read(inode)) {
+		blk = (*f_pos) >> sb->s_blocksize_bits;
 		if (ocfs2_read_dir_block(inode, blk, &bh, 0)) {
 			/* Skip the corrupt dirblock and keep trying */
-			ctx->pos += sb->s_blocksize - offset;
+			*f_pos += sb->s_blocksize - offset;
 			continue;
 		}
 
@@ -1875,6 +1897,7 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
 			ra_sectors = 8;
 		}
 
+revalidate:
 		/* If the dir block has changed since the last call to
 		 * readdir(2), then we might be pointing to an invalid
 		 * dirent right now.  Scan from the start of the block
@@ -1894,64 +1917,93 @@ static int ocfs2_dir_foreach_blk_el(struct inode *inode,
 				i += le16_to_cpu(de->rec_len);
 			}
 			offset = i;
-			ctx->pos = (ctx->pos & ~(sb->s_blocksize - 1))
+			*f_pos = ((*f_pos) & ~(sb->s_blocksize - 1))
 				| offset;
 			*f_version = inode->i_version;
 		}
 
-		while (ctx->pos < i_size_read(inode)
+		while (!error && *f_pos < i_size_read(inode)
 		       && offset < sb->s_blocksize) {
 			de = (struct ocfs2_dir_entry *) (bh->b_data + offset);
 			if (!ocfs2_check_dir_entry(inode, de, bh, offset)) {
 				/* On error, skip the f_pos to the
 				   next block. */
-				ctx->pos = (ctx->pos | (sb->s_blocksize - 1)) + 1;
+				*f_pos = ((*f_pos) | (sb->s_blocksize - 1)) + 1;
 				brelse(bh);
-				continue;
+				goto out;
 			}
+			offset += le16_to_cpu(de->rec_len);
 			if (le64_to_cpu(de->inode)) {
+				/* We might block in the next section
+				 * if the data destination is
+				 * currently swapped out.  So, use a
+				 * version stamp to detect whether or
+				 * not the directory has been modified
+				 * during the copy operation.
+				 */
+				unsigned long version = *f_version;
 				unsigned char d_type = DT_UNKNOWN;
 
 				if (de->file_type < OCFS2_FT_MAX)
 					d_type = ocfs2_filetype_table[de->file_type];
-				if (!dir_emit(ctx, de->name,
+				error = filldir(priv, de->name,
 						de->name_len,
+						*f_pos,
 						le64_to_cpu(de->inode),
-						d_type)) {
-					brelse(bh);
-					return 0;
+						d_type);
+				if (error) {
+					if (filldir_err)
+						*filldir_err = error;
+					break;
 				}
-				stored++;
+				if (version != *f_version)
+					goto revalidate;
+				stored ++;
 			}
-			offset += le16_to_cpu(de->rec_len);
-			ctx->pos += le16_to_cpu(de->rec_len);
+			*f_pos += le16_to_cpu(de->rec_len);
 		}
 		offset = 0;
 		brelse(bh);
 		bh = NULL;
-		if (!persist && stored)
-			break;
 	}
-	return 0;
+
+	stored = 0;
+out:
+	return stored;
 }
 
 static int ocfs2_dir_foreach_blk(struct inode *inode, u64 *f_version,
-				 struct dir_context *ctx,
-				 bool persist)
+				 loff_t *f_pos, void *priv, filldir_t filldir,
+				 int *filldir_err)
 {
 	if (OCFS2_I(inode)->ip_dyn_features & OCFS2_INLINE_DATA_FL)
-		return ocfs2_dir_foreach_blk_id(inode, f_version, ctx);
-	return ocfs2_dir_foreach_blk_el(inode, f_version, ctx, persist);
+		return ocfs2_dir_foreach_blk_id(inode, f_version, f_pos, priv,
+						filldir, filldir_err);
+
+	return ocfs2_dir_foreach_blk_el(inode, f_version, f_pos, priv, filldir,
+					filldir_err);
 }
 
 /*
  * This is intended to be called from inside other kernel functions,
  * so we fake some arguments.
  */
-int ocfs2_dir_foreach(struct inode *inode, struct dir_context *ctx)
+int ocfs2_dir_foreach(struct inode *inode, loff_t *f_pos, void *priv,
+		      filldir_t filldir)
 {
+	int ret = 0, filldir_err = 0;
 	u64 version = inode->i_version;
-	ocfs2_dir_foreach_blk(inode, &version, ctx, true);
+
+	while (*f_pos < i_size_read(inode)) {
+		ret = ocfs2_dir_foreach_blk(inode, &version, f_pos, priv,
+					    filldir, &filldir_err);
+		if (ret || filldir_err)
+			break;
+	}
+
+	if (ret > 0)
+		ret = -EIO;
+
 	return 0;
 }
 
@@ -1959,15 +2011,15 @@ int ocfs2_dir_foreach(struct inode *inode, struct dir_context *ctx)
  * ocfs2_readdir()
  *
  */
-int ocfs2_readdir(struct file *file, struct dir_context *ctx)
+int ocfs2_readdir(struct file * filp, void * dirent, filldir_t filldir)
 {
 	int error = 0;
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file_inode(filp);
 	int lock_level = 0;
 
 	trace_ocfs2_readdir((unsigned long long)OCFS2_I(inode)->ip_blkno);
 
-	error = ocfs2_inode_lock_atime(inode, file->f_path.mnt, &lock_level);
+	error = ocfs2_inode_lock_atime(inode, filp->f_path.mnt, &lock_level);
 	if (lock_level && error >= 0) {
 		/* We release EX lock which used to update atime
 		 * and get PR lock again to reduce contention
@@ -1983,7 +2035,8 @@ int ocfs2_readdir(struct file *file, struct dir_context *ctx)
 		goto bail_nolock;
 	}
 
-	error = ocfs2_dir_foreach_blk(inode, &file->f_version, ctx, false);
+	error = ocfs2_dir_foreach_blk(inode, &filp->f_version, &filp->f_pos,
+				      dirent, filldir, NULL);
 
 	ocfs2_inode_unlock(inode, lock_level);
 	if (error)
@@ -2067,7 +2120,6 @@ bail:
 }
 
 struct ocfs2_empty_dir_priv {
-	struct dir_context ctx;
 	unsigned seen_dot;
 	unsigned seen_dot_dot;
 	unsigned seen_other;
@@ -2152,9 +2204,8 @@ out:
 int ocfs2_empty_dir(struct inode *inode)
 {
 	int ret;
-	struct ocfs2_empty_dir_priv priv = {
-		.ctx.actor = ocfs2_empty_dir_filldir
-	};
+	loff_t start = 0;
+	struct ocfs2_empty_dir_priv priv;
 
 	memset(&priv, 0, sizeof(priv));
 
@@ -2168,7 +2219,7 @@ int ocfs2_empty_dir(struct inode *inode)
 		 */
 	}
 
-	ret = ocfs2_dir_foreach(inode, &priv.ctx);
+	ret = ocfs2_dir_foreach(inode, &start, &priv, ocfs2_empty_dir_filldir);
 	if (ret)
 		mlog_errno(ret);
 

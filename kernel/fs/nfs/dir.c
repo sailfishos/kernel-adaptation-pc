@@ -33,7 +33,6 @@
 #include <linux/pagevec.h>
 #include <linux/namei.h>
 #include <linux/mount.h>
-#include <linux/swap.h>
 #include <linux/sched.h>
 #include <linux/kmemleak.h>
 #include <linux/xattr.h>
@@ -47,7 +46,7 @@
 
 static int nfs_opendir(struct inode *, struct file *);
 static int nfs_closedir(struct inode *, struct file *);
-static int nfs_readdir(struct file *, struct dir_context *);
+static int nfs_readdir(struct file *, void *, filldir_t);
 static int nfs_fsync_dir(struct file *, loff_t, loff_t, int);
 static loff_t nfs_llseek_dir(struct file *, loff_t, int);
 static void nfs_readdir_clear_array(struct page*);
@@ -55,7 +54,7 @@ static void nfs_readdir_clear_array(struct page*);
 const struct file_operations nfs_dir_operations = {
 	.llseek		= nfs_llseek_dir,
 	.read		= generic_read_dir,
-	.iterate	= nfs_readdir,
+	.readdir	= nfs_readdir,
 	.open		= nfs_opendir,
 	.release	= nfs_closedir,
 	.fsync		= nfs_fsync_dir,
@@ -148,7 +147,6 @@ typedef int (*decode_dirent_t)(struct xdr_stream *, struct nfs_entry *, int);
 typedef struct {
 	struct file	*file;
 	struct page	*page;
-	struct dir_context *ctx;
 	unsigned long	page_index;
 	u64		*dir_cookie;
 	u64		last_cookie;
@@ -254,7 +252,7 @@ out:
 static
 int nfs_readdir_search_for_pos(struct nfs_cache_array *array, nfs_readdir_descriptor_t *desc)
 {
-	loff_t diff = desc->ctx->pos - desc->current_index;
+	loff_t diff = desc->file->f_pos - desc->current_index;
 	unsigned int index;
 
 	if (diff < 0)
@@ -291,7 +289,7 @@ int nfs_readdir_search_for_cookie(struct nfs_cache_array *array, nfs_readdir_des
 			    || (nfsi->cache_validity & (NFS_INO_INVALID_ATTR|NFS_INO_INVALID_DATA))) {
 				ctx->duped = 0;
 				ctx->attr_gencount = nfsi->attr_gencount;
-			} else if (new_pos < desc->ctx->pos) {
+			} else if (new_pos < desc->file->f_pos) {
 				if (ctx->duped > 0
 				    && ctx->dup_cookie == *desc->dir_cookie) {
 					if (printk_ratelimit()) {
@@ -309,7 +307,7 @@ int nfs_readdir_search_for_cookie(struct nfs_cache_array *array, nfs_readdir_des
 				ctx->dup_cookie = *desc->dir_cookie;
 				ctx->duped = -1;
 			}
-			desc->ctx->pos = new_pos;
+			desc->file->f_pos = new_pos;
 			desc->cache_entry_index = i;
 			return 0;
 		}
@@ -407,13 +405,13 @@ different:
 }
 
 static
-bool nfs_use_readdirplus(struct inode *dir, struct dir_context *ctx)
+bool nfs_use_readdirplus(struct inode *dir, struct file *filp)
 {
 	if (!nfs_server_capable(dir, NFS_CAP_READDIRPLUS))
 		return false;
 	if (test_and_clear_bit(NFS_INO_ADVISE_RDPLUS, &NFS_I(dir)->flags))
 		return true;
-	if (ctx->pos == 0)
+	if (filp->f_pos == 0)
 		return true;
 	return false;
 }
@@ -704,7 +702,8 @@ int readdir_search_pagecache(nfs_readdir_descriptor_t *desc)
  * Once we've found the start of the dirent within a page: fill 'er up...
  */
 static 
-int nfs_do_filldir(nfs_readdir_descriptor_t *desc)
+int nfs_do_filldir(nfs_readdir_descriptor_t *desc, void *dirent,
+		   filldir_t filldir)
 {
 	struct file	*file = desc->file;
 	int i = 0;
@@ -722,12 +721,13 @@ int nfs_do_filldir(nfs_readdir_descriptor_t *desc)
 		struct nfs_cache_array_entry *ent;
 
 		ent = &array->array[i];
-		if (!dir_emit(desc->ctx, ent->string.name, ent->string.len,
-		    nfs_compat_user_ino64(ent->ino), ent->d_type)) {
+		if (filldir(dirent, ent->string.name, ent->string.len,
+		    file->f_pos, nfs_compat_user_ino64(ent->ino),
+		    ent->d_type) < 0) {
 			desc->eof = 1;
 			break;
 		}
-		desc->ctx->pos++;
+		file->f_pos++;
 		if (i < (array->size-1))
 			*desc->dir_cookie = array->array[i+1].cookie;
 		else
@@ -759,7 +759,8 @@ out:
  *	 directory in the page cache by the time we get here.
  */
 static inline
-int uncached_readdir(nfs_readdir_descriptor_t *desc)
+int uncached_readdir(nfs_readdir_descriptor_t *desc, void *dirent,
+		     filldir_t filldir)
 {
 	struct page	*page = NULL;
 	int		status;
@@ -784,7 +785,7 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc)
 	if (status < 0)
 		goto out_release;
 
-	status = nfs_do_filldir(desc);
+	status = nfs_do_filldir(desc, dirent, filldir);
 
  out:
 	dfprintk(DIRCACHE, "NFS: %s: returns %d\n",
@@ -799,36 +800,35 @@ int uncached_readdir(nfs_readdir_descriptor_t *desc)
    last cookie cache takes care of the common case of reading the
    whole directory.
  */
-static int nfs_readdir(struct file *file, struct dir_context *ctx)
+static int nfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	struct dentry	*dentry = file->f_path.dentry;
+	struct dentry	*dentry = filp->f_path.dentry;
 	struct inode	*inode = dentry->d_inode;
 	nfs_readdir_descriptor_t my_desc,
 			*desc = &my_desc;
-	struct nfs_open_dir_context *dir_ctx = file->private_data;
+	struct nfs_open_dir_context *dir_ctx = filp->private_data;
 	int res;
 
 	dfprintk(FILE, "NFS: readdir(%s/%s) starting at cookie %llu\n",
 			dentry->d_parent->d_name.name, dentry->d_name.name,
-			(long long)ctx->pos);
+			(long long)filp->f_pos);
 	nfs_inc_stats(inode, NFSIOS_VFSGETDENTS);
 
 	/*
-	 * ctx->pos points to the dirent entry number.
+	 * filp->f_pos points to the dirent entry number.
 	 * *desc->dir_cookie has the cookie for the next entry. We have
 	 * to either find the entry with the appropriate number or
 	 * revalidate the cookie.
 	 */
 	memset(desc, 0, sizeof(*desc));
 
-	desc->file = file;
-	desc->ctx = ctx;
+	desc->file = filp;
 	desc->dir_cookie = &dir_ctx->dir_cookie;
 	desc->decode = NFS_PROTO(inode)->decode_dirent;
-	desc->plus = nfs_use_readdirplus(inode, ctx) ? 1 : 0;
+	desc->plus = nfs_use_readdirplus(inode, filp) ? 1 : 0;
 
 	nfs_block_sillyrename(dentry);
-	res = nfs_revalidate_mapping(inode, file->f_mapping);
+	res = nfs_revalidate_mapping(inode, filp->f_mapping);
 	if (res < 0)
 		goto out;
 
@@ -840,7 +840,7 @@ static int nfs_readdir(struct file *file, struct dir_context *ctx)
 			/* This means either end of directory */
 			if (*desc->dir_cookie && desc->eof == 0) {
 				/* Or that the server has 'lost' a cookie */
-				res = uncached_readdir(desc);
+				res = uncached_readdir(desc, dirent, filldir);
 				if (res == 0)
 					continue;
 			}
@@ -857,7 +857,7 @@ static int nfs_readdir(struct file *file, struct dir_context *ctx)
 		if (res < 0)
 			break;
 
-		res = nfs_do_filldir(desc);
+		res = nfs_do_filldir(desc, dirent, filldir);
 		if (res < 0)
 			break;
 	} while (!desc->eof);
@@ -1759,6 +1759,7 @@ EXPORT_SYMBOL_GPL(nfs_unlink);
  */
 int nfs_symlink(struct inode *dir, struct dentry *dentry, const char *symname)
 {
+	struct pagevec lru_pvec;
 	struct page *page;
 	char *kaddr;
 	struct iattr attr;
@@ -1798,8 +1799,11 @@ int nfs_symlink(struct inode *dir, struct dentry *dentry, const char *symname)
 	 * No big deal if we can't add this page to the page cache here.
 	 * READLINK will get the missing page from the server if needed.
 	 */
-	if (!add_to_page_cache_lru(page, dentry->d_inode->i_mapping, 0,
+	pagevec_init(&lru_pvec, 0);
+	if (!add_to_page_cache(page, dentry->d_inode->i_mapping, 0,
 							GFP_KERNEL)) {
+		pagevec_add(&lru_pvec, page);
+		pagevec_lru_add_file(&lru_pvec);
 		SetPageUptodate(page);
 		unlock_page(page);
 	} else

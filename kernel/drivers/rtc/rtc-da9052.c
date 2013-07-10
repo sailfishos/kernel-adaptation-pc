@@ -15,7 +15,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
-#include <linux/err.h>
 
 #include <linux/mfd/da9052/da9052.h>
 #include <linux/mfd/da9052/reg.h>
@@ -250,11 +249,22 @@ static int da9052_rtc_probe(struct platform_device *pdev)
 
 	rtc->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
 				       &da9052_rtc_ops, THIS_MODULE);
-	return PTR_RET(rtc->rtc);
+	if (IS_ERR(rtc->rtc))
+		return PTR_ERR(rtc->rtc);
+
+	return 0;
+}
+
+static int da9052_rtc_remove(struct platform_device *pdev)
+{
+	platform_set_drvdata(pdev, NULL);
+
+	return 0;
 }
 
 static struct platform_driver da9052_rtc_driver = {
 	.probe	= da9052_rtc_probe,
+	.remove	= da9052_rtc_remove,
 	.driver = {
 		.name	= "da9052-rtc",
 		.owner	= THIS_MODULE,

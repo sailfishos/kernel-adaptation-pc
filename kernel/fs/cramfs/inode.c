@@ -349,17 +349,18 @@ static int cramfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 /*
  * Read a cramfs directory entry.
  */
-static int cramfs_readdir(struct file *file, struct dir_context *ctx)
+static int cramfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file_inode(filp);
 	struct super_block *sb = inode->i_sb;
 	char *buf;
 	unsigned int offset;
+	int copied;
 
 	/* Offset within the thing. */
-	if (ctx->pos >= inode->i_size)
+	offset = filp->f_pos;
+	if (offset >= inode->i_size)
 		return 0;
-	offset = ctx->pos;
 	/* Directory entries are always 4-byte aligned */
 	if (offset & 3)
 		return -EINVAL;
@@ -368,13 +369,14 @@ static int cramfs_readdir(struct file *file, struct dir_context *ctx)
 	if (!buf)
 		return -ENOMEM;
 
+	copied = 0;
 	while (offset < inode->i_size) {
 		struct cramfs_inode *de;
 		unsigned long nextoffset;
 		char *name;
 		ino_t ino;
 		umode_t mode;
-		int namelen;
+		int namelen, error;
 
 		mutex_lock(&read_mutex);
 		de = cramfs_read(sb, OFFSET(inode) + offset, sizeof(*de)+CRAMFS_MAXPATHLEN);
@@ -400,10 +402,13 @@ static int cramfs_readdir(struct file *file, struct dir_context *ctx)
 				break;
 			namelen--;
 		}
-		if (!dir_emit(ctx, buf, namelen, ino, mode >> 12))
+		error = filldir(dirent, buf, namelen, offset, ino, mode >> 12);
+		if (error)
 			break;
 
-		ctx->pos = offset = nextoffset;
+		offset = nextoffset;
+		filp->f_pos = offset;
+		copied++;
 	}
 	kfree(buf);
 	return 0;
@@ -542,7 +547,7 @@ static const struct address_space_operations cramfs_aops = {
 static const struct file_operations cramfs_directory_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
-	.iterate	= cramfs_readdir,
+	.readdir	= cramfs_readdir,
 };
 
 static const struct inode_operations cramfs_dir_inode_operations = {

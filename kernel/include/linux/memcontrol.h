@@ -77,8 +77,7 @@ extern void mem_cgroup_uncharge_cache_page(struct page *page);
 
 bool __mem_cgroup_same_or_subtree(const struct mem_cgroup *root_memcg,
 				  struct mem_cgroup *memcg);
-bool task_in_mem_cgroup(struct task_struct *task,
-			const struct mem_cgroup *memcg);
+int task_in_mem_cgroup(struct task_struct *task, const struct mem_cgroup *memcg);
 
 extern struct mem_cgroup *try_get_mem_cgroup_from_page(struct page *page);
 extern struct mem_cgroup *mem_cgroup_from_task(struct task_struct *p);
@@ -274,10 +273,10 @@ static inline bool mm_match_cgroup(struct mm_struct *mm,
 	return true;
 }
 
-static inline bool task_in_mem_cgroup(struct task_struct *task,
-				      const struct mem_cgroup *memcg)
+static inline int task_in_mem_cgroup(struct task_struct *task,
+				     const struct mem_cgroup *memcg)
 {
-	return true;
+	return 1;
 }
 
 static inline struct cgroup_subsys_state

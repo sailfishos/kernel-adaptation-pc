@@ -61,8 +61,6 @@
 #include <linux/nsproxy.h>
 #include <linux/ptrace.h>
 #include <linux/sched/rt.h>
-#include <linux/hugetlb.h>
-#include <linux/freezer.h>
 
 #include <asm/futex.h>
 
@@ -367,7 +365,7 @@ again:
 	} else {
 		key->both.offset |= FUT_OFF_INODE; /* inode-based key */
 		key->shared.inode = page_head->mapping->host;
-		key->shared.pgoff = basepage_index(page);
+		key->shared.pgoff = page_head->index;
 	}
 
 	get_futex_key_refs(key);
@@ -1809,7 +1807,7 @@ static void futex_wait_queue_me(struct futex_hash_bucket *hb, struct futex_q *q,
 		 * is no timeout, or if it has yet to expire.
 		 */
 		if (!timeout || timeout->task)
-			freezable_schedule();
+			schedule();
 	}
 	__set_current_state(TASK_RUNNING);
 }

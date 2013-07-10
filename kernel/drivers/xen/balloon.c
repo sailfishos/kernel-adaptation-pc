@@ -36,8 +36,6 @@
  * IN THE SOFTWARE.
  */
 
-#define pr_fmt(fmt) "xen:" KBUILD_MODNAME ": " fmt
-
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/errno.h>
@@ -91,6 +89,14 @@ EXPORT_SYMBOL_GPL(balloon_stats);
 /* We increase/decrease in batches which fit in a page */
 static xen_pfn_t frame_list[PAGE_SIZE / sizeof(unsigned long)];
 
+#ifdef CONFIG_HIGHMEM
+#define inc_totalhigh_pages() (totalhigh_pages++)
+#define dec_totalhigh_pages() (totalhigh_pages--)
+#else
+#define inc_totalhigh_pages() do {} while (0)
+#define dec_totalhigh_pages() do {} while (0)
+#endif
+
 /* List of ballooned pages, threaded through the mem_map array. */
 static LIST_HEAD(ballooned_pages);
 
@@ -126,7 +132,9 @@ static void __balloon_append(struct page *page)
 static void balloon_append(struct page *page)
 {
 	__balloon_append(page);
-	adjust_managed_page_count(page, -1);
+	if (PageHighMem(page))
+		dec_totalhigh_pages();
+	totalram_pages--;
 }
 
 /* balloon_retrieve: rescue a page from the balloon, if it is not empty. */
@@ -143,12 +151,13 @@ static struct page *balloon_retrieve(bool prefer_highmem)
 		page = list_entry(ballooned_pages.next, struct page, lru);
 	list_del(&page->lru);
 
-	if (PageHighMem(page))
+	if (PageHighMem(page)) {
 		balloon_stats.balloon_high--;
-	else
+		inc_totalhigh_pages();
+	} else
 		balloon_stats.balloon_low--;
 
-	adjust_managed_page_count(page, 1);
+	totalram_pages++;
 
 	return page;
 }
@@ -233,7 +242,7 @@ static enum bp_state reserve_additional_memory(long credit)
 	rc = add_memory(nid, hotplug_start_paddr, balloon_hotplug << PAGE_SHIFT);
 
 	if (rc) {
-		pr_info("%s: add_memory() failed: %i\n", __func__, rc);
+		pr_info("xen_balloon: %s: add_memory() failed: %i\n", __func__, rc);
 		return BP_EAGAIN;
 	}
 
@@ -363,7 +372,9 @@ static enum bp_state increase_reservation(unsigned long nr_pages)
 #endif
 
 		/* Relinquish the page back to the allocator. */
-		__free_reserved_page(page);
+		ClearPageReserved(page);
+		init_page_count(page);
+		__free_page(page);
 	}
 
 	balloon_stats.current_pages += rc;
@@ -580,7 +591,7 @@ static int __init balloon_init(void)
 	if (!xen_domain())
 		return -ENODEV;
 
-	pr_info("Initialising balloon driver\n");
+	pr_info("xen/balloon: Initialising balloon driver.\n");
 
 	balloon_stats.current_pages = xen_pv_domain()
 		? min(xen_start_info->nr_pages - xen_released_pages, max_pfn)

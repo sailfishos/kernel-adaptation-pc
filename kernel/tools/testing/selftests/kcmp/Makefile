@@ -25,4 +25,5 @@ run_tests: all
 	@./kcmp_test || echo "kcmp_test: [FAIL]"
 
 clean:
-	$(RM) kcmp_test kcmp-test-file
+	rm -fr ./run_test
+	rm -fr ./test-file

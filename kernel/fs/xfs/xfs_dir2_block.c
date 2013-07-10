@@ -569,7 +569,9 @@ xfs_dir2_block_addname(
 int						/* error */
 xfs_dir2_block_getdents(
 	xfs_inode_t		*dp,		/* incore inode */
-	struct dir_context	*ctx)
+	void			*dirent,
+	xfs_off_t		*offset,
+	filldir_t		filldir)
 {
 	xfs_dir2_data_hdr_t	*hdr;		/* block header */
 	struct xfs_buf		*bp;		/* buffer for block */
@@ -587,7 +589,7 @@ xfs_dir2_block_getdents(
 	/*
 	 * If the block number in the offset is out of range, we're done.
 	 */
-	if (xfs_dir2_dataptr_to_db(mp, ctx->pos) > mp->m_dirdatablk)
+	if (xfs_dir2_dataptr_to_db(mp, *offset) > mp->m_dirdatablk)
 		return 0;
 
 	error = xfs_dir3_block_read(NULL, dp, &bp);
@@ -598,7 +600,7 @@ xfs_dir2_block_getdents(
 	 * Extract the byte offset we start at from the seek pointer.
 	 * We'll skip entries before this.
 	 */
-	wantoff = xfs_dir2_dataptr_to_off(mp, ctx->pos);
+	wantoff = xfs_dir2_dataptr_to_off(mp, *offset);
 	hdr = bp->b_addr;
 	xfs_dir3_data_check(dp, bp);
 	/*
@@ -637,12 +639,13 @@ xfs_dir2_block_getdents(
 		cook = xfs_dir2_db_off_to_dataptr(mp, mp->m_dirdatablk,
 					    (char *)dep - (char *)hdr);
 
-		ctx->pos = cook & 0x7fffffff;
 		/*
 		 * If it didn't fit, set the final offset to here & return.
 		 */
-		if (!dir_emit(ctx, (char *)dep->name, dep->namelen,
-			    be64_to_cpu(dep->inumber), DT_UNKNOWN)) {
+		if (filldir(dirent, (char *)dep->name, dep->namelen,
+			    cook & 0x7fffffff, be64_to_cpu(dep->inumber),
+			    DT_UNKNOWN)) {
+			*offset = cook & 0x7fffffff;
 			xfs_trans_brelse(NULL, bp);
 			return 0;
 		}
@@ -652,7 +655,7 @@ xfs_dir2_block_getdents(
 	 * Reached the end of the block.
 	 * Set the offset to a non-existent block 1 and return.
 	 */
-	ctx->pos = xfs_dir2_db_off_to_dataptr(mp, mp->m_dirdatablk + 1, 0) &
+	*offset = xfs_dir2_db_off_to_dataptr(mp, mp->m_dirdatablk + 1, 0) &
 			0x7fffffff;
 	xfs_trans_brelse(NULL, bp);
 	return 0;

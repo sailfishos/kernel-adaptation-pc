@@ -434,7 +434,7 @@ static void vmbus_on_msg_dpc(unsigned long data)
 		 * will not deliver any more messages since there is
 		 * no empty slot
 		 */
-		mb();
+		smp_mb();
 
 		if (msg->header.message_flags.msg_pending) {
 			/*
@@ -563,9 +563,6 @@ static int vmbus_bus_init(int irq)
 	 */
 	hv_register_vmbus_handler(irq, vmbus_isr);
 
-	ret = hv_synic_alloc();
-	if (ret)
-		goto err_alloc;
 	/*
 	 * Initialize the per-cpu interrupt state and
 	 * connect to the host.
@@ -573,14 +570,13 @@ static int vmbus_bus_init(int irq)
 	on_each_cpu(hv_synic_init, NULL, 1);
 	ret = vmbus_connect();
 	if (ret)
-		goto err_alloc;
+		goto err_irq;
 
 	vmbus_request_offers();
 
 	return 0;
 
-err_alloc:
-	hv_synic_free();
+err_irq:
 	free_irq(irq, hv_acpi_dev);
 
 err_unregister:

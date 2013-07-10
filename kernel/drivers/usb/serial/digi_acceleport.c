@@ -1304,7 +1304,11 @@ static void digi_release(struct usb_serial *serial)
 
 static int digi_port_probe(struct usb_serial_port *port)
 {
-	return digi_port_init(port, port->port_number);
+	unsigned port_num;
+
+	port_num = port->number - port->serial->minor;
+
+	return digi_port_init(port, port_num);
 }
 
 static int digi_port_remove(struct usb_serial_port *port)

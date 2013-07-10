@@ -31,7 +31,7 @@ MODULE_LICENSE("GPL");
 /* The units the vfs expects inode->i_blocks to be in */
 #define VFS_BLOCK_SIZE 512
 
-static int befs_readdir(struct file *, struct dir_context *);
+static int befs_readdir(struct file *, void *, filldir_t);
 static int befs_get_block(struct inode *, sector_t, struct buffer_head *, int);
 static int befs_readpage(struct file *file, struct page *page);
 static sector_t befs_bmap(struct address_space *mapping, sector_t block);
@@ -66,7 +66,7 @@ static struct kmem_cache *befs_inode_cachep;
 
 static const struct file_operations befs_dir_operations = {
 	.read		= generic_read_dir,
-	.iterate	= befs_readdir,
+	.readdir	= befs_readdir,
 	.llseek		= generic_file_llseek,
 };
 
@@ -211,9 +211,9 @@ befs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 }
 
 static int
-befs_readdir(struct file *file, struct dir_context *ctx)
+befs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *inode = file_inode(filp);
 	struct super_block *sb = inode->i_sb;
 	befs_data_stream *ds = &BEFS_I(inode)->i_data.ds;
 	befs_off_t value;
@@ -221,14 +221,15 @@ befs_readdir(struct file *file, struct dir_context *ctx)
 	size_t keysize;
 	unsigned char d_type;
 	char keybuf[BEFS_NAME_LEN + 1];
-	const char *dirname = file->f_path.dentry->d_name.name;
+	char *nlsname;
+	int nlsnamelen;
+	const char *dirname = filp->f_path.dentry->d_name.name;
 
 	befs_debug(sb, "---> befs_readdir() "
-		   "name %s, inode %ld, ctx->pos %Ld",
-		   dirname, inode->i_ino, ctx->pos);
+		   "name %s, inode %ld, filp->f_pos %Ld",
+		   dirname, inode->i_ino, filp->f_pos);
 
-more:
-	result = befs_btree_read(sb, ds, ctx->pos, BEFS_NAME_LEN + 1,
+	result = befs_btree_read(sb, ds, filp->f_pos, BEFS_NAME_LEN + 1,
 				 keybuf, &keysize, &value);
 
 	if (result == BEFS_ERR) {
@@ -250,29 +251,24 @@ more:
 
 	/* Convert to NLS */
 	if (BEFS_SB(sb)->nls) {
-		char *nlsname;
-		int nlsnamelen;
 		result =
 		    befs_utf2nls(sb, keybuf, keysize, &nlsname, &nlsnamelen);
 		if (result < 0) {
 			befs_debug(sb, "<--- befs_readdir() ERROR");
 			return result;
 		}
-		if (!dir_emit(ctx, nlsname, nlsnamelen,
-				 (ino_t) value, d_type)) {
-			kfree(nlsname);
-			return 0;
-		}
+		result = filldir(dirent, nlsname, nlsnamelen, filp->f_pos,
+				 (ino_t) value, d_type);
 		kfree(nlsname);
-	} else {
-		if (!dir_emit(ctx, keybuf, keysize,
-				 (ino_t) value, d_type))
-			return 0;
-	}
-	ctx->pos++;
-	goto more;
 
-	befs_debug(sb, "<--- befs_readdir() pos %Ld", ctx->pos);
+	} else {
+		result = filldir(dirent, keybuf, keysize, filp->f_pos,
+				 (ino_t) value, d_type);
+	}
+	if (!result)
+		filp->f_pos++;
+
+	befs_debug(sb, "<--- befs_readdir() filp->f_pos %Ld", filp->f_pos);
 
 	return 0;
 }

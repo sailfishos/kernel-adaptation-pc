@@ -200,6 +200,7 @@ void ocfs2_complete_quota_recovery(struct ocfs2_super *osb);
 
 static inline void ocfs2_start_checkpoint(struct ocfs2_super *osb)
 {
+	atomic_set(&osb->needs_checkpoint, 1);
 	wake_up(&osb->checkpoint_event);
 }
 
@@ -537,7 +538,7 @@ static inline int ocfs2_calc_extend_credits(struct super_block *sb,
 	extent_blocks = 1 + 1 + le16_to_cpu(root_el->l_tree_depth);
 
 	return bitmap_blocks + sysfile_bitmap_blocks + extent_blocks +
-	       ocfs2_quota_trans_credits(sb) + bits_wanted;
+	       ocfs2_quota_trans_credits(sb);
 }
 
 static inline int ocfs2_calc_symlink_credits(struct super_block *sb)

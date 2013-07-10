@@ -317,6 +317,11 @@ static int pcf8523_probe(struct i2c_client *client,
 	return 0;
 }
 
+static int pcf8523_remove(struct i2c_client *client)
+{
+	return 0;
+}
+
 static const struct i2c_device_id pcf8523_id[] = {
 	{ "pcf8523", 0 },
 	{ }
@@ -338,6 +343,7 @@ static struct i2c_driver pcf8523_driver = {
 		.of_match_table = of_match_ptr(pcf8523_of_match),
 	},
 	.probe = pcf8523_probe,
+	.remove = pcf8523_remove,
 	.id_table = pcf8523_id,
 };
 module_i2c_driver(pcf8523_driver);

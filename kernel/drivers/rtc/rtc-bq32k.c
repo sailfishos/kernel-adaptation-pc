@@ -163,6 +163,11 @@ static int bq32k_probe(struct i2c_client *client,
 	return 0;
 }
 
+static int bq32k_remove(struct i2c_client *client)
+{
+	return 0;
+}
+
 static const struct i2c_device_id bq32k_id[] = {
 	{ "bq32000", 0 },
 	{ }
@@ -175,6 +180,7 @@ static struct i2c_driver bq32k_driver = {
 		.owner	= THIS_MODULE,
 	},
 	.probe		= bq32k_probe,
+	.remove		= bq32k_remove,
 	.id_table	= bq32k_id,
 };
 
