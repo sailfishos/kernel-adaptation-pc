@@ -53,7 +53,6 @@ find %{buildroot}/lib/modules/%{kernel_version_build} -name "*.ko" -type f -exec
 
 # /boot
 mkdir -p %{buildroot}/boot/
-make INSTALL_PATH=%{buildroot}/boot/ install
 
 install -m 755 arch/%{kernel_arch}/boot/bzImage %{buildroot}/boot/vmlinuz-%{kernel_version_build}
 
