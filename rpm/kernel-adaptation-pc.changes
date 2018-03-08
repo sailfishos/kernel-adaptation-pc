@@ -1,0 +1,100 @@
+* Thu Mar 08 2018 martyone <martyone@ubedi.net> - 3.6.11-sailfish16
+- [packaging] Cleanup packaging. Contributes to JB#41037
+- [packaging] Fix build failure on unpackaged vmlinux. Contributes to JB#41037
+
+* Tue Jun 25 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo15
+- [packaging] Leave upstream defconfigs alone and use our own
+
+* Wed Jun 12 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo13
+- [packaging] Modify defconfigs to get the configuration we want
+- [packaging] Move config choices from separate .config to defconfig
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo12
+- [packaging] drop yaml file from the Sources list
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo11
+- [packaging] change submodule url to git://
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo10
+- [packaging] Fix directory name in %setup
+- [packaging] Fix name of source tarfile
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo9
+- [packaging] 3.6.11 based on what was in nemo:devel:hw:x86:x86-common OBS
+
+* Thu Jan 31 2013 Marko Saukko <marko.saukko@jollamobile.com> - 3.6.11
+- Enable CONFIG_HIGHMEM4G and CONFIG_VMSPLIT_2G_OPT
+
+* Mon Jan 28 2013 Marko Saukko <marko.saukko@jollamobile.com> - 3.6.11
+- Enable Atheros network modules: CONFIG_NET_VENDOR_ATHEROS, CONFIG_ATL2, CONFIG_ATL1, CONFIG_ATL1E, CONFIG_ATL1C 
+- Build Intel network modules: CONFIG_E100, CONFIG_E1000, CONFIG_E1000E, CONFIG_IGB
+- Build broadcom network modules: CONFIG_BCMA, CONFIG_BRCMSMAC, CONFIG_BRCMFMAC_SDIO
+
+* Mon Dec 07 2012 Maciej Blomberg <maciej.blomberg@jollamobile.com> - 3.6.11
+- updated kernel version to 3.6.11 - thanks to Islam Amer
+
+* Mon Nov 05 2012 Maciej Blomberg <maciej.blomberg@jollamobile.com> - 3.6.1
+- updated kernel version to 3.6.1
+
+* Wed Oct 03 2012 David Greaves <david@dgreaves.com> - 3.0.0
+- enable MODULE_FORCE_LOAD CONFIG_MODVERSIONS for improved module support
+- hardlinks is not packaged for Mer so don't Require it
+
+* Fri Sep 21 2012 Amjad Syed <amjadcsu@gmail.com> - 3.0.0
+- Fixes NEMO#181 add fix-config-xen.patch 
+
+* Thu Aug 02 2012 Marko Saukko <marko.saukko@jollamobile.com> - 3.0.0
+- Use wildcard for files to support old and new depmod version.
+
+* Wed Jul 27 2011 Yan Li <yan.i.li@intel.com> - 3.0
+- Updated kernel version to 3.0 release. 
+
+* Tue May 24 2011 - Chris Ferron <chris.e.ferron@linux.intel.com> - 2.6.39
+- updated kernel version to 2.6.39 release. 
+
+* Thu May 12 2011 - Chris Ferron <chris.e.ferron@linux.intel.com> - 2.6.39-rc6
+- enabled broadcom 80211 wireless modules BRCMSMAC and BRCMFMAC
+ 
+* Mon May 09 2011 - Chris Ferron <chris.e.ferron@linux.intel.com> - 2.6.39-rc6
+- update kernel version to 2.6.39~rc6 
+
+* Mon Mar 28 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37.2
+- updated the pegatron/exopc patches
+
+* Fri Mar 11 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37.2
+- add ALS control for the ExoPC
+
+* Sun Feb 27 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37.2
+- update to 2.6.37.2 stable release
+
+* Mon Feb 7 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37
+- add some more KVM options for MeeGo's build infrastructure
+
+* Mon Jan 31 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37
+- enable Gadgetfs since it's a required feature for MTP connectivity to work
+
+* Wed Jan 19 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37
+- put back the perf subrpm that got accidentally lost in the major
+  spec cleanup/reshufle
+
+* Tue Jan 11 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37
+- Backport some touchscreen driver patches from linus.git (BMC#11626)
+  in order to support Wetab devices
+- blacklist the ath3k bluetooth device in the BT_USB driver (BMC#11626)
+  because it needs to picked up by its own driver.
+
+* Tue Jan 4 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37
+- Linus released the 2.6.37 final release with i915 graphics fixes (BMC#11626)
+
+* Tue Jan 4 2011 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37-rc8
+- various config changes (BMC#8110, BMC#11479) to make the policy framework
+  work.
+
+* Wed Dec 29 2010 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37-rc8
+- Update to 2.6.37-rc8 to be closer to the final 1.2 kernel (2.6.37) (BMC#11626)
+- Add the include/xen directory to the kernel-devel package for building moduels against (BMC#11822)
+
+* Tue Dec 21 2010 - Arjan van de Ven <arjan@linux.intel.com> - 2.6.37-rc7
+- Start fresh with the MeeGo reference kernel now that the TSG 
+  approved the new kernel policy and the architecture team picked
+  2.6.37 for MeeGo 1.2 (BMC#11626)
