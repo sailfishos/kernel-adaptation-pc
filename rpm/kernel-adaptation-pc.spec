@@ -33,7 +33,7 @@ Devel for PC kernel
 
 %build
 # These have been installed in kernel/arch/*/configs/
-make %{_arch}_mer_defconfig
+make %{_arch}_sailfish_defconfig
 
 # Verify the config meets the current Mer requirements
 #/usr/bin/mer_verify_config .config
