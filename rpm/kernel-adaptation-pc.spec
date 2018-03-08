@@ -114,7 +114,7 @@ touch -r %{buildroot}/%{kernel_devel_dir}/.config %{buildroot}/%{kernel_devel_di
 cp %{buildroot}/%{kernel_devel_dir}/.config %{buildroot}/%{kernel_devel_dir}/include/config/auto.conf
 
 %post
-depmod -a %{kernel_version_build}
+depmod -a %{kernel_version_build} || :
 /sbin/new-kernel-pkg --package kernel-adaptation-pc --mkinitrd --depmod --install %{kernel_version_build} || exit $?\
 
 %files
