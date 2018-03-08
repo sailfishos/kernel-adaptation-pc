@@ -29,7 +29,7 @@ Provides:   kernel-devel = %{kernel_version}
 Devel for PC kernel
 
 %prep
-%setup -q -n %{name}-%{version}/kernel
+%setup -q -n %{name}-%{version}
 
 %build
 # These have been installed in kernel/arch/*/configs/

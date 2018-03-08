@@ -1,3 +1,27 @@
+* Thu Mar 08 2018 martyone <martyone@ubedi.net> - 3.6.11-sailfish16
+- [packaging] Cleanup packaging. Contributes to JB#41037
+- [packaging] Fix build failure on unpackaged vmlinux. Contributes to JB#41037
+
+* Tue Jun 25 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo15
+- [packaging] Leave upstream defconfigs alone and use our own
+
+* Wed Jun 12 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo13
+- [packaging] Modify defconfigs to get the configuration we want
+- [packaging] Move config choices from separate .config to defconfig
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo12
+- [packaging] drop yaml file from the Sources list
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo11
+- [packaging] change submodule url to git://
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo10
+- [packaging] Fix directory name in %setup
+- [packaging] Fix name of source tarfile
+
+* Tue Jun 11 2013 Richard Braakman <richard.braakman@jollamobile.com> - 3.6.11-nemo9
+- [packaging] 3.6.11 based on what was in nemo:devel:hw:x86:x86-common OBS
+
 * Thu Jan 31 2013 Marko Saukko <marko.saukko@jollamobile.com> - 3.6.11
 - Enable CONFIG_HIGHMEM4G and CONFIG_VMSPLIT_2G_OPT
 
