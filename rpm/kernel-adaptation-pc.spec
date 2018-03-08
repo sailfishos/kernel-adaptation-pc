@@ -3,8 +3,9 @@ Name:       kernel-adaptation-pc
 %define kernel_version_build %{version}-%{release}
 %define kernel_devel_dir %{_prefix}/src/kernels/%{kernel_version_build}
 %define kernel_version %{version}
+%define kernel_arch x86
 
-Summary:    Kernel Adaptation %{kernel_target_hw}
+Summary:    Kernel Adaptation PC
 Version:    3.6.11
 Release:    8
 Group:      Kernel/Linux Kernel
@@ -16,67 +17,29 @@ BuildRequires:  pkgconfig(ncurses)
 Provides:   kernel = %{kernel_version}
 
 %description
-Kernel for %{kernel_target_hw}.
+Kernel for PC.
 
 %package devel
-Summary:    Devel files for %{kernel_target_hw} kernel
+Summary:    Devel files for PC kernel
 Group:      Development/System
 Requires:   %{name} = %{version}-%{release}
 Provides:   kernel-devel = %{kernel_version}
 
 %description devel
-Devel for %{kernel_target_hw} kernel
-
+Devel for PC kernel
 
 %prep
 %setup -q -n %{name}-%{version}/kernel
 
-# Determine the kernel arch and what we're building
-# kernel_arch: arm/mips/x86 (for now) .. the ARCH= for the kernel
-%{lua:
-arch = rpm.expand("%{_arch}")
-if arch == "arm" or arch == "mips" then
-rpm.define("builds_uImage 1")
-rpm.define("kernel_arch " .. arch)
-else
-rpm.define("builds_firmware 1")
-rpm.define("builds_vmlinuz 1")
-rpm.define("kernel_arch x86")
-end
-
--- This is the common/code name of the hardware adaptation
--- Primarily used in descriptions
-
-name = rpm.expand("%{name}")
-pat = "kernel%-adaptation%-(.+)"
-start, finish, capture = string.find(name, pat)
-if start == nil then
-error("Package name "..name.." doesn't match reqired pattern "..pat)
-else
-rpm.define("kernel_target_hw " ..  capture)
-end
-}
-
+%build
 # These have been installed in kernel/arch/*/configs/
 make %{_arch}_mer_defconfig
 
 # Verify the config meets the current Mer requirements
 #/usr/bin/mer_verify_config .config
 
-echo The target hw is %{kernel_target_hw}
-echo The desc is %{summary}
-
-
-%build
 perl -p -i -e "s/^EXTRAVERSION.*/EXTRAVERSION = -%{release}/" Makefile
-%if 0%{?builds_uImage}
-# ???
-%endif
-%if 0%{?builds_vmlinuz}
-#make %{?jobs:-j%jobs} %{?_smp_mflags} bzImage
 make %{?_smp_mflags} bzImage
-%endif
-#make %{?jobs:-j%jobs} %{?_smp_mflags} modules
 make %{?_smp_mflags} modules
 
 %install
@@ -90,15 +53,8 @@ find %{buildroot}/lib/modules/%{kernel_version_build} -name "*.ko" -type f -exec
 
 # /boot
 mkdir -p %{buildroot}/boot/
-make INSTALL_PATH=%{buildroot}/boot/ install
 
-%if 0%{?builds_uImage}
-install -m 755 arch/%{kernel_arch}/boot/uImage %{buildroot}/boot/
-%endif
-
-%if 0%{?builds_vmlinuz}
 install -m 755 arch/%{kernel_arch}/boot/bzImage %{buildroot}/boot/vmlinuz-%{kernel_version_build}
-%endif
 
 install -m 755 .config %{buildroot}/boot/config-%{kernel_version_build}
 install -m 755 System.map %{buildroot}/boot/
@@ -142,12 +98,6 @@ find %{buildroot}/%{kernel_devel_dir}/scripts/ -name \*.o -print0 | xargs -0 rm 
 # arch-specific include files
 cp -a --parents arch/%{kernel_arch}/include %{buildroot}/%{kernel_devel_dir}
 
-# arm has include files under plat- and mach- areas (x86/mips don't)
-%if "%{?karch}" == "arm"
-cp -a --parents arch/%{kernel_arch}/mach-*/include %{buildroot}/%{kernel_devel_dir}
-cp -a --parents arch/%{kernel_arch}/plat-*/include %{buildroot}/%{kernel_devel_dir}
-%endif
-
 # normal include files
 mkdir -p %{buildroot}/%{kernel_devel_dir}/include
 
@@ -162,9 +112,8 @@ touch -r %{buildroot}/%{kernel_devel_dir}/.config %{buildroot}/%{kernel_devel_di
 # Copy .config to include/config/auto.conf so "make prepare" is unnecessary.
 cp %{buildroot}/%{kernel_devel_dir}/.config %{buildroot}/%{kernel_devel_dir}/include/config/auto.conf
 
-
 %post
-depmod -a %{kernel_version_build}
+depmod -a %{kernel_version_build} || :
 /sbin/new-kernel-pkg --package kernel-adaptation-pc --mkinitrd --depmod --install %{kernel_version_build} || exit $?\
 
 %files
@@ -174,15 +123,8 @@ depmod -a %{kernel_version_build}
 /boot/config-%{kernel_version_build}
 # do we need this? should it be versioned only for x86
 /boot/System.map
-%if 0%{?builds_vmlinuz}
 /boot/vmlinuz-%{kernel_version_build}
-%endif
-%if 0%{?builds_uImage}
-/boot/uImage
-%endif
-%if 0%{?builds_firmware}
 /lib/firmware/*
-%endif
 
 %files devel
 %defattr(-,root,root,-)
