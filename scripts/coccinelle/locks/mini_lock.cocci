@@ -11,7 +11,7 @@
 // Copyright: (C) 2010-2012 Gilles Muller, INRIA/LiP6.  GPLv2.
 // URL: http://coccinelle.lip6.fr/
 // Comments:
-// Options: -no_includes -include_headers
+// Options: --no-includes --include-headers
 
 virtual context
 virtual org
@@ -67,12 +67,14 @@ identifier lock,unlock;
 @@
 
 *lock(E1@p,...);
-<+... when != E1
+... when != E1
+    when any
 if (...) {
   ... when != E1
 *  return@r ...;
 }
-...+>
+... when != E1
+    when any
 *unlock@up(E1,...);
 
 @script:python depends on org@

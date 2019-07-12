@@ -46,32 +46,8 @@
 #include <asm/octeon/cvmx-smix-defs.h>
 #include <asm/octeon/cvmx-asxx-defs.h>
 
-/**
- * cvmx_override_pko_queue_priority(int ipd_port, uint64_t
- * priorities[16]) is a function pointer. It is meant to allow
- * customization of the PKO queue priorities based on the port
- * number. Users should set this pointer to a function before
- * calling any cvmx-helper operations.
- */
-void (*cvmx_override_pko_queue_priority) (int pko_port,
-					  uint64_t priorities[16]);
-
-/**
- * cvmx_override_ipd_port_setup(int ipd_port) is a function
- * pointer. It is meant to allow customization of the IPD port
- * setup before packet input/output comes online. It is called
- * after cvmx-helper does the default IPD configuration, but
- * before IPD is enabled. Users should set this pointer to a
- * function before calling any cvmx-helper operations.
- */
-void (*cvmx_override_ipd_port_setup) (int ipd_port);
-
 /* Port count per interface */
-static int interface_port_count[4] = { 0, 0, 0, 0 };
-
-/* Port last configured link info index by IPD/PKO port */
-static cvmx_helper_link_info_t
-    port_link_info[CVMX_PIP_NUM_INPUT_PORTS];
+static int interface_port_count[9];
 
 /**
  * Return the number of interfaces the chip has. Each interface
@@ -83,11 +59,16 @@ static cvmx_helper_link_info_t
  */
 int cvmx_helper_get_number_of_interfaces(void)
 {
+	if (OCTEON_IS_MODEL(OCTEON_CN68XX))
+		return 9;
 	if (OCTEON_IS_MODEL(OCTEON_CN56XX) || OCTEON_IS_MODEL(OCTEON_CN52XX))
 		return 4;
+	if (OCTEON_IS_MODEL(OCTEON_CN7XXX))
+		return 5;
 	else
 		return 3;
 }
+EXPORT_SYMBOL_GPL(cvmx_helper_get_number_of_interfaces);
 
 /**
  * Return the number of ports on an interface. Depending on the
@@ -102,6 +83,195 @@ int cvmx_helper_ports_on_interface(int interface)
 {
 	return interface_port_count[interface];
 }
+EXPORT_SYMBOL_GPL(cvmx_helper_ports_on_interface);
+
+/**
+ * @INTERNAL
+ * Return interface mode for CN68xx.
+ */
+static cvmx_helper_interface_mode_t __cvmx_get_mode_cn68xx(int interface)
+{
+	union cvmx_mio_qlmx_cfg qlm_cfg;
+	switch (interface) {
+	case 0:
+		qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(0));
+		/* QLM is disabled when QLM SPD is 15. */
+		if (qlm_cfg.s.qlm_spd == 15)
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+
+		if (qlm_cfg.s.qlm_cfg == 2)
+			return CVMX_HELPER_INTERFACE_MODE_SGMII;
+		else if (qlm_cfg.s.qlm_cfg == 3)
+			return CVMX_HELPER_INTERFACE_MODE_XAUI;
+		else
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	case 2:
+	case 3:
+	case 4:
+		qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(interface));
+		/* QLM is disabled when QLM SPD is 15. */
+		if (qlm_cfg.s.qlm_spd == 15)
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+
+		if (qlm_cfg.s.qlm_cfg == 2)
+			return CVMX_HELPER_INTERFACE_MODE_SGMII;
+		else if (qlm_cfg.s.qlm_cfg == 3)
+			return CVMX_HELPER_INTERFACE_MODE_XAUI;
+		else
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	case 7:
+		qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(3));
+		/* QLM is disabled when QLM SPD is 15. */
+		if (qlm_cfg.s.qlm_spd == 15) {
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+		} else if (qlm_cfg.s.qlm_cfg != 0) {
+			qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(1));
+			if (qlm_cfg.s.qlm_cfg != 0)
+				return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+		}
+		return CVMX_HELPER_INTERFACE_MODE_NPI;
+	case 8:
+		return CVMX_HELPER_INTERFACE_MODE_LOOP;
+	default:
+		return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	}
+}
+
+/**
+ * @INTERNAL
+ * Return interface mode for an Octeon II
+ */
+static cvmx_helper_interface_mode_t __cvmx_get_mode_octeon2(int interface)
+{
+	union cvmx_gmxx_inf_mode mode;
+
+	if (OCTEON_IS_MODEL(OCTEON_CN68XX))
+		return __cvmx_get_mode_cn68xx(interface);
+
+	if (interface == 2)
+		return CVMX_HELPER_INTERFACE_MODE_NPI;
+
+	if (interface == 3)
+		return CVMX_HELPER_INTERFACE_MODE_LOOP;
+
+	/* Only present in CN63XX & CN66XX Octeon model */
+	if ((OCTEON_IS_MODEL(OCTEON_CN63XX) &&
+	     (interface == 4 || interface == 5)) ||
+	    (OCTEON_IS_MODEL(OCTEON_CN66XX) &&
+	     interface >= 4 && interface <= 7)) {
+		return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	}
+
+	if (OCTEON_IS_MODEL(OCTEON_CN66XX)) {
+		union cvmx_mio_qlmx_cfg mio_qlm_cfg;
+
+		/* QLM2 is SGMII0 and QLM1 is SGMII1 */
+		if (interface == 0)
+			mio_qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(2));
+		else if (interface == 1)
+			mio_qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(1));
+		else
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+
+		if (mio_qlm_cfg.s.qlm_spd == 15)
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+
+		if (mio_qlm_cfg.s.qlm_cfg == 9)
+			return CVMX_HELPER_INTERFACE_MODE_SGMII;
+		else if (mio_qlm_cfg.s.qlm_cfg == 11)
+			return CVMX_HELPER_INTERFACE_MODE_XAUI;
+		else
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	} else if (OCTEON_IS_MODEL(OCTEON_CN61XX)) {
+		union cvmx_mio_qlmx_cfg qlm_cfg;
+
+		if (interface == 0) {
+			qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(2));
+			if (qlm_cfg.s.qlm_cfg == 2)
+				return CVMX_HELPER_INTERFACE_MODE_SGMII;
+			else if (qlm_cfg.s.qlm_cfg == 3)
+				return CVMX_HELPER_INTERFACE_MODE_XAUI;
+			else
+				return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+		} else if (interface == 1) {
+			qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(0));
+			if (qlm_cfg.s.qlm_cfg == 2)
+				return CVMX_HELPER_INTERFACE_MODE_SGMII;
+			else if (qlm_cfg.s.qlm_cfg == 3)
+				return CVMX_HELPER_INTERFACE_MODE_XAUI;
+			else
+				return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+		}
+	} else if (OCTEON_IS_MODEL(OCTEON_CNF71XX)) {
+		if (interface == 0) {
+			union cvmx_mio_qlmx_cfg qlm_cfg;
+			qlm_cfg.u64 = cvmx_read_csr(CVMX_MIO_QLMX_CFG(0));
+			if (qlm_cfg.s.qlm_cfg == 2)
+				return CVMX_HELPER_INTERFACE_MODE_SGMII;
+		}
+		return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	}
+
+	if (interface == 1 && OCTEON_IS_MODEL(OCTEON_CN63XX))
+		return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+
+	mode.u64 = cvmx_read_csr(CVMX_GMXX_INF_MODE(interface));
+
+	if (OCTEON_IS_MODEL(OCTEON_CN63XX)) {
+		switch (mode.cn61xx.mode) {
+		case 0:
+			return CVMX_HELPER_INTERFACE_MODE_SGMII;
+		case 1:
+			return CVMX_HELPER_INTERFACE_MODE_XAUI;
+		default:
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+		}
+	} else {
+		if (!mode.s.en)
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+
+		if (mode.s.type)
+			return CVMX_HELPER_INTERFACE_MODE_GMII;
+		else
+			return CVMX_HELPER_INTERFACE_MODE_RGMII;
+	}
+}
+
+/**
+ * @INTERNAL
+ * Return interface mode for CN7XXX.
+ */
+static cvmx_helper_interface_mode_t __cvmx_get_mode_cn7xxx(int interface)
+{
+	union cvmx_gmxx_inf_mode mode;
+
+	mode.u64 = cvmx_read_csr(CVMX_GMXX_INF_MODE(interface));
+
+	switch (interface) {
+	case 0:
+	case 1:
+		switch (mode.cn68xx.mode) {
+		case 0:
+			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+		case 1:
+		case 2:
+			return CVMX_HELPER_INTERFACE_MODE_SGMII;
+		case 3:
+			return CVMX_HELPER_INTERFACE_MODE_XAUI;
+		default:
+			return CVMX_HELPER_INTERFACE_MODE_SGMII;
+		}
+	case 2:
+		return CVMX_HELPER_INTERFACE_MODE_NPI;
+	case 3:
+		return CVMX_HELPER_INTERFACE_MODE_LOOP;
+	case 4:
+		/* TODO: Implement support for AGL (RGMII). */
+		return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	default:
+		return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+	}
+}
 
 /**
  * Get the operating mode of an interface. Depending on the Octeon
@@ -111,11 +281,31 @@ int cvmx_helper_ports_on_interface(int interface)
  * @interface: Interface to probe
  *
  * Returns Mode of the interface. Unknown or unsupported interfaces return
- *         DISABLED.
+ *	   DISABLED.
  */
 cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
 {
 	union cvmx_gmxx_inf_mode mode;
+
+	if (interface < 0 ||
+	    interface >= cvmx_helper_get_number_of_interfaces())
+		return CVMX_HELPER_INTERFACE_MODE_DISABLED;
+
+	/*
+	 * OCTEON III models
+	 */
+	if (OCTEON_IS_MODEL(OCTEON_CN7XXX))
+		return __cvmx_get_mode_cn7xxx(interface);
+
+	/*
+	 * Octeon II models
+	 */
+	if (OCTEON_IS_MODEL(OCTEON_CN6XXX) || OCTEON_IS_MODEL(OCTEON_CNF71XX))
+		return __cvmx_get_mode_octeon2(interface);
+
+	/*
+	 * Octeon and Octeon Plus models
+	 */
 	if (interface == 2)
 		return CVMX_HELPER_INTERFACE_MODE_NPI;
 
@@ -153,7 +343,7 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
 	mode.u64 = cvmx_read_csr(CVMX_GMXX_INF_MODE(interface));
 
 	if (OCTEON_IS_MODEL(OCTEON_CN56XX) || OCTEON_IS_MODEL(OCTEON_CN52XX)) {
-		switch (mode.cn56xx.mode) {
+		switch (mode.cn52xx.mode) {
 		case 0:
 			return CVMX_HELPER_INTERFACE_MODE_DISABLED;
 		case 1:
@@ -179,6 +369,7 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
 			return CVMX_HELPER_INTERFACE_MODE_RGMII;
 	}
 }
+EXPORT_SYMBOL_GPL(cvmx_helper_interface_get_mode);
 
 /**
  * Configure the IPD/PIP tagging and QoS options for a specific
@@ -187,7 +378,7 @@ cvmx_helper_interface_mode_t cvmx_helper_interface_get_mode(int interface)
  * the defines in executive-config.h.
  *
  * @ipd_port: Port to configure. This follows the IPD numbering, not the
- *                 per interface numbering
+ *		   per interface numbering
  *
  * Returns Zero on success, negative on failure
  */
@@ -225,10 +416,6 @@ static int __cvmx_helper_port_setup_ipd(int ipd_port)
 	tag_config.s.grp = 0;
 
 	cvmx_pip_config_port(ipd_port, port_config, tag_config);
-
-	/* Give the user a chance to override our setting for each port */
-	if (cvmx_override_ipd_port_setup)
-		cvmx_override_ipd_port_setup(ipd_port);
 
 	return 0;
 }
@@ -453,13 +640,6 @@ static int __cvmx_helper_interface_setup_pko(int interface)
 	int ipd_port = cvmx_helper_get_ipd_port(interface, 0);
 	int num_ports = interface_port_count[interface];
 	while (num_ports--) {
-		/*
-		 * Give the user a chance to override the per queue
-		 * priorities.
-		 */
-		if (cvmx_override_pko_queue_priority)
-			cvmx_override_pko_queue_priority(ipd_port, priorities);
-
 		cvmx_pko_config_port(ipd_port,
 				     cvmx_pko_get_base_queue_per_core(ipd_port,
 								      0),
@@ -487,6 +667,21 @@ static int __cvmx_helper_global_setup_pko(void)
 	fau_to.s.tout_val = 0xfff;
 	fau_to.s.tout_enb = 0;
 	cvmx_write_csr(CVMX_IOB_FAU_TIMEOUT, fau_to.u64);
+
+	if (OCTEON_IS_MODEL(OCTEON_CN68XX)) {
+		union cvmx_pko_reg_min_pkt min_pkt;
+
+		min_pkt.u64 = 0;
+		min_pkt.s.size1 = 59;
+		min_pkt.s.size2 = 59;
+		min_pkt.s.size3 = 59;
+		min_pkt.s.size4 = 59;
+		min_pkt.s.size5 = 59;
+		min_pkt.s.size6 = 59;
+		min_pkt.s.size7 = 59;
+		cvmx_write_csr(CVMX_PKO_REG_MIN_PKT, min_pkt.u64);
+	}
+
 	return 0;
 }
 
@@ -591,9 +786,9 @@ static int __cvmx_helper_packet_hardware_enable(int interface)
  * Function to adjust internal IPD pointer alignments
  *
  * Returns 0 on success
- *         !0 on failure
+ *	   !0 on failure
  */
-int __cvmx_helper_errata_fix_ipd_ptr_alignment(void)
+static int __cvmx_helper_errata_fix_ipd_ptr_alignment(void)
 {
 #define FIX_IPD_FIRST_BUFF_PAYLOAD_BYTES \
      (CVMX_FPA_PACKET_POOL_SIZE-8-CVMX_HELPER_FIRST_MBUFF_SKIP)
@@ -612,7 +807,6 @@ int __cvmx_helper_errata_fix_ipd_ptr_alignment(void)
 	int retry_cnt;
 	int retry_loop_cnt;
 	int i;
-	cvmx_helper_link_info_t link_info;
 
 	/* Save values for restore at end */
 	uint64_t prtx_cfg =
@@ -638,7 +832,7 @@ int __cvmx_helper_errata_fix_ipd_ptr_alignment(void)
 	 */
 	cvmx_write_csr(CVMX_ASXX_RX_PRT_EN(INTERFACE(FIX_IPD_OUTPORT)), 0);
 
-	cvmx_wait(100000000ull);
+	__delay(100000000ull);
 
 	for (retry_loop_cnt = 0; retry_loop_cnt < 10; retry_loop_cnt++) {
 		retry_cnt = 100000;
@@ -773,15 +967,6 @@ fix_ipd_exit:
 		       (INDEX(FIX_IPD_OUTPORT), INTERFACE(FIX_IPD_OUTPORT)),
 		       frame_max);
 	cvmx_write_csr(CVMX_ASXX_PRT_LOOP(INTERFACE(FIX_IPD_OUTPORT)), 0);
-	/* Set link to down so autonegotiation will set it up again */
-	link_info.u64 = 0;
-	cvmx_helper_link_set(FIX_IPD_OUTPORT, link_info);
-
-	/*
-	 * Bring the link back up as autonegotiation is not done in
-	 * user applications.
-	 */
-	cvmx_helper_link_autoconf(FIX_IPD_OUTPORT);
 
 	CVMX_SYNC;
 	if (num_segs)
@@ -825,6 +1010,7 @@ int cvmx_helper_ipd_and_packet_input_enable(void)
 		__cvmx_helper_errata_fix_ipd_ptr_alignment();
 	return 0;
 }
+EXPORT_SYMBOL_GPL(cvmx_helper_ipd_and_packet_input_enable);
 
 /**
  * Initialize the PIP, IPD, and PKO hardware to support
@@ -903,6 +1089,7 @@ int cvmx_helper_initialize_packet_io_global(void)
 #endif
 	return result;
 }
+EXPORT_SYMBOL_GPL(cvmx_helper_initialize_packet_io_global);
 
 /**
  * Does core local initialization for packet io
@@ -912,40 +1099,6 @@ int cvmx_helper_initialize_packet_io_global(void)
 int cvmx_helper_initialize_packet_io_local(void)
 {
 	return cvmx_pko_initialize_local();
-}
-
-/**
- * Auto configure an IPD/PKO port link state and speed. This
- * function basically does the equivalent of:
- * cvmx_helper_link_set(ipd_port, cvmx_helper_link_get(ipd_port));
- *
- * @ipd_port: IPD/PKO port to auto configure
- *
- * Returns Link state after configure
- */
-cvmx_helper_link_info_t cvmx_helper_link_autoconf(int ipd_port)
-{
-	cvmx_helper_link_info_t link_info;
-	int interface = cvmx_helper_get_interface_num(ipd_port);
-	int index = cvmx_helper_get_interface_index_num(ipd_port);
-
-	if (index >= cvmx_helper_ports_on_interface(interface)) {
-		link_info.u64 = 0;
-		return link_info;
-	}
-
-	link_info = cvmx_helper_link_get(ipd_port);
-	if (link_info.u64 == port_link_info[ipd_port].u64)
-		return link_info;
-
-	/* If we fail to set the link speed, port_link_info will not change */
-	cvmx_helper_link_set(ipd_port, link_info);
-
-	/*
-	 * port_link_info should be the current value, which will be
-	 * different than expect if cvmx_helper_link_set() failed.
-	 */
-	return port_link_info[ipd_port];
 }
 
 /**
@@ -1005,13 +1158,13 @@ cvmx_helper_link_info_t cvmx_helper_link_get(int ipd_port)
 	}
 	return result;
 }
+EXPORT_SYMBOL_GPL(cvmx_helper_link_get);
 
 /**
  * Configure an IPD/PKO port for the specified link state. This
  * function does not influence auto negotiation at the PHY level.
  * The passed link state must always match the link state returned
- * by cvmx_helper_link_get(). It is normally best to use
- * cvmx_helper_link_autoconf() instead.
+ * by cvmx_helper_link_get().
  *
  * @ipd_port:  IPD/PKO port to configure
  * @link_info: The new link state
@@ -1053,64 +1206,6 @@ int cvmx_helper_link_set(int ipd_port, cvmx_helper_link_info_t link_info)
 	case CVMX_HELPER_INTERFACE_MODE_LOOP:
 		break;
 	}
-	/* Set the port_link_info here so that the link status is updated
-	   no matter how cvmx_helper_link_set is called. We don't change
-	   the value if link_set failed */
-	if (result == 0)
-		port_link_info[ipd_port].u64 = link_info.u64;
 	return result;
 }
-
-/**
- * Configure a port for internal and/or external loopback. Internal loopback
- * causes packets sent by the port to be received by Octeon. External loopback
- * causes packets received from the wire to sent out again.
- *
- * @ipd_port: IPD/PKO port to loopback.
- * @enable_internal:
- *                 Non zero if you want internal loopback
- * @enable_external:
- *                 Non zero if you want external loopback
- *
- * Returns Zero on success, negative on failure.
- */
-int cvmx_helper_configure_loopback(int ipd_port, int enable_internal,
-				   int enable_external)
-{
-	int result = -1;
-	int interface = cvmx_helper_get_interface_num(ipd_port);
-	int index = cvmx_helper_get_interface_index_num(ipd_port);
-
-	if (index >= cvmx_helper_ports_on_interface(interface))
-		return -1;
-
-	switch (cvmx_helper_interface_get_mode(interface)) {
-	case CVMX_HELPER_INTERFACE_MODE_DISABLED:
-	case CVMX_HELPER_INTERFACE_MODE_PCIE:
-	case CVMX_HELPER_INTERFACE_MODE_SPI:
-	case CVMX_HELPER_INTERFACE_MODE_NPI:
-	case CVMX_HELPER_INTERFACE_MODE_LOOP:
-		break;
-	case CVMX_HELPER_INTERFACE_MODE_XAUI:
-		result =
-		    __cvmx_helper_xaui_configure_loopback(ipd_port,
-							  enable_internal,
-							  enable_external);
-		break;
-	case CVMX_HELPER_INTERFACE_MODE_RGMII:
-	case CVMX_HELPER_INTERFACE_MODE_GMII:
-		result =
-		    __cvmx_helper_rgmii_configure_loopback(ipd_port,
-							   enable_internal,
-							   enable_external);
-		break;
-	case CVMX_HELPER_INTERFACE_MODE_SGMII:
-	case CVMX_HELPER_INTERFACE_MODE_PICMG:
-		result =
-		    __cvmx_helper_sgmii_configure_loopback(ipd_port,
-							   enable_internal,
-							   enable_external);
-		break;
-	}
-	return result;
-}
+EXPORT_SYMBOL_GPL(cvmx_helper_link_set);

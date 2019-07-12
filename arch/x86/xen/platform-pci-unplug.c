@@ -1,38 +1,26 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /******************************************************************************
  * platform-pci-unplug.c
  *
  * Xen platform PCI device driver
  * Copyright (c) 2010, Citrix
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 59 Temple
- * Place - Suite 330, Boston, MA 02111-1307 USA.
- *
  */
 
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/module.h>
+#include <linux/export.h>
 
+#include <xen/xen.h>
 #include <xen/platform_pci.h>
+#include "xen-ops.h"
 
 #define XEN_PLATFORM_ERR_MAGIC -1
 #define XEN_PLATFORM_ERR_PROTOCOL -2
 #define XEN_PLATFORM_ERR_BLACKLIST -3
 
 /* store the value of xen_emul_unplug after the unplug is done */
-int xen_platform_pci_unplug;
-EXPORT_SYMBOL_GPL(xen_platform_pci_unplug);
-#ifdef CONFIG_XEN_PVHVM
+static int xen_platform_pci_unplug;
 static int xen_emul_unplug;
 
 static int check_platform_magic(void)
@@ -61,16 +49,94 @@ static int check_platform_magic(void)
 		}
 		break;
 	default:
-		printk(KERN_WARNING "Xen Platform PCI: unknown I/O protocol version");
+		printk(KERN_WARNING "Xen Platform PCI: unknown I/O protocol version\n");
 		return XEN_PLATFORM_ERR_PROTOCOL;
 	}
 
 	return 0;
 }
 
+bool xen_has_pv_devices(void)
+{
+	if (!xen_domain())
+		return false;
+
+	/* PV and PVH domains always have them. */
+	if (xen_pv_domain() || xen_pvh_domain())
+		return true;
+
+	/* And user has xen_platform_pci=0 set in guest config as
+	 * driver did not modify the value. */
+	if (xen_platform_pci_unplug == 0)
+		return false;
+
+	if (xen_platform_pci_unplug & XEN_UNPLUG_NEVER)
+		return false;
+
+	if (xen_platform_pci_unplug & XEN_UNPLUG_ALL)
+		return true;
+
+	/* This is an odd one - we are going to run legacy
+	 * and PV drivers at the same time. */
+	if (xen_platform_pci_unplug & XEN_UNPLUG_UNNECESSARY)
+		return true;
+
+	/* And the caller has to follow with xen_pv_{disk,nic}_devices
+	 * to be certain which driver can load. */
+	return false;
+}
+EXPORT_SYMBOL_GPL(xen_has_pv_devices);
+
+static bool __xen_has_pv_device(int state)
+{
+	/* HVM domains might or might not */
+	if (xen_hvm_domain() && (xen_platform_pci_unplug & state))
+		return true;
+
+	return xen_has_pv_devices();
+}
+
+bool xen_has_pv_nic_devices(void)
+{
+	return __xen_has_pv_device(XEN_UNPLUG_ALL_NICS | XEN_UNPLUG_ALL);
+}
+EXPORT_SYMBOL_GPL(xen_has_pv_nic_devices);
+
+bool xen_has_pv_disk_devices(void)
+{
+	return __xen_has_pv_device(XEN_UNPLUG_ALL_IDE_DISKS |
+				   XEN_UNPLUG_AUX_IDE_DISKS | XEN_UNPLUG_ALL);
+}
+EXPORT_SYMBOL_GPL(xen_has_pv_disk_devices);
+
+/*
+ * This one is odd - it determines whether you want to run PV _and_
+ * legacy (IDE) drivers together. This combination is only possible
+ * under HVM.
+ */
+bool xen_has_pv_and_legacy_disk_devices(void)
+{
+	if (!xen_domain())
+		return false;
+
+	/* N.B. This is only ever used in HVM mode */
+	if (xen_pv_domain())
+		return false;
+
+	if (xen_platform_pci_unplug & XEN_UNPLUG_UNNECESSARY)
+		return true;
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(xen_has_pv_and_legacy_disk_devices);
+
 void xen_unplug_emulated_devices(void)
 {
 	int r;
+
+	/* PVH guests don't have emulated devices. */
+	if (xen_pvh_domain())
+		return;
 
 	/* user explicitly requested no unplug */
 	if (xen_emul_unplug & XEN_UNPLUG_NEVER)
@@ -140,4 +206,3 @@ static int __init parse_xen_emul_unplug(char *arg)
 	return 0;
 }
 early_param("xen_emul_unplug", parse_xen_emul_unplug);
-#endif

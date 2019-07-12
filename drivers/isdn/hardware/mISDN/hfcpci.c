@@ -301,8 +301,9 @@ reset_hfcpci(struct hfc_pci *hc)
  * Timer function called when kernel timer expires
  */
 static void
-hfcpci_Timer(struct hfc_pci *hc)
+hfcpci_Timer(struct timer_list *t)
 {
+	struct hfc_pci *hc = from_timer(hc, t, hw.timer);
 	hc->hw.timer.expires = jiffies + 75;
 	/* WD RESET */
 /*
@@ -490,7 +491,7 @@ receive_dmsg(struct hfc_pci *hc)
 		    (df->data[le16_to_cpu(zp->z1)])) {
 			if (dch->debug & DEBUG_HW)
 				printk(KERN_DEBUG
-				       "empty_fifo hfcpci paket inv. len "
+				       "empty_fifo hfcpci packet inv. len "
 				       "%d or crc %d\n",
 				       rcnt,
 				       df->data[le16_to_cpu(zp->z1)]);
@@ -1241,7 +1242,7 @@ hfcpci_int(int intno, void *dev_id)
  * timer callback for D-chan busy resolution. Currently no function
  */
 static void
-hfcpci_dbusy_timer(struct hfc_pci *hc)
+hfcpci_dbusy_timer(struct timer_list *t)
 {
 }
 
@@ -1295,6 +1296,7 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 	case (-1): /* used for init */
 		bch->state = -1;
 		bch->nr = bc;
+		/* fall through */
 	case (ISDN_P_NONE):
 		if (bch->state == ISDN_P_NONE)
 			return 0;
@@ -1307,11 +1309,11 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 		}
 		if (fifo2 & 2) {
 			hc->hw.fifo_en &= ~HFCPCI_FIFOEN_B2;
-			hc->hw.int_m1 &= ~(HFCPCI_INTS_B2TRANS +
+			hc->hw.int_m1 &= ~(HFCPCI_INTS_B2TRANS |
 					   HFCPCI_INTS_B2REC);
 		} else {
 			hc->hw.fifo_en &= ~HFCPCI_FIFOEN_B1;
-			hc->hw.int_m1 &= ~(HFCPCI_INTS_B1TRANS +
+			hc->hw.int_m1 &= ~(HFCPCI_INTS_B1TRANS |
 					   HFCPCI_INTS_B1REC);
 		}
 #ifdef REVERSE_BITORDER
@@ -1346,14 +1348,14 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 		if (fifo2 & 2) {
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B2;
 			if (!tics)
-				hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS +
+				hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS |
 						  HFCPCI_INTS_B2REC);
 			hc->hw.ctmt |= 2;
 			hc->hw.conn &= ~0x18;
 		} else {
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B1;
 			if (!tics)
-				hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS +
+				hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS |
 						  HFCPCI_INTS_B1REC);
 			hc->hw.ctmt |= 1;
 			hc->hw.conn &= ~0x03;
@@ -1375,14 +1377,14 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 		if (fifo2 & 2) {
 			hc->hw.last_bfifo_cnt[1] = 0;
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B2;
-			hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS +
+			hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS |
 					  HFCPCI_INTS_B2REC);
 			hc->hw.ctmt &= ~2;
 			hc->hw.conn &= ~0x18;
 		} else {
 			hc->hw.last_bfifo_cnt[0] = 0;
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B1;
-			hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS +
+			hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS |
 					  HFCPCI_INTS_B1REC);
 			hc->hw.ctmt &= ~1;
 			hc->hw.conn &= ~0x03;
@@ -1717,9 +1719,7 @@ static void
 inithfcpci(struct hfc_pci *hc)
 {
 	printk(KERN_DEBUG "inithfcpci: entered\n");
-	hc->dch.timer.function = (void *) hfcpci_dbusy_timer;
-	hc->dch.timer.data = (long) &hc->dch;
-	init_timer(&hc->dch.timer);
+	timer_setup(&hc->dch.timer, hfcpci_dbusy_timer, 0);
 	hc->chanlimit = 2;
 	mode_hfcpci(&hc->bch[0], 1, -1);
 	mode_hfcpci(&hc->bch[1], 2, -1);
@@ -1755,7 +1755,7 @@ init_card(struct hfc_pci *hc)
 		enable_hwirq(hc);
 		spin_unlock_irqrestore(&hc->lock, flags);
 		/* Timeout 80ms */
-		current->state = TASK_UNINTERRUPTIBLE;
+		set_current_state(TASK_UNINTERRUPTIBLE);
 		schedule_timeout((80 * HZ) / 1000);
 		printk(KERN_INFO "HFC PCI: IRQ %d count %d\n",
 		       hc->irq, hc->irqcnt);
@@ -2044,9 +2044,7 @@ setup_hw(struct hfc_pci *hc)
 	Write_hfc(hc, HFCPCI_INT_M1, hc->hw.int_m1);
 	/* At this point the needed PCI config is done */
 	/* fifos are still not enabled */
-	hc->hw.timer.function = (void *) hfcpci_Timer;
-	hc->hw.timer.data = (long) hc;
-	init_timer(&hc->hw.timer);
+	timer_setup(&hc->hw.timer, hfcpci_Timer, 0);
 	/* default PCM master */
 	test_and_set_bit(HFC_CFG_MASTER, &hc->cfg);
 	return 0;
@@ -2164,7 +2162,7 @@ static const struct _hfc_map hfc_map[] =
 	{},
 };
 
-static struct pci_device_id hfc_ids[] =
+static const struct pci_device_id hfc_ids[] =
 {
 	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_2BD0),
 	  (unsigned long) &hfc_map[0] },
@@ -2215,14 +2213,14 @@ static struct pci_device_id hfc_ids[] =
 	{},
 };
 
-static int __devinit
+static int
 hfc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	int		err = -ENOMEM;
 	struct hfc_pci	*card;
 	struct _hfc_map	*m = (struct _hfc_map *)ent->driver_data;
 
-	card = kzalloc(sizeof(struct hfc_pci), GFP_ATOMIC);
+	card = kzalloc(sizeof(struct hfc_pci), GFP_KERNEL);
 	if (!card) {
 		printk(KERN_ERR "No kmem for HFC card\n");
 		return err;
@@ -2246,7 +2244,7 @@ hfc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	return err;
 }
 
-static void __devexit
+static void
 hfc_remove_pci(struct pci_dev *pdev)
 {
 	struct hfc_pci	*card = pci_get_drvdata(pdev);
@@ -2263,12 +2261,12 @@ hfc_remove_pci(struct pci_dev *pdev)
 static struct pci_driver hfc_driver = {
 	.name = "hfcpci",
 	.probe = hfc_probe,
-	.remove = __devexit_p(hfc_remove_pci),
+	.remove = hfc_remove_pci,
 	.id_table = hfc_ids,
 };
 
 static int
-_hfcpci_softirq(struct device *dev, void *arg)
+_hfcpci_softirq(struct device *dev, void *unused)
 {
 	struct hfc_pci  *hc = dev_get_drvdata(dev);
 	struct bchannel *bch;
@@ -2293,10 +2291,10 @@ _hfcpci_softirq(struct device *dev, void *arg)
 }
 
 static void
-hfcpci_softirq(void *arg)
+hfcpci_softirq(struct timer_list *unused)
 {
-	(void) driver_for_each_device(&hfc_driver.driver, NULL, arg,
-				      _hfcpci_softirq);
+	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, NULL,
+				      _hfcpci_softirq) != 0);
 
 	/* if next event would be in the past ... */
 	if ((s32)(hfc_jiffies + tics - jiffies) <= 0)
@@ -2330,9 +2328,7 @@ HFC_init(void)
 	if (poll != HFCPCI_BTRANS_THRESHOLD) {
 		printk(KERN_INFO "%s: Using alternative poll value of %d\n",
 		       __func__, poll);
-		hfc_tl.function = (void *)hfcpci_softirq;
-		hfc_tl.data = 0;
-		init_timer(&hfc_tl);
+		timer_setup(&hfc_tl, hfcpci_softirq, 0);
 		hfc_tl.expires = jiffies + tics;
 		hfc_jiffies = hfc_tl.expires;
 		add_timer(&hfc_tl);

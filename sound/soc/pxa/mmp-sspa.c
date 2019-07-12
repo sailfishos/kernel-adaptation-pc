@@ -27,12 +27,15 @@
 #include <linux/slab.h>
 #include <linux/pxa2xx_ssp.h>
 #include <linux/io.h>
+#include <linux/dmaengine.h>
+
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/initval.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/pxa2xx-lib.h>
+#include <sound/dmaengine_pcm.h>
 #include "mmp-sspa.h"
 
 /*
@@ -40,7 +43,7 @@
  */
 struct sspa_priv {
 	struct ssp_device *sspa;
-	struct pxa2xx_pcm_dma_params *dma_params;
+	struct snd_dmaengine_dai_dma_data *dma_params;
 	struct clk *audio_clk;
 	struct clk *sysclk;
 	int dai_fmt;
@@ -116,7 +119,6 @@ static void mmp_sspa_shutdown(struct snd_pcm_substream *substream,
 	clk_disable(priv->sspa->clk);
 	clk_disable(priv->sysclk);
 
-	return;
 }
 
 /*
@@ -266,7 +268,7 @@ static int mmp_sspa_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
 	struct sspa_priv *sspa_priv = snd_soc_dai_get_drvdata(dai);
 	struct ssp_device *sspa = sspa_priv->sspa;
-	struct pxa2xx_pcm_dma_params *dma_params;
+	struct snd_dmaengine_dai_dma_data *dma_params;
 	u32 sspa_ctrl;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
@@ -309,7 +311,7 @@ static int mmp_sspa_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	dma_params = &sspa_priv->dma_params[substream->stream];
-	dma_params->dev_addr = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
+	dma_params->addr = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
 				(sspa->phys_base + SSPA_TXD) :
 				(sspa->phys_base + SSPA_RXD);
 	snd_soc_dai_set_dma_data(cpu_dai, substream, dma_params);
@@ -375,10 +377,9 @@ static int mmp_sspa_probe(struct snd_soc_dai *dai)
 #define MMP_SSPA_FORMATS (SNDRV_PCM_FMTBIT_S8 | \
 		SNDRV_PCM_FMTBIT_S16_LE | \
 		SNDRV_PCM_FMTBIT_S24_LE | \
-		SNDRV_PCM_FMTBIT_S24_LE | \
 		SNDRV_PCM_FMTBIT_S32_LE)
 
-static struct snd_soc_dai_ops mmp_sspa_dai_ops = {
+static const struct snd_soc_dai_ops mmp_sspa_dai_ops = {
 	.startup	= mmp_sspa_startup,
 	.shutdown	= mmp_sspa_shutdown,
 	.trigger	= mmp_sspa_trigger,
@@ -388,7 +389,7 @@ static struct snd_soc_dai_ops mmp_sspa_dai_ops = {
 	.set_fmt	= mmp_sspa_set_dai_fmt,
 };
 
-struct snd_soc_dai_driver mmp_sspa_dai = {
+static struct snd_soc_dai_driver mmp_sspa_dai = {
 	.probe = mmp_sspa_probe,
 	.playback = {
 		.channels_min = 1,
@@ -405,7 +406,11 @@ struct snd_soc_dai_driver mmp_sspa_dai = {
 	.ops = &mmp_sspa_dai_ops,
 };
 
-static __devinit int asoc_mmp_sspa_probe(struct platform_device *pdev)
+static const struct snd_soc_component_driver mmp_sspa_component = {
+	.name		= "mmp-sspa",
+};
+
+static int asoc_mmp_sspa_probe(struct platform_device *pdev)
 {
 	struct sspa_priv *priv;
 	struct resource *res;
@@ -420,18 +425,16 @@ static __devinit int asoc_mmp_sspa_probe(struct platform_device *pdev)
 	if (priv->sspa == NULL)
 		return -ENOMEM;
 
-	priv->dma_params = devm_kzalloc(&pdev->dev,
-			2 * sizeof(struct pxa2xx_pcm_dma_params), GFP_KERNEL);
+	priv->dma_params = devm_kcalloc(&pdev->dev,
+			2, sizeof(struct snd_dmaengine_dai_dma_data),
+			GFP_KERNEL);
 	if (priv->dma_params == NULL)
 		return -ENOMEM;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (res == NULL)
-		return -ENOMEM;
-
-	priv->sspa->mmio_base = devm_request_and_ioremap(&pdev->dev, res);
-	if (priv->sspa->mmio_base == NULL)
-		return -ENODEV;
+	priv->sspa->mmio_base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(priv->sspa->mmio_base))
+		return PTR_ERR(priv->sspa->mmio_base);
 
 	priv->sspa->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(priv->sspa->clk))
@@ -450,27 +453,26 @@ static __devinit int asoc_mmp_sspa_probe(struct platform_device *pdev)
 	priv->dai_fmt = (unsigned int) -1;
 	platform_set_drvdata(pdev, priv);
 
-	return snd_soc_register_dai(&pdev->dev, &mmp_sspa_dai);
+	return devm_snd_soc_register_component(&pdev->dev, &mmp_sspa_component,
+					       &mmp_sspa_dai, 1);
 }
 
-static int __devexit asoc_mmp_sspa_remove(struct platform_device *pdev)
+static int asoc_mmp_sspa_remove(struct platform_device *pdev)
 {
 	struct sspa_priv *priv = platform_get_drvdata(pdev);
 
 	clk_disable(priv->audio_clk);
 	clk_put(priv->audio_clk);
 	clk_put(priv->sysclk);
-	snd_soc_unregister_dai(&pdev->dev);
 	return 0;
 }
 
 static struct platform_driver asoc_mmp_sspa_driver = {
 	.driver = {
 		.name = "mmp-sspa-dai",
-		.owner = THIS_MODULE,
 	},
 	.probe = asoc_mmp_sspa_probe,
-	.remove = __devexit_p(asoc_mmp_sspa_remove),
+	.remove = asoc_mmp_sspa_remove,
 };
 
 module_platform_driver(asoc_mmp_sspa_driver);
@@ -478,3 +480,4 @@ module_platform_driver(asoc_mmp_sspa_driver);
 MODULE_AUTHOR("Leo Yan <leoy@marvell.com>");
 MODULE_DESCRIPTION("MMP SSPA SoC Interface");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:mmp-sspa-dai");

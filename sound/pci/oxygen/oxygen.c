@@ -97,7 +97,7 @@ enum {
 	MODEL_XONAR_DGX,
 };
 
-static DEFINE_PCI_DEVICE_TABLE(oxygen_ids) = {
+static const struct pci_device_id oxygen_ids[] = {
 	/* C-Media's reference design */
 	{ OXYGEN_PCI_SUBID(0x10b0, 0x0216), .driver_data = MODEL_CMEDIA_REF },
 	{ OXYGEN_PCI_SUBID(0x10b0, 0x0217), .driver_data = MODEL_CMEDIA_REF },
@@ -756,8 +756,8 @@ static const struct oxygen_model model_generic = {
 	.adc_i2s_format = OXYGEN_I2S_FORMAT_LJUST,
 };
 
-static int __devinit get_oxygen_model(struct oxygen *chip,
-				      const struct pci_device_id *id)
+static int get_oxygen_model(struct oxygen *chip,
+			    const struct pci_device_id *id)
 {
 	static const char *const names[] = {
 		[MODEL_MERIDIAN]	= "AuzenTech X-Meridian",
@@ -767,6 +767,8 @@ static int __devinit get_oxygen_model(struct oxygen *chip,
 		[MODEL_FANTASIA]	= "TempoTec HiFier Fantasia",
 		[MODEL_SERENADE]	= "TempoTec HiFier Serenade",
 		[MODEL_HG2PCI]		= "CMI8787-HG2PCI",
+		[MODEL_XONAR_DG]        = "Xonar DG",
+		[MODEL_XONAR_DGX]       = "Xonar DGX",
 	};
 
 	chip->model = model_generic;
@@ -829,12 +831,8 @@ static int __devinit get_oxygen_model(struct oxygen *chip,
 		chip->model.dac_channels_mixer = 2;
 		break;
 	case MODEL_XONAR_DG:
-		chip->model = model_xonar_dg;
-		chip->model.shortname = "Xonar DG";
-		break;
 	case MODEL_XONAR_DGX:
 		chip->model = model_xonar_dg;
-		chip->model.shortname = "Xonar DGX";
 		break;
 	}
 	if (id->driver_data == MODEL_MERIDIAN ||
@@ -848,8 +846,8 @@ static int __devinit get_oxygen_model(struct oxygen *chip,
 	return 0;
 }
 
-static int __devinit generic_oxygen_probe(struct pci_dev *pci,
-					  const struct pci_device_id *pci_id)
+static int generic_oxygen_probe(struct pci_dev *pci,
+				const struct pci_device_id *pci_id)
 {
 	static int dev;
 	int err;
@@ -871,8 +869,8 @@ static struct pci_driver oxygen_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = oxygen_ids,
 	.probe = generic_oxygen_probe,
-	.remove = __devexit_p(oxygen_pci_remove),
-#ifdef CONFIG_PM
+	.remove = oxygen_pci_remove,
+#ifdef CONFIG_PM_SLEEP
 	.driver = {
 		.pm = &oxygen_pci_pm,
 	},

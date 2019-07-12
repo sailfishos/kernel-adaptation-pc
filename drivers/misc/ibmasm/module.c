@@ -62,7 +62,7 @@ module_param(ibmasm_debug, int , S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(ibmasm_debug, " Set debug mode on or off");
 
 
-static int __devinit ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
+static int ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int result;
 	struct service_processor *sp;
@@ -94,12 +94,14 @@ static int __devinit ibmasm_init_one(struct pci_dev *pdev, const struct pci_devi
 	snprintf(sp->dirname, IBMASM_NAME_SIZE, "%d", sp->number);
 	snprintf(sp->devname, IBMASM_NAME_SIZE, "%s%d", DRIVER_NAME, sp->number);
 
-	if (ibmasm_event_buffer_init(sp)) {
+	result = ibmasm_event_buffer_init(sp);
+	if (result) {
 		dev_err(sp->dev, "Failed to allocate event buffer\n");
 		goto error_eventbuffer;
 	}
 
-	if (ibmasm_heartbeat_init(sp)) {
+	result = ibmasm_heartbeat_init(sp);
+	if (result) {
 		dev_err(sp->dev, "Failed to allocate heartbeat command\n");
 		goto error_heartbeat;
 	}
@@ -153,7 +155,6 @@ error_ioremap:
 error_heartbeat:
 	ibmasm_event_buffer_exit(sp);
 error_eventbuffer:
-	pci_set_drvdata(pdev, NULL);
 	kfree(sp);
 error_kmalloc:
         pci_release_regions(pdev);
@@ -163,15 +164,15 @@ error_resources:
 	return result;
 }
 
-static void __devexit ibmasm_remove_one(struct pci_dev *pdev)
+static void ibmasm_remove_one(struct pci_dev *pdev)
 {
-	struct service_processor *sp = (struct service_processor *)pci_get_drvdata(pdev);
+	struct service_processor *sp = pci_get_drvdata(pdev);
 
 	dbg("Unregistering UART\n");
 	ibmasm_unregister_uart(sp);
 	dbg("Sending OS down message\n");
 	if (ibmasm_send_os_state(sp, SYSTEM_STATE_OS_DOWN))
-		err("failed to get repsonse to 'Send OS State' command\n");
+		err("failed to get response to 'Send OS State' command\n");
 	dbg("Disabling heartbeats\n");
 	ibmasm_heartbeat_exit(sp);
 	dbg("Disabling interrupts\n");
@@ -182,7 +183,6 @@ static void __devexit ibmasm_remove_one(struct pci_dev *pdev)
 	ibmasm_free_remote_input_dev(sp);
 	iounmap(sp->base_address);
 	ibmasm_event_buffer_exit(sp);
-	pci_set_drvdata(pdev, NULL);
 	kfree(sp);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
@@ -198,7 +198,7 @@ static struct pci_driver ibmasm_driver = {
 	.name		= DRIVER_NAME,
 	.id_table	= ibmasm_pci_table,
 	.probe		= ibmasm_init_one,
-	.remove		= __devexit_p(ibmasm_remove_one),
+	.remove		= ibmasm_remove_one,
 };
 
 static void __exit ibmasm_exit (void)

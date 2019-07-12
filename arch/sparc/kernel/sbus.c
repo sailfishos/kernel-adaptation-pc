@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * sbus.c: UltraSparc SBUS controller support.
  *
@@ -66,8 +67,8 @@ void sbus_set_sbus64(struct device *dev, int bursts)
 
 	regs = of_get_property(op->dev.of_node, "reg", NULL);
 	if (!regs) {
-		printk(KERN_ERR "sbus_set_sbus64: Cannot find regs for %s\n",
-		       op->dev.of_node->full_name);
+		printk(KERN_ERR "sbus_set_sbus64: Cannot find regs for %pOF\n",
+		       op->dev.of_node);
 		return;
 	}
 	slot = regs->which_io;
@@ -554,10 +555,8 @@ static void __init sbus_iommu_init(struct platform_device *op)
 	regs = pr->phys_addr;
 
 	iommu = kzalloc(sizeof(*iommu), GFP_ATOMIC);
-	if (!iommu)
-		goto fatal_memory_error;
 	strbuf = kzalloc(sizeof(*strbuf), GFP_ATOMIC);
-	if (!strbuf)
+	if (!iommu || !strbuf)
 		goto fatal_memory_error;
 
 	op->dev.archdata.iommu = iommu;
@@ -656,6 +655,8 @@ static void __init sbus_iommu_init(struct platform_device *op)
 	return;
 
 fatal_memory_error:
+	kfree(iommu);
+	kfree(strbuf);
 	prom_printf("sbus_iommu_init: Fatal memory allocation error.\n");
 }
 

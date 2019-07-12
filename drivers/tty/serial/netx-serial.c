@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2005 Sascha Hauer <s.hauer@pengutronix.de>, Pengutronix
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #if defined(CONFIG_SERIAL_NETX_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
@@ -196,10 +184,9 @@ static void netx_txint(struct uart_port *port)
 		uart_write_wakeup(port);
 }
 
-static void netx_rxint(struct uart_port *port)
+static void netx_rxint(struct uart_port *port, unsigned long *flags)
 {
 	unsigned char rx, flg, status;
-	struct tty_struct *tty = port->state->port.tty;
 
 	while (!(readl(port->membase + UART_FR) & FR_RXFE)) {
 		rx = readl(port->membase + UART_DR);
@@ -237,8 +224,9 @@ static void netx_rxint(struct uart_port *port)
 		uart_insert_char(port, status, SR_OE, rx, flg);
 	}
 
-	tty_flip_buffer_push(tty);
-	return;
+	spin_unlock_irqrestore(&port->lock, *flags);
+	tty_flip_buffer_push(&port->state->port);
+	spin_lock_irqsave(&port->lock, *flags);
 }
 
 static irqreturn_t netx_int(int irq, void *dev_id)
@@ -252,7 +240,7 @@ static irqreturn_t netx_int(int irq, void *dev_id)
 	status = readl(port->membase + UART_IIR) & IIR_MASK;
 	while (status) {
 		if (status & IIR_RIS)
-			netx_rxint(port);
+			netx_rxint(port, &flags);
 		if (status & IIR_TIS)
 			netx_txint(port);
 		if (status & IIR_MIS) {
@@ -419,7 +407,7 @@ netx_set_termios(struct uart_port *port, struct ktermios *termios,
 	}
 
 	port->read_status_mask = 0;
-	if (termios->c_iflag & (BRKINT | PARMRK))
+	if (termios->c_iflag & (IGNBRK | BRKINT | PARMRK))
 		port->read_status_mask |= SR_BE;
 	if (termios->c_iflag & INPCK)
 		port->read_status_mask |= SR_PE | SR_FE;
@@ -695,8 +683,6 @@ static int serial_netx_remove(struct platform_device *pdev)
 {
 	struct netx_port *sport = platform_get_drvdata(pdev);
 
-	platform_set_drvdata(pdev, NULL);
-
 	if (sport)
 		uart_remove_one_port(&netx_reg, &sport->port);
 
@@ -712,7 +698,6 @@ static struct platform_driver serial_netx_driver = {
 
 	.driver		= {
 		.name   = DRIVER_NAME,
-		.owner	= THIS_MODULE,
 	},
 };
 

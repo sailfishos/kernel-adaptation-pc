@@ -1,13 +1,4 @@
-/*
- * Many of the syscalls used in this file expect some of the arguments
- * to be __user pointers not __kernel pointers.  To limit the sparse
- * noise, turn off sparse checking for this file.
- */
-#ifdef __CHECKER__
-#undef __CHECKER__
-#warning "Sparse checking disabled for this file"
-#endif
-
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/unistd.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
@@ -16,14 +7,18 @@
 #include <linux/initrd.h>
 #include <linux/sched.h>
 #include <linux/freezer.h>
+#include <linux/kmod.h>
+#include <uapi/linux/mount.h>
 
 #include "do_mounts.h"
 
 unsigned long initrd_start, initrd_end;
 int initrd_below_start_ok;
 unsigned int real_root_dev;	/* do_proc_dointvec cannot handle kdev_t */
-static int __initdata old_fd, root_fd;
 static int __initdata mount_initrd = 1;
+
+phys_addr_t phys_initrd_start __initdata;
+unsigned long phys_initrd_size __initdata;
 
 static int __init no_initrd(char *str)
 {
@@ -33,33 +28,51 @@ static int __init no_initrd(char *str)
 
 __setup("noinitrd", no_initrd);
 
-static int __init do_linuxrc(void *_shell)
+static int __init early_initrd(char *p)
 {
-	static const char *argv[] = { "linuxrc", NULL, };
-	extern const char *envp_init[];
-	const char *shell = _shell;
+	phys_addr_t start;
+	unsigned long size;
+	char *endp;
 
-	sys_close(old_fd);sys_close(root_fd);
-	sys_setsid();
-	return kernel_execve(shell, argv, envp_init);
+	start = memparse(p, &endp);
+	if (*endp == ',') {
+		size = memparse(endp + 1, NULL);
+
+		phys_initrd_start = start;
+		phys_initrd_size = size;
+	}
+	return 0;
+}
+early_param("initrd", early_initrd);
+
+static int init_linuxrc(struct subprocess_info *info, struct cred *new)
+{
+	ksys_unshare(CLONE_FS | CLONE_FILES);
+	/* stdin/stdout/stderr for /linuxrc */
+	ksys_open("/dev/console", O_RDWR, 0);
+	ksys_dup(0);
+	ksys_dup(0);
+	/* move initrd over / and chdir/chroot in initrd root */
+	ksys_chdir("/root");
+	ksys_mount(".", "/", NULL, MS_MOVE, NULL);
+	ksys_chroot(".");
+	ksys_setsid();
+	return 0;
 }
 
 static void __init handle_initrd(void)
 {
+	struct subprocess_info *info;
+	static char *argv[] = { "linuxrc", NULL, };
+	extern char *envp_init[];
 	int error;
-	int pid;
 
 	real_root_dev = new_encode_dev(ROOT_DEV);
 	create_dev("/dev/root.old", Root_RAM0);
 	/* mount initrd on rootfs' /root */
 	mount_block_root("/dev/root.old", root_mountflags & ~MS_RDONLY);
-	sys_mkdir("/old", 0700);
-	root_fd = sys_open("/", 0, 0);
-	old_fd = sys_open("/old", 0, 0);
-	/* move initrd over / and chdir/chroot in initrd root */
-	sys_chdir("/root");
-	sys_mount(".", "/", NULL, MS_MOVE, NULL);
-	sys_chroot(".");
+	ksys_mkdir("/old", 0700);
+	ksys_chdir("/old");
 
 	/*
 	 * In case that a resume from disk is carried out by linuxrc or one of
@@ -67,54 +80,52 @@ static void __init handle_initrd(void)
 	 */
 	current->flags |= PF_FREEZER_SKIP;
 
-	pid = kernel_thread(do_linuxrc, "/linuxrc", SIGCHLD);
-	if (pid > 0)
-		while (pid != sys_wait4(-1, NULL, 0, NULL))
-			yield();
+	info = call_usermodehelper_setup("/linuxrc", argv, envp_init,
+					 GFP_KERNEL, init_linuxrc, NULL, NULL);
+	if (!info)
+		return;
+	call_usermodehelper_exec(info, UMH_WAIT_PROC);
 
 	current->flags &= ~PF_FREEZER_SKIP;
 
 	/* move initrd to rootfs' /old */
-	sys_fchdir(old_fd);
-	sys_mount("/", ".", NULL, MS_MOVE, NULL);
+	ksys_mount("..", ".", NULL, MS_MOVE, NULL);
 	/* switch root and cwd back to / of rootfs */
-	sys_fchdir(root_fd);
-	sys_chroot(".");
-	sys_close(old_fd);
-	sys_close(root_fd);
+	ksys_chroot("..");
 
 	if (new_decode_dev(real_root_dev) == Root_RAM0) {
-		sys_chdir("/old");
+		ksys_chdir("/old");
 		return;
 	}
 
+	ksys_chdir("/");
 	ROOT_DEV = new_decode_dev(real_root_dev);
 	mount_root();
 
 	printk(KERN_NOTICE "Trying to move old root to /initrd ... ");
-	error = sys_mount("/old", "/root/initrd", NULL, MS_MOVE, NULL);
+	error = ksys_mount("/old", "/root/initrd", NULL, MS_MOVE, NULL);
 	if (!error)
 		printk("okay\n");
 	else {
-		int fd = sys_open("/dev/root.old", O_RDWR, 0);
+		int fd = ksys_open("/dev/root.old", O_RDWR, 0);
 		if (error == -ENOENT)
 			printk("/initrd does not exist. Ignored.\n");
 		else
 			printk("failed\n");
 		printk(KERN_NOTICE "Unmounting old root\n");
-		sys_umount("/old", MNT_DETACH);
+		ksys_umount("/old", MNT_DETACH);
 		printk(KERN_NOTICE "Trying to free ramdisk memory ... ");
 		if (fd < 0) {
 			error = fd;
 		} else {
-			error = sys_ioctl(fd, BLKFLSBUF, 0);
-			sys_close(fd);
+			error = ksys_ioctl(fd, BLKFLSBUF, 0);
+			ksys_close(fd);
 		}
 		printk(!error ? "okay\n" : "failed\n");
 	}
 }
 
-int __init initrd_load(void)
+bool __init initrd_load(void)
 {
 	if (mount_initrd) {
 		create_dev("/dev/ram", Root_RAM0);
@@ -125,11 +136,11 @@ int __init initrd_load(void)
 		 * mounted in the normal path.
 		 */
 		if (rd_load_image("/initrd.image") && ROOT_DEV != Root_RAM0) {
-			sys_unlink("/initrd.image");
+			ksys_unlink("/initrd.image");
 			handle_initrd();
-			return 1;
+			return true;
 		}
 	}
-	sys_unlink("/initrd.image");
-	return 0;
+	ksys_unlink("/initrd.image");
+	return false;
 }

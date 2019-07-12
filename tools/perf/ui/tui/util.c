@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "../../util/util.h"
 #include <signal.h>
 #include <stdbool.h>
@@ -21,7 +22,7 @@ static void ui_browser__argv_write(struct ui_browser *browser,
 
 	ui_browser__set_color(browser, current_entry ? HE_COLORSET_SELECTED :
 						       HE_COLORSET_NORMAL);
-	slsmg_write_nstring(*arg, browser->width);
+	ui_browser__write_nstring(browser, *arg, browser->width);
 }
 
 static int popup_menu__run(struct ui_browser *menu)
@@ -92,6 +93,8 @@ int ui_browser__input_window(const char *title, const char *text, char *input,
 		t = sep + 1;
 	}
 
+	pthread_mutex_lock(&ui__lock);
+
 	max_len += 2;
 	nr_lines += 8;
 	y = SLtt_Screen_Rows / 2 - nr_lines / 2;
@@ -120,13 +123,19 @@ int ui_browser__input_window(const char *title, const char *text, char *input,
 	SLsmg_write_nstring((char *)exit_msg, max_len);
 	SLsmg_refresh();
 
+	pthread_mutex_unlock(&ui__lock);
+
 	x += 2;
 	len = 0;
 	key = ui__getch(delay_secs);
 	while (key != K_TIMER && key != K_ENTER && key != K_ESC) {
+		pthread_mutex_lock(&ui__lock);
+
 		if (key == K_BKSPC) {
-			if (len == 0)
+			if (len == 0) {
+				pthread_mutex_unlock(&ui__lock);
 				goto next_key;
+			}
 			SLsmg_gotorc(y, x + --len);
 			SLsmg_write_char(' ');
 		} else {
@@ -135,6 +144,8 @@ int ui_browser__input_window(const char *title, const char *text, char *input,
 			SLsmg_write_char(key);
 		}
 		SLsmg_refresh();
+
+		pthread_mutex_unlock(&ui__lock);
 
 		/* XXX more graceful overflow handling needed */
 		if (len == sizeof(buf) - 1) {
@@ -174,6 +185,8 @@ int ui__question_window(const char *title, const char *text,
 		t = sep + 1;
 	}
 
+	pthread_mutex_lock(&ui__lock);
+
 	max_len += 2;
 	nr_lines += 4;
 	y = SLtt_Screen_Rows / 2 - nr_lines / 2,
@@ -195,6 +208,9 @@ int ui__question_window(const char *title, const char *text,
 	SLsmg_gotorc(y + nr_lines - 1, x);
 	SLsmg_write_nstring((char *)exit_msg, max_len);
 	SLsmg_refresh();
+
+	pthread_mutex_unlock(&ui__lock);
+
 	return ui__getch(delay_secs);
 }
 
@@ -215,9 +231,7 @@ static int __ui__warning(const char *title, const char *format, va_list args)
 	if (vasprintf(&s, format, args) > 0) {
 		int key;
 
-		pthread_mutex_lock(&ui__lock);
 		key = ui__question_window(title, s, "Press any key...", 0);
-		pthread_mutex_unlock(&ui__lock);
 		free(s);
 		return key;
 	}

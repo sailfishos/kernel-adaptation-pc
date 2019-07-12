@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __SPARC_HEAD_H
 #define __SPARC_HEAD_H
 
@@ -43,10 +44,10 @@
 	nop;
 
 #ifdef CONFIG_KGDB
-#define KGDB_TRAP(num) \
-	b kgdb_trap_low; \
-	rd %psr,%l0; \
-	nop; \
+#define KGDB_TRAP(num)                  \
+	mov num, %l7;                   \
+	b kgdb_trap_low;                \
+	rd %psr,%l0;                    \
 	nop;
 #else
 #define KGDB_TRAP(num) \
@@ -55,15 +56,15 @@
 
 /* The Get Condition Codes software trap for userland. */
 #define GETCC_TRAP \
-        b getcc_trap_handler; mov %psr, %l0; nop; nop;
+        b getcc_trap_handler; rd %psr, %l0; nop; nop;
 
 /* The Set Condition Codes software trap for userland. */
 #define SETCC_TRAP \
-        b setcc_trap_handler; mov %psr, %l0; nop; nop;
+        b setcc_trap_handler; rd %psr, %l0; nop; nop;
 
 /* The Get PSR software trap for userland. */
 #define GETPSR_TRAP \
-	mov %psr, %i0; jmp %l2; rett %l2 + 4; nop;
+	rd %psr, %i0; jmp %l2; rett %l2 + 4; nop;
 
 /* This is for hard interrupts from level 1-14, 15 is non-maskable (nmi) and
  * gets handled with another macro.

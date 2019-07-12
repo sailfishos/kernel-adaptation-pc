@@ -16,28 +16,26 @@
 #include <linux/platform_device.h>
 #include <linux/delay.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
-#include <linux/mtd/partitions.h>
+#include <linux/mtd/platnand.h>
 #include <linux/mtd/physmap.h>
 #include <linux/input.h>
 #include <linux/smc91x.h>
 #include <linux/omapfb.h>
+#include <linux/platform_data/keypad-omap.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
-#include <plat/tc.h>
-#include <plat/mux.h>
-#include <plat/fpga.h>
-#include <plat/flash.h>
-#include <plat/keypad.h>
-#include <plat/board.h>
+#include <mach/tc.h>
+#include <mach/mux.h>
+#include "flash.h"
 
 #include <mach/hardware.h>
 
 #include "iomap.h"
 #include "common.h"
+#include "fpga.h"
 
 static const unsigned int p2_keymap[] = {
 	KEY(0, 0, KEY_UP),
@@ -145,7 +143,7 @@ static struct platform_device nor_device = {
 
 #define P2_NAND_RB_GPIO_PIN	62
 
-static int nand_dev_ready(struct mtd_info *mtd)
+static int nand_dev_ready(struct nand_chip *chip)
 {
 	return gpio_get_value(P2_NAND_RB_GPIO_PIN);
 }
@@ -226,15 +224,15 @@ static struct platform_device *devices[] __initdata = {
 	&kp_device,
 };
 
-static struct omap_lcd_config perseus2_lcd_config __initdata = {
+static const struct omap_lcd_config perseus2_lcd_config __initconst = {
 	.ctrl_name	= "internal",
 };
 
 static void __init perseus2_init_smc91x(void)
 {
-	fpga_write(1, H2P2_DBG_FPGA_LAN_RESET);
+	__raw_writeb(1, H2P2_DBG_FPGA_LAN_RESET);
 	mdelay(50);
-	fpga_write(fpga_read(H2P2_DBG_FPGA_LAN_RESET) & ~1,
+	__raw_writeb(__raw_readb(H2P2_DBG_FPGA_LAN_RESET) & ~1,
 		   H2P2_DBG_FPGA_LAN_RESET);
 	mdelay(50);
 }
@@ -276,8 +274,7 @@ static void __init omap_perseus2_init(void)
 
 	perseus2_init_smc91x();
 
-	if (gpio_request(P2_NAND_RB_GPIO_PIN, "NAND ready") < 0)
-		BUG();
+	BUG_ON(gpio_request(P2_NAND_RB_GPIO_PIN, "NAND ready") < 0);
 	gpio_direction_input(P2_NAND_RB_GPIO_PIN);
 
 	omap_cfg_reg(L3_1610_FLASH_CS2B_OE);
@@ -325,10 +322,10 @@ MACHINE_START(OMAP_PERSEUS2, "OMAP730 Perseus2")
 	.atag_offset	= 0x100,
 	.map_io		= omap_perseus2_map_io,
 	.init_early     = omap1_init_early,
-	.reserve	= omap_reserve,
 	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
 	.init_machine	= omap_perseus2_init,
 	.init_late	= omap1_init_late,
-	.timer		= &omap1_timer,
+	.init_time	= omap1_timer_init,
 	.restart	= omap1_restart,
 MACHINE_END

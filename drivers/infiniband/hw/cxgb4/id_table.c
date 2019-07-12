@@ -54,7 +54,7 @@ u32 c4iw_id_alloc(struct c4iw_id_table *alloc)
 
 	if (obj < alloc->max) {
 		if (alloc->flags & C4IW_ID_TABLE_F_RANDOM)
-			alloc->last += random32() % RANDOM_SKIP;
+			alloc->last += prandom_u32() % RANDOM_SKIP;
 		else
 			alloc->last = obj + 1;
 		if (alloc->last >= alloc->max)
@@ -73,7 +73,6 @@ void c4iw_id_free(struct c4iw_id_table *alloc, u32 obj)
 	unsigned long flags;
 
 	obj -= alloc->start;
-	BUG_ON((int)obj < 0);
 
 	spin_lock_irqsave(&alloc->lock, flags);
 	clear_bit(obj, alloc->table);
@@ -88,13 +87,13 @@ int c4iw_id_table_alloc(struct c4iw_id_table *alloc, u32 start, u32 num,
 	alloc->start = start;
 	alloc->flags = flags;
 	if (flags & C4IW_ID_TABLE_F_RANDOM)
-		alloc->last = random32() % RANDOM_SKIP;
+		alloc->last = prandom_u32() % RANDOM_SKIP;
 	else
 		alloc->last = 0;
 	alloc->max  = num;
 	spin_lock_init(&alloc->lock);
-	alloc->table = kmalloc(BITS_TO_LONGS(num) * sizeof(long),
-				GFP_KERNEL);
+	alloc->table = kmalloc_array(BITS_TO_LONGS(num), sizeof(long),
+				     GFP_KERNEL);
 	if (!alloc->table)
 		return -ENOMEM;
 

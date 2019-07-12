@@ -41,8 +41,8 @@ static inline s32 nfhd_read_write(u32 major, u32 minor, u32 rwflag, u32 recno,
 static inline s32 nfhd_get_capacity(u32 major, u32 minor, u32 *blocks,
 				    u32 *blocksize)
 {
-	return nf_call(nfhd_id + NFHD_GET_CAPACITY, major, minor, blocks,
-		       blocksize);
+	return nf_call(nfhd_id + NFHD_GET_CAPACITY, major, minor,
+		       virt_to_phys(blocks), virt_to_phys(blocksize));
 }
 
 static LIST_HEAD(nfhd_list);
@@ -59,23 +59,25 @@ struct nfhd_device {
 	struct gendisk *disk;
 };
 
-static void nfhd_make_request(struct request_queue *queue, struct bio *bio)
+static blk_qc_t nfhd_make_request(struct request_queue *queue, struct bio *bio)
 {
 	struct nfhd_device *dev = queue->queuedata;
-	struct bio_vec *bvec;
-	int i, dir, len, shift;
-	sector_t sec = bio->bi_sector;
+	struct bio_vec bvec;
+	struct bvec_iter iter;
+	int dir, len, shift;
+	sector_t sec = bio->bi_iter.bi_sector;
 
 	dir = bio_data_dir(bio);
 	shift = dev->bshift;
-	bio_for_each_segment(bvec, bio, i) {
-		len = bvec->bv_len;
+	bio_for_each_segment(bvec, bio, iter) {
+		len = bvec.bv_len;
 		len >>= 9;
 		nfhd_read_write(dev->id, 0, dir, sec >> shift, len >> shift,
-				bvec_to_phys(bvec));
+				page_to_phys(bvec.bv_page) + bvec.bv_offset);
 		sec += len;
 	}
-	bio_endio(bio, 0);
+	bio_endio(bio);
+	return BLK_QC_T_NONE;
 }
 
 static int nfhd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
@@ -153,17 +155,21 @@ out:
 static int __init nfhd_init(void)
 {
 	u32 blocks, bsize;
+	int ret;
 	int i;
 
 	nfhd_id = nf_get_id("XHDI");
 	if (!nfhd_id)
 		return -ENODEV;
 
-	major_num = register_blkdev(major_num, "nfhd");
-	if (major_num <= 0) {
+	ret = register_blkdev(major_num, "nfhd");
+	if (ret < 0) {
 		pr_warn("nfhd: unable to get major number\n");
-		return major_num;
+		return ret;
 	}
+
+	if (!major_num)
+		major_num = ret;
 
 	for (i = NFHD_DEV_OFFSET; i < 24; i++) {
 		if (nfhd_get_capacity(i, 0, &blocks, &bsize))

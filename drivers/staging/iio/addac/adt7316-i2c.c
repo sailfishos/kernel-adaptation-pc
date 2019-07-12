@@ -21,7 +21,7 @@
 static int adt7316_i2c_read(void *client, u8 reg, u8 *data)
 {
 	struct i2c_client *cl = client;
-	int ret = 0;
+	int ret;
 
 	ret = i2c_smbus_write_byte(cl, reg);
 	if (ret < 0) {
@@ -34,6 +34,8 @@ static int adt7316_i2c_read(void *client, u8 reg, u8 *data)
 		dev_err(&cl->dev, "I2C read error\n");
 		return ret;
 	}
+
+	*data = ret;
 
 	return 0;
 }
@@ -92,13 +94,12 @@ static int adt7316_i2c_multi_write(void *client, u8 reg, u8 count, u8 *data)
  * device probe and remove
  */
 
-static int __devinit adt7316_i2c_probe(struct i2c_client *client,
-		const struct i2c_device_id *id)
+static int adt7316_i2c_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
 {
 	struct adt7316_bus bus = {
 		.client = client,
 		.irq = client->irq,
-		.irq_flags = IRQF_TRIGGER_LOW,
 		.read = adt7316_i2c_read,
 		.write = adt7316_i2c_write,
 		.multi_read = adt7316_i2c_multi_read,
@@ -106,11 +107,6 @@ static int __devinit adt7316_i2c_probe(struct i2c_client *client,
 	};
 
 	return adt7316_probe(&client->dev, &bus, id->name);
-}
-
-static int __devexit adt7316_i2c_remove(struct i2c_client *client)
-{
-	return adt7316_remove(&client->dev);
 }
 
 static const struct i2c_device_id adt7316_i2c_id[] = {
@@ -125,19 +121,29 @@ static const struct i2c_device_id adt7316_i2c_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, adt7316_i2c_id);
 
+static const struct of_device_id adt7316_of_match[] = {
+	{ .compatible = "adi,adt7316" },
+	{ .compatible = "adi,adt7317" },
+	{ .compatible = "adi,adt7318" },
+	{ .compatible = "adi,adt7516" },
+	{ .compatible = "adi,adt7517" },
+	{ .compatible = "adi,adt7519" },
+	{ },
+};
+
+MODULE_DEVICE_TABLE(of, adt7316_of_match);
+
 static struct i2c_driver adt7316_driver = {
 	.driver = {
 		.name = "adt7316",
+		.of_match_table = adt7316_of_match,
 		.pm = ADT7316_PM_OPS,
-		.owner  = THIS_MODULE,
 	},
 	.probe = adt7316_i2c_probe,
-	.remove = __devexit_p(adt7316_i2c_remove),
 	.id_table = adt7316_i2c_id,
 };
 module_i2c_driver(adt7316_driver);
 
 MODULE_AUTHOR("Sonic Zhang <sonic.zhang@analog.com>");
-MODULE_DESCRIPTION("I2C bus driver for Analog Devices ADT7316/7/9 and"
-			"ADT7516/7/8 digital temperature sensor, ADC and DAC");
+MODULE_DESCRIPTION("I2C bus driver for Analog Devices ADT7316/7/9 and ADT7516/7/8 digital temperature sensor, ADC and DAC");
 MODULE_LICENSE("GPL v2");

@@ -21,20 +21,22 @@
  *	2000-09-04	Henner Eisen	  dev_hold() / dev_put() for x25_neigh.
  */
 
+#define pr_fmt(fmt) "X25: " fmt
+
 #include <linux/kernel.h>
 #include <linux/jiffies.h>
 #include <linux/timer.h>
 #include <linux/slab.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/init.h>
 #include <net/x25.h>
 
 LIST_HEAD(x25_neigh_list);
 DEFINE_RWLOCK(x25_neigh_list_lock);
 
-static void x25_t20timer_expiry(unsigned long);
+static void x25_t20timer_expiry(struct timer_list *);
 
 static void x25_transmit_restart_confirmation(struct x25_neigh *nb);
 static void x25_transmit_restart_request(struct x25_neigh *nb);
@@ -47,9 +49,9 @@ static inline void x25_start_t20timer(struct x25_neigh *nb)
 	mod_timer(&nb->t20timer, jiffies + nb->t20);
 }
 
-static void x25_t20timer_expiry(unsigned long param)
+static void x25_t20timer_expiry(struct timer_list *t)
 {
-	struct x25_neigh *nb = (struct x25_neigh *)param;
+	struct x25_neigh *nb = from_timer(nb, t, t20timer);
 
 	x25_transmit_restart_request(nb);
 
@@ -93,13 +95,13 @@ void x25_link_control(struct sk_buff *skb, struct x25_neigh *nb,
 		if (!pskb_may_pull(skb, X25_STD_MIN_LEN + 4))
 			break;
 
-		printk(KERN_WARNING "x25: diagnostic #%d - %02X %02X %02X\n",
+		pr_warn("diagnostic #%d - %02X %02X %02X\n",
 		       skb->data[3], skb->data[4],
 		       skb->data[5], skb->data[6]);
 		break;
 
 	default:
-		printk(KERN_WARNING "x25: received unknown %02X with LCI 000\n",
+		pr_warn("received unknown %02X with LCI 000\n",
 		       frametype);
 		break;
 	}
@@ -250,7 +252,7 @@ void x25_link_device_up(struct net_device *dev)
 		return;
 
 	skb_queue_head_init(&nb->queue);
-	setup_timer(&nb->t20timer, x25_t20timer_expiry, (unsigned long)nb);
+	timer_setup(&nb->t20timer, x25_t20timer_expiry, 0);
 
 	dev_hold(dev);
 	nb->dev      = dev;
@@ -264,7 +266,7 @@ void x25_link_device_up(struct net_device *dev)
 				       X25_MASK_PACKET_SIZE |
 				       X25_MASK_WINDOW_SIZE;
 	nb->t20      = sysctl_x25_restart_request_timeout;
-	atomic_set(&nb->refcnt, 1);
+	refcount_set(&nb->refcnt, 1);
 
 	write_lock_bh(&x25_neigh_list_lock);
 	list_add(&nb->node, &x25_neigh_list);

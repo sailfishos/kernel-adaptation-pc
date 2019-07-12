@@ -1,12 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the linux kernel.
 #
 
 # Common support
-obj-y := io.o id.o sram.o time.o irq.o mux.o flash.o serial.o devices.o dma.o
+obj-y := io.o id.o sram-init.o sram.o time.o irq.o mux.o flash.o \
+	 serial.o devices.o dma.o fb.o
 obj-y += clock.o clock_data.o opp_data.o reset.o pm_bus.o timer.o
 
-ifneq ($(CONFIG_SND_OMAP_SOC_MCBSP),)
+ifneq ($(CONFIG_SND_SOC_OMAP_MCBSP),)
 obj-y += mcbsp.o
 endif
 
@@ -18,16 +20,12 @@ obj-$(CONFIG_ARCH_OMAP16XX) += ocpi.o
 # Power Management
 obj-$(CONFIG_PM) += pm.o sleep.o
 
-# DSP
-obj-$(CONFIG_OMAP_MBOX_FWK)	+= mailbox_mach.o
-mailbox_mach-objs		:= mailbox.o
-
 i2c-omap-$(CONFIG_I2C_OMAP)		:= i2c.o
 obj-y					+= $(i2c-omap-m) $(i2c-omap-y)
 
 led-y := leds.o
 
-usb-fs-$(CONFIG_USB)			:= usb.o
+usb-fs-$(CONFIG_USB_SUPPORT)		:= usb.o
 obj-y					+= $(usb-fs-m) $(usb-fs-y)
 
 # Specific board support
@@ -40,7 +38,6 @@ obj-$(CONFIG_MACH_OMAP_FSAMPLE)		+= board-fsample.o board-nand.o
 obj-$(CONFIG_MACH_OMAP_OSK)		+= board-osk.o
 obj-$(CONFIG_MACH_OMAP_H3)		+= board-h3.o board-h3-mmc.o \
 					   board-nand.o
-obj-$(CONFIG_MACH_VOICEBLUE)		+= board-voiceblue.o
 obj-$(CONFIG_MACH_OMAP_PALMTE)		+= board-palmte.o
 obj-$(CONFIG_MACH_OMAP_PALMZ71)		+= board-palmz71.o
 obj-$(CONFIG_MACH_OMAP_PALMTT)		+= board-palmtt.o
@@ -60,14 +57,6 @@ obj-$(CONFIG_ARCH_OMAP730)		+= gpio7xx.o
 obj-$(CONFIG_ARCH_OMAP850)		+= gpio7xx.o
 obj-$(CONFIG_ARCH_OMAP15XX)		+= gpio15xx.o
 obj-$(CONFIG_ARCH_OMAP16XX)		+= gpio16xx.o
-
-# LEDs support
-led-$(CONFIG_MACH_OMAP_H2)		+= leds-h2p2-debug.o
-led-$(CONFIG_MACH_OMAP_H3)		+= leds-h2p2-debug.o
-led-$(CONFIG_MACH_OMAP_INNOVATOR)	+= leds-innovator.o
-led-$(CONFIG_MACH_OMAP_PERSEUS2)	+= leds-h2p2-debug.o
-led-$(CONFIG_MACH_OMAP_OSK)		+= leds-osk.o
-obj-$(CONFIG_LEDS)			+= $(led-y)
 
 ifneq ($(CONFIG_FB_OMAP),)
 obj-y += lcd_dma.o

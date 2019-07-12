@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Author(s)......: Holger Smolinski <Holger.Smolinski@de.ibm.com>
  *		    Horst Hummel <Horst.Hummel@de.ibm.com>
@@ -17,10 +18,10 @@
 #include <linux/fs.h>
 #include <linux/blkpg.h>
 #include <linux/slab.h>
-#include <asm/compat.h>
 #include <asm/ccwdev.h>
+#include <asm/schid.h>
 #include <asm/cmb.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /* This is ugly... */
 #define PRINTK_HEADER "dasd_ioctl:"
@@ -140,14 +141,67 @@ static int dasd_ioctl_resume(struct dasd_block *block)
 }
 
 /*
+ * Abort all failfast I/O on a device.
+ */
+static int dasd_ioctl_abortio(struct dasd_block *block)
+{
+	unsigned long flags;
+	struct dasd_device *base;
+	struct dasd_ccw_req *cqr, *n;
+
+	base = block->base;
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	if (test_and_set_bit(DASD_FLAG_ABORTALL, &base->flags))
+		return 0;
+	DBF_DEV_EVENT(DBF_NOTICE, base, "%s", "abortall flag set");
+
+	spin_lock_irqsave(&block->request_queue_lock, flags);
+	spin_lock(&block->queue_lock);
+	list_for_each_entry_safe(cqr, n, &block->ccw_queue, blocklist) {
+		if (test_bit(DASD_CQR_FLAGS_FAILFAST, &cqr->flags) &&
+		    cqr->callback_data &&
+		    cqr->callback_data != DASD_SLEEPON_START_TAG &&
+		    cqr->callback_data != DASD_SLEEPON_END_TAG) {
+			spin_unlock(&block->queue_lock);
+			blk_abort_request(cqr->callback_data);
+			spin_lock(&block->queue_lock);
+		}
+	}
+	spin_unlock(&block->queue_lock);
+	spin_unlock_irqrestore(&block->request_queue_lock, flags);
+
+	dasd_schedule_block_bh(block);
+	return 0;
+}
+
+/*
+ * Allow I/O on a device
+ */
+static int dasd_ioctl_allowio(struct dasd_block *block)
+{
+	struct dasd_device *base;
+
+	base = block->base;
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+
+	if (test_and_clear_bit(DASD_FLAG_ABORTALL, &base->flags))
+		DBF_DEV_EVENT(DBF_NOTICE, base, "%s", "abortall flag unset");
+
+	return 0;
+}
+
+/*
  * performs formatting of _device_ according to _fdata_
  * Note: The discipline's format_function is assumed to deliver formatting
- * commands to format a single unit of the device. In terms of the ECKD
- * devices this means CCWs are generated to format a single track.
+ * commands to format multiple units of the device. In terms of the ECKD
+ * devices this means CCWs are generated to format multiple tracks.
  */
-static int dasd_format(struct dasd_block *block, struct format_data_t *fdata)
+static int
+dasd_format(struct dasd_block *block, struct format_data_t *fdata)
 {
-	struct dasd_ccw_req *cqr;
 	struct dasd_device *base;
 	int rc;
 
@@ -156,8 +210,8 @@ static int dasd_format(struct dasd_block *block, struct format_data_t *fdata)
 		return -EPERM;
 
 	if (base->state != DASD_STATE_BASIC) {
-		pr_warning("%s: The DASD cannot be formatted while it is "
-			   "enabled\n",  dev_name(&base->cdev->dev));
+		pr_warn("%s: The DASD cannot be formatted while it is enabled\n",
+			dev_name(&base->cdev->dev));
 		return -EBUSY;
 	}
 
@@ -177,22 +231,28 @@ static int dasd_format(struct dasd_block *block, struct format_data_t *fdata)
 		bdput(bdev);
 	}
 
-	while (fdata->start_unit <= fdata->stop_unit) {
-		cqr = base->discipline->format_device(base, fdata);
-		if (IS_ERR(cqr))
-			return PTR_ERR(cqr);
-		rc = dasd_sleep_on_interruptible(cqr);
-		dasd_sfree_request(cqr, cqr->memdev);
-		if (rc) {
-			if (rc != -ERESTARTSYS)
-				pr_err("%s: Formatting unit %d failed with "
-				       "rc=%d\n", dev_name(&base->cdev->dev),
-				       fdata->start_unit, rc);
-			return rc;
-		}
-		fdata->start_unit++;
-	}
-	return 0;
+	rc = base->discipline->format_device(base, fdata, 1);
+	if (rc == -EAGAIN)
+		rc = base->discipline->format_device(base, fdata, 0);
+
+	return rc;
+}
+
+static int dasd_check_format(struct dasd_block *block,
+			     struct format_check_t *cdata)
+{
+	struct dasd_device *base;
+	int rc;
+
+	base = block->base;
+	if (!base->discipline->check_device_format)
+		return -ENOTTY;
+
+	rc = base->discipline->check_device_format(base, cdata, 1);
+	if (rc == -EAGAIN)
+		rc = base->discipline->check_device_format(base, cdata, 0);
+
+	return rc;
 }
 
 /*
@@ -222,14 +282,54 @@ dasd_ioctl_format(struct block_device *bdev, void __user *argp)
 		return -EFAULT;
 	}
 	if (bdev != bdev->bd_contains) {
-		pr_warning("%s: The specified DASD is a partition and cannot "
-			   "be formatted\n",
-			   dev_name(&base->cdev->dev));
+		pr_warn("%s: The specified DASD is a partition and cannot be formatted\n",
+			dev_name(&base->cdev->dev));
 		dasd_put_device(base);
 		return -EINVAL;
 	}
 	rc = dasd_format(base->block, &fdata);
 	dasd_put_device(base);
+
+	return rc;
+}
+
+/*
+ * Check device format
+ */
+static int dasd_ioctl_check_format(struct block_device *bdev, void __user *argp)
+{
+	struct format_check_t cdata;
+	struct dasd_device *base;
+	int rc = 0;
+
+	if (!argp)
+		return -EINVAL;
+
+	base = dasd_device_from_gendisk(bdev->bd_disk);
+	if (!base)
+		return -ENODEV;
+	if (bdev != bdev->bd_contains) {
+		pr_warn("%s: The specified DASD is a partition and cannot be checked\n",
+			dev_name(&base->cdev->dev));
+		rc = -EINVAL;
+		goto out_err;
+	}
+
+	if (copy_from_user(&cdata, argp, sizeof(cdata))) {
+		rc = -EFAULT;
+		goto out_err;
+	}
+
+	rc = dasd_check_format(base->block, &cdata);
+	if (rc)
+		goto out_err;
+
+	if (copy_to_user(argp, &cdata, sizeof(cdata)))
+		rc = -EFAULT;
+
+out_err:
+	dasd_put_device(base);
+
 	return rc;
 }
 
@@ -292,12 +392,12 @@ out:
 #else
 static int dasd_ioctl_reset_profile(struct dasd_block *block)
 {
-	return -ENOSYS;
+	return -ENOTTY;
 }
 
 static int dasd_ioctl_read_profile(struct dasd_block *block, void __user *argp)
 {
-	return -ENOSYS;
+	return -ENOTTY;
 }
 #endif
 
@@ -308,11 +408,13 @@ static int dasd_ioctl_information(struct dasd_block *block,
 				  unsigned int cmd, void __user *argp)
 {
 	struct dasd_information2_t *dasd_info;
-	unsigned long flags;
-	int rc;
+	struct subchannel_id sch_id;
+	struct ccw_dev_id dev_id;
 	struct dasd_device *base;
 	struct ccw_device *cdev;
-	struct ccw_dev_id dev_id;
+	struct list_head *l;
+	unsigned long flags;
+	int rc;
 
 	base = block->base;
 	if (!base->discipline || !base->discipline->fill_info)
@@ -330,9 +432,10 @@ static int dasd_ioctl_information(struct dasd_block *block,
 
 	cdev = base->cdev;
 	ccw_device_get_id(cdev, &dev_id);
+	ccw_device_get_schid(cdev, &sch_id);
 
 	dasd_info->devno = dev_id.devno;
-	dasd_info->schid = _ccw_device_get_subchannel_number(base->cdev);
+	dasd_info->schid = sch_id.sch_no;
 	dasd_info->cu_type = cdev->id.cu_type;
 	dasd_info->cu_model = cdev->id.cu_model;
 	dasd_info->dev_type = cdev->id.dev_type;
@@ -360,23 +463,10 @@ static int dasd_ioctl_information(struct dasd_block *block,
 
 	memcpy(dasd_info->type, base->discipline->name, 4);
 
-	if (block->request_queue->request_fn) {
-		struct list_head *l;
-#ifdef DASD_EXTENDED_PROFILING
-		{
-			struct list_head *l;
-			spin_lock_irqsave(&block->lock, flags);
-			list_for_each(l, &block->request_queue->queue_head)
-				dasd_info->req_queue_len++;
-			spin_unlock_irqrestore(&block->lock, flags);
-		}
-#endif				/* DASD_EXTENDED_PROFILING */
-		spin_lock_irqsave(get_ccwdev_lock(base->cdev), flags);
-		list_for_each(l, &base->ccw_queue)
-			dasd_info->chanq_len++;
-		spin_unlock_irqrestore(get_ccwdev_lock(base->cdev),
-				       flags);
-	}
+	spin_lock_irqsave(&block->queue_lock, flags);
+	list_for_each(l, &base->ccw_queue)
+		dasd_info->chanq_len++;
+	spin_unlock_irqrestore(&block->queue_lock, flags);
 
 	rc = 0;
 	if (copy_to_user(argp, dasd_info,
@@ -466,8 +556,17 @@ int dasd_ioctl(struct block_device *bdev, fmode_t mode,
 	case BIODASDRESUME:
 		rc = dasd_ioctl_resume(block);
 		break;
+	case BIODASDABORTIO:
+		rc = dasd_ioctl_abortio(block);
+		break;
+	case BIODASDALLOWIO:
+		rc = dasd_ioctl_allowio(block);
+		break;
 	case BIODASDFMT:
 		rc = dasd_ioctl_format(bdev, argp);
+		break;
+	case BIODASDCHECKFMT:
+		rc = dasd_ioctl_check_format(bdev, argp);
 		break;
 	case BIODASDINFO:
 		rc = dasd_ioctl_information(block, cmd, argp);

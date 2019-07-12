@@ -492,7 +492,7 @@ static void sci_controller_process_completions(struct isci_host *ihost)
 	u32 event_cycle;
 
 	dev_dbg(&ihost->pdev->dev,
-		"%s: completion queue begining get:0x%08x\n",
+		"%s: completion queue beginning get:0x%08x\n",
 		__func__,
 		ihost->completion_queue_get);
 
@@ -958,9 +958,9 @@ static enum sci_status sci_controller_start_next_phy(struct isci_host *ihost)
 	return status;
 }
 
-static void phy_startup_timeout(unsigned long data)
+static void phy_startup_timeout(struct timer_list *t)
 {
-	struct sci_timer *tmr = (struct sci_timer *)data;
+	struct sci_timer *tmr = from_timer(tmr, t, timer);
 	struct isci_host *ihost = container_of(tmr, typeof(*ihost), phy_timer);
 	unsigned long flags;
 	enum sci_status status;
@@ -1044,7 +1044,7 @@ static enum sci_status sci_controller_start(struct isci_host *ihost,
 	return SCI_SUCCESS;
 }
 
-void isci_host_scan_start(struct Scsi_Host *shost)
+void isci_host_start(struct Scsi_Host *shost)
 {
 	struct isci_host *ihost = SHOST_TO_SAS_HA(shost)->lldd_ha;
 	unsigned long tmo = sci_controller_get_suggested_start_timeout(ihost);
@@ -1122,10 +1122,16 @@ void isci_host_completion_routine(unsigned long data)
 	sci_controller_completion_handler(ihost);
 	spin_unlock_irq(&ihost->scic_lock);
 
-	/* the coalesence timeout doubles at each encoding step, so
+	/*
+	 * we subtract SCI_MAX_PORTS to account for the number of dummy TCs
+	 * issued for hardware issue workaround
+	 */
+	active = isci_tci_active(ihost) - SCI_MAX_PORTS;
+
+	/*
+	 * the coalesence timeout doubles at each encoding step, so
 	 * update it based on the ilog2 value of the outstanding requests
 	 */
-	active = isci_tci_active(ihost);
 	writel(SMU_ICC_GEN_VAL(NUMBER, active) |
 	       SMU_ICC_GEN_VAL(TIMER, ISCI_COALESCE_BASE + ilog2(active)),
 	       &ihost->smu_registers->interrupt_coalesce_control);
@@ -1586,9 +1592,9 @@ static const struct sci_base_state sci_controller_state_table[] = {
 	[SCIC_FAILED] = {}
 };
 
-static void controller_timeout(unsigned long data)
+static void controller_timeout(struct timer_list *t)
 {
-	struct sci_timer *tmr = (struct sci_timer *)data;
+	struct sci_timer *tmr = from_timer(tmr, t, timer);
 	struct isci_host *ihost = container_of(tmr, typeof(*ihost), timer);
 	struct sci_base_state_machine *sm = &ihost->sm;
 	unsigned long flags;
@@ -1731,9 +1737,9 @@ static u8 max_spin_up(struct isci_host *ihost)
 			     MAX_CONCURRENT_DEVICE_SPIN_UP_COUNT);
 }
 
-static void power_control_timeout(unsigned long data)
+static void power_control_timeout(struct timer_list *t)
 {
-	struct sci_timer *tmr = (struct sci_timer *)data;
+	struct sci_timer *tmr = from_timer(tmr, t, timer);
 	struct isci_host *ihost = container_of(tmr, typeof(*ihost), power_control.timer);
 	struct isci_phy *iphy;
 	unsigned long flags;
@@ -1975,7 +1981,7 @@ static void sci_controller_afe_initialization(struct isci_host *ihost)
 	}
 
 	for (phy_id = 0; phy_id < SCI_MAX_PHYS; phy_id++) {
-		struct scu_afe_transceiver *xcvr = &afe->scu_afe_xcvr[phy_id];
+		struct scu_afe_transceiver __iomem *xcvr = &afe->scu_afe_xcvr[phy_id];
 		const struct sci_phy_oem_params *oem_phy = &oem->phys[phy_id];
 		int cable_length_long =
 			is_long_cable(phy_id, cable_selection_mask);
@@ -2711,9 +2717,9 @@ enum sci_status sci_controller_continue_io(struct isci_request *ireq)
  *    the task management request.
  * @task_request: the handle to the task request object to start.
  */
-enum sci_task_status sci_controller_start_task(struct isci_host *ihost,
-					       struct isci_remote_device *idev,
-					       struct isci_request *ireq)
+enum sci_status sci_controller_start_task(struct isci_host *ihost,
+					  struct isci_remote_device *idev,
+					  struct isci_request *ireq)
 {
 	enum sci_status status;
 
@@ -2722,7 +2728,7 @@ enum sci_task_status sci_controller_start_task(struct isci_host *ihost,
 			 "%s: SCIC Controller starting task from invalid "
 			 "state\n",
 			 __func__);
-		return SCI_TASK_FAILURE_INVALID_STATE;
+		return SCI_FAILURE_INVALID_STATE;
 	}
 
 	status = sci_remote_device_start_task(ihost, idev, ireq);
@@ -2760,7 +2766,7 @@ static int sci_write_gpio_tx_gp(struct isci_host *ihost, u8 reg_index, u8 reg_co
 		int i;
 
 		for (i = 0; i < 3; i++) {
-			int bit = (i << 2) + 2;
+			int bit;
 
 			bit = try_test_sas_gpio_gp_bit(to_sas_gpio_od(d, i),
 						       write_data, reg_index,

@@ -12,6 +12,7 @@
  * Copyright(c) 2002-2010 Exar Corp.
  ******************************************************************************/
 #include <linux/etherdevice.h>
+#include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/prefetch.h>
 
 #include "vxge-traffic.h"
@@ -1004,8 +1005,6 @@ void vxge_hw_device_clear_tx_rx(struct __vxge_hw_device *hldev)
 static enum vxge_hw_status
 vxge_hw_channel_dtr_alloc(struct __vxge_hw_channel *channel, void **dtrh)
 {
-	void **tmp_arr;
-
 	if (channel->reserve_ptr - channel->reserve_top > 0) {
 _alloc_after_swap:
 		*dtrh =	channel->reserve_arr[--channel->reserve_ptr];
@@ -1020,10 +1019,7 @@ _alloc_after_swap:
 	 * i.e.	no additional lock need	to be done when	we free	a resource */
 
 	if (channel->length - channel->free_ptr > 0) {
-
-		tmp_arr	= channel->reserve_arr;
-		channel->reserve_arr = channel->free_arr;
-		channel->free_arr = tmp_arr;
+		swap(channel->reserve_arr, channel->free_arr);
 		channel->reserve_ptr = channel->length;
 		channel->reserve_top = channel->free_ptr;
 		channel->free_ptr = channel->length;
@@ -1214,9 +1210,6 @@ void vxge_hw_ring_rxd_pre_post(struct __vxge_hw_ring *ring, void *rxdh)
 void vxge_hw_ring_rxd_post_post(struct __vxge_hw_ring *ring, void *rxdh)
 {
 	struct vxge_hw_ring_rxd_1 *rxdp = (struct vxge_hw_ring_rxd_1 *)rxdh;
-	struct __vxge_hw_channel *channel;
-
-	channel = &ring->channel;
 
 	rxdp->control_0	= VXGE_HW_RING_RXD_LIST_OWN_ADAPTER;
 
@@ -1364,10 +1357,7 @@ exit:
 enum vxge_hw_status vxge_hw_ring_handle_tcode(
 	struct __vxge_hw_ring *ring, void *rxdh, u8 t_code)
 {
-	struct __vxge_hw_channel *channel;
 	enum vxge_hw_status status = VXGE_HW_OK;
-
-	channel = &ring->channel;
 
 	/* If the t_code is not supported and if the
 	 * t_code is other than 0x5 (unparseable packet
@@ -1404,10 +1394,6 @@ exit:
 static void __vxge_hw_non_offload_db_post(struct __vxge_hw_fifo *fifo,
 	u64 txdl_ptr, u32 num_txds, u32 no_snoop)
 {
-	struct __vxge_hw_channel *channel;
-
-	channel = &fifo->channel;
-
 	writeq(VXGE_HW_NODBW_TYPE(VXGE_HW_NODBW_TYPE_NODBW) |
 		VXGE_HW_NODBW_LAST_TXD_NUMBER(num_txds) |
 		VXGE_HW_NODBW_GET_NO_SNOOP(no_snoop),
@@ -1511,9 +1497,6 @@ void vxge_hw_fifo_txdl_buffer_set(struct __vxge_hw_fifo *fifo,
 {
 	struct __vxge_hw_fifo_txdl_priv *txdl_priv;
 	struct vxge_hw_fifo_txd *txdp, *txdp_last;
-	struct __vxge_hw_channel *channel;
-
-	channel = &fifo->channel;
 
 	txdl_priv = __vxge_hw_fifo_txdl_priv(fifo, txdlh);
 	txdp = (struct vxge_hw_fifo_txd *)txdlh  +  txdl_priv->frags;
@@ -1559,9 +1542,6 @@ void vxge_hw_fifo_txdl_post(struct __vxge_hw_fifo *fifo, void *txdlh)
 	struct __vxge_hw_fifo_txdl_priv *txdl_priv;
 	struct vxge_hw_fifo_txd *txdp_last;
 	struct vxge_hw_fifo_txd *txdp_first;
-	struct __vxge_hw_channel *channel;
-
-	channel = &fifo->channel;
 
 	txdl_priv = __vxge_hw_fifo_txdl_priv(fifo, txdlh);
 	txdp_first = txdlh;
@@ -1677,10 +1657,7 @@ enum vxge_hw_status vxge_hw_fifo_handle_tcode(struct __vxge_hw_fifo *fifo,
 					      void *txdlh,
 					      enum vxge_hw_fifo_tcode t_code)
 {
-	struct __vxge_hw_channel *channel;
-
 	enum vxge_hw_status status = VXGE_HW_OK;
-	channel = &fifo->channel;
 
 	if (((t_code & 0x7) < 0) || ((t_code & 0x7) > 0x4)) {
 		status = VXGE_HW_ERR_INVALID_TCODE;
@@ -1718,16 +1695,9 @@ exit:
  */
 void vxge_hw_fifo_txdl_free(struct __vxge_hw_fifo *fifo, void *txdlh)
 {
-	struct __vxge_hw_fifo_txdl_priv *txdl_priv;
-	u32 max_frags;
 	struct __vxge_hw_channel *channel;
 
 	channel = &fifo->channel;
-
-	txdl_priv = __vxge_hw_fifo_txdl_priv(fifo,
-			(struct vxge_hw_fifo_txd *)txdlh);
-
-	max_frags = fifo->config->max_frags;
 
 	vxge_hw_channel_dtr_free(channel, txdlh);
 }
@@ -1956,8 +1926,7 @@ exit:
  * @vid: vlan id to be added for this vpath into the list
  *
  * Adds the given vlan id into the list for this  vpath.
- * see also: vxge_hw_vpath_vid_delete, vxge_hw_vpath_vid_get and
- * vxge_hw_vpath_vid_get_next
+ * see also: vxge_hw_vpath_vid_delete
  *
  */
 enum vxge_hw_status
@@ -1979,45 +1948,13 @@ exit:
 }
 
 /**
- * vxge_hw_vpath_vid_get - Get the first vid entry for this vpath
- *               from vlan id table.
- * @vp: Vpath handle.
- * @vid: Buffer to return vlan id
- *
- * Returns the first vlan id in the list for this vpath.
- * see also: vxge_hw_vpath_vid_get_next
- *
- */
-enum vxge_hw_status
-vxge_hw_vpath_vid_get(struct __vxge_hw_vpath_handle *vp, u64 *vid)
-{
-	u64 data;
-	enum vxge_hw_status status = VXGE_HW_OK;
-
-	if (vp == NULL) {
-		status = VXGE_HW_ERR_INVALID_HANDLE;
-		goto exit;
-	}
-
-	status = __vxge_hw_vpath_rts_table_get(vp,
-			VXGE_HW_RTS_ACCESS_STEER_CTRL_ACTION_LIST_FIRST_ENTRY,
-			VXGE_HW_RTS_ACCESS_STEER_CTRL_DATA_STRUCT_SEL_VID,
-			0, vid, &data);
-
-	*vid = VXGE_HW_RTS_ACCESS_STEER_DATA0_GET_VLAN_ID(*vid);
-exit:
-	return status;
-}
-
-/**
  * vxge_hw_vpath_vid_delete - Delete the vlan id entry for this vpath
  *               to vlan id table.
  * @vp: Vpath handle.
  * @vid: vlan id to be added for this vpath into the list
  *
  * Adds the given vlan id into the list for this  vpath.
- * see also: vxge_hw_vpath_vid_add, vxge_hw_vpath_vid_get and
- * vxge_hw_vpath_vid_get_next
+ * see also: vxge_hw_vpath_vid_add
  *
  */
 enum vxge_hw_status
@@ -2318,7 +2255,7 @@ void vxge_hw_vpath_msix_clear(struct __vxge_hw_vpath_handle *vp, int msix_id)
 {
 	struct __vxge_hw_device *hldev = vp->vpath->hldev;
 
-	if ((hldev->config.intr_mode == VXGE_HW_INTR_MODE_MSIX_ONE_SHOT))
+	if (hldev->config.intr_mode == VXGE_HW_INTR_MODE_MSIX_ONE_SHOT)
 		__vxge_hw_pio_mem_write32_upper(
 			(u32) vxge_bVALn(vxge_mBIT((msix_id >> 2)), 0, 32),
 			&hldev->common_reg->clr_msix_one_shot_vec[msix_id % 4]);

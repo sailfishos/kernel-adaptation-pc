@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * USB Host Controller Driver for IMX21
  *
@@ -5,20 +6,6 @@
  * Copyright (C) 2009 Martin Fuzzey
  * Originally written by Jay Monkman <jtm@lopingdog.com>
  * Ported to 2.6.30, debugged and enhanced by Martin Fuzzey
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 
@@ -58,8 +45,13 @@
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include <linux/dma-mapping.h>
+#include <linux/module.h>
 
 #include "imx21-hcd.h"
+
+#ifdef CONFIG_DYNAMIC_DEBUG
+#define DEBUG
+#endif
 
 #ifdef DEBUG
 #define DEBUG_LOG_FRAME(imx21, etd, event) \
@@ -749,8 +741,8 @@ static int imx21_hc_urb_enqueue_isoc(struct usb_hcd *hcd,
 	if (urb_priv == NULL)
 		return -ENOMEM;
 
-	urb_priv->isoc_td = kzalloc(
-		sizeof(struct td) * urb->number_of_packets, mem_flags);
+	urb_priv->isoc_td = kcalloc(urb->number_of_packets, sizeof(struct td),
+				    mem_flags);
 	if (urb_priv->isoc_td == NULL) {
 		ret = -ENOMEM;
 		goto alloc_td_failed;
@@ -808,26 +800,36 @@ static int imx21_hc_urb_enqueue_isoc(struct usb_hcd *hcd,
 
 	/* calculate frame */
 	cur_frame = imx21_hc_get_frame(hcd);
-	if (urb->transfer_flags & URB_ISO_ASAP) {
-		if (list_empty(&ep_priv->td_list))
-			urb->start_frame = cur_frame + 5;
-		else
-			urb->start_frame = list_entry(
-				ep_priv->td_list.prev,
-				struct td, list)->frame + urb->interval;
-	}
-	urb->start_frame = wrap_frame(urb->start_frame);
-	if (frame_after(cur_frame, urb->start_frame)) {
-		dev_dbg(imx21->dev,
-			"enqueue: adjusting iso start %d (cur=%d) asap=%d\n",
-			urb->start_frame, cur_frame,
-			(urb->transfer_flags & URB_ISO_ASAP) != 0);
-		urb->start_frame = wrap_frame(cur_frame + 1);
+	i = 0;
+	if (list_empty(&ep_priv->td_list)) {
+		urb->start_frame = wrap_frame(cur_frame + 5);
+	} else {
+		urb->start_frame = wrap_frame(list_entry(ep_priv->td_list.prev,
+				struct td, list)->frame + urb->interval);
+
+		if (frame_after(cur_frame, urb->start_frame)) {
+			dev_dbg(imx21->dev,
+				"enqueue: adjusting iso start %d (cur=%d) asap=%d\n",
+				urb->start_frame, cur_frame,
+				(urb->transfer_flags & URB_ISO_ASAP) != 0);
+			i = DIV_ROUND_UP(wrap_frame(
+					cur_frame - urb->start_frame),
+					urb->interval);
+
+			/* Treat underruns as if URB_ISO_ASAP was set */
+			if ((urb->transfer_flags & URB_ISO_ASAP) ||
+					i >= urb->number_of_packets) {
+				urb->start_frame = wrap_frame(urb->start_frame
+						+ i * urb->interval);
+				i = 0;
+			}
+		}
 	}
 
 	/* set up transfers */
+	urb_priv->isoc_remaining = urb->number_of_packets - i;
 	td = urb_priv->isoc_td;
-	for (i = 0; i < urb->number_of_packets; i++, td++) {
+	for (; i < urb->number_of_packets; i++, td++) {
 		unsigned int offset = urb->iso_frame_desc[i].offset;
 		td->ep = ep;
 		td->urb = urb;
@@ -839,7 +841,6 @@ static int imx21_hc_urb_enqueue_isoc(struct usb_hcd *hcd,
 		list_add_tail(&td->list, &ep_priv->td_list);
 	}
 
-	urb_priv->isoc_remaining = urb->number_of_packets;
 	dev_vdbg(imx21->dev, "setup %d packets for iso frame %d->%d\n",
 		urb->number_of_packets, urb->start_frame, td->frame);
 
@@ -1160,11 +1161,11 @@ static int imx21_hc_urb_enqueue(struct usb_hcd *hcd,
 
 	dev_vdbg(imx21->dev,
 		"enqueue urb=%p ep=%p len=%d "
-		"buffer=%p dma=%08X setupBuf=%p setupDma=%08X\n",
+		"buffer=%p dma=%pad setupBuf=%p setupDma=%pad\n",
 		urb, ep,
 		urb->transfer_buffer_length,
-		urb->transfer_buffer, urb->transfer_dma,
-		urb->setup_packet, urb->setup_dma);
+		urb->transfer_buffer, &urb->transfer_dma,
+		urb->setup_packet, &urb->setup_dma);
 
 	if (usb_pipeisoc(urb->pipe))
 		return imx21_hc_urb_enqueue_isoc(hcd, ep, urb, mem_flags);
@@ -1460,7 +1461,7 @@ static int get_hub_descriptor(struct usb_hcd *hcd,
 			      struct usb_hub_descriptor *desc)
 {
 	struct imx21 *imx21 = hcd_to_imx21(hcd);
-	desc->bDescriptorType = 0x29;	/* HUB descriptor */
+	desc->bDescriptorType = USB_DT_HUB; /* HUB descriptor */
 	desc->bHubContrCurrent = 0;
 
 	desc->bNbrPorts = readl(imx21->regs + USBH_ROOTHUBA)
@@ -1468,9 +1469,8 @@ static int get_hub_descriptor(struct usb_hcd *hcd,
 	desc->bDescLength = 9;
 	desc->bPwrOn2PwrGood = 0;
 	desc->wHubCharacteristics = (__force __u16) cpu_to_le16(
-		0x0002 |	/* No power switching */
-		0x0010 |	/* No over current protection */
-		0);
+		HUB_CHAR_NO_LPSM |	/* No power switching */
+		HUB_CHAR_NO_OCPM);	/* No over current protection */
 
 	desc->u.hs.DeviceRemovable[0] = 1 << 1;
 	desc->u.hs.DeviceRemovable[1] = ~0;
@@ -1680,7 +1680,7 @@ static int imx21_hc_reset(struct usb_hcd *hcd)
 	return 0;
 }
 
-static int __devinit imx21_hc_start(struct usb_hcd *hcd)
+static int imx21_hc_start(struct usb_hcd *hcd)
 {
 	struct imx21 *imx21 = hcd_to_imx21(hcd);
 	unsigned long flags;
@@ -1766,7 +1766,7 @@ static void imx21_hc_stop(struct usb_hcd *hcd)
 /* Driver glue		 			*/
 /* =========================================== */
 
-static struct hc_driver imx21_hc_driver = {
+static const struct hc_driver imx21_hc_driver = {
 	.description = hcd_name,
 	.product_desc = "IMX21 USB Host Controller",
 	.hcd_priv_size = sizeof(struct imx21),
@@ -1836,8 +1836,10 @@ static int imx21_probe(struct platform_device *pdev)
 	if (!res)
 		return -ENODEV;
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return -ENXIO;
+	if (irq < 0) {
+		dev_err(&pdev->dev, "Failed to get IRQ: %d\n", irq);
+		return irq;
+	}
 
 	hcd = usb_create_hcd(&imx21_hc_driver,
 		&pdev->dev, dev_name(&pdev->dev));
@@ -1850,7 +1852,7 @@ static int imx21_probe(struct platform_device *pdev)
 	imx21 = hcd_to_imx21(hcd);
 	imx21->hcd = hcd;
 	imx21->dev = &pdev->dev;
-	imx21->pdata = pdev->dev.platform_data;
+	imx21->pdata = dev_get_platdata(&pdev->dev);
 	if (!imx21->pdata)
 		imx21->pdata = &default_pdata;
 
@@ -1896,6 +1898,7 @@ static int imx21_probe(struct platform_device *pdev)
 		dev_err(imx21->dev, "usb_add_hcd() returned %d\n", ret);
 		goto failed_add_hcd;
 	}
+	device_wakeup_enable(hcd->self.controller);
 
 	return 0;
 
@@ -1916,7 +1919,7 @@ failed_request_mem:
 
 static struct platform_driver imx21_hcd_driver = {
 	.driver = {
-		   .name = (char *)hcd_name,
+		   .name = hcd_name,
 		   },
 	.probe = imx21_probe,
 	.remove = imx21_remove,

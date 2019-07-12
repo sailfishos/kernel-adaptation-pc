@@ -1,16 +1,11 @@
-/* linux/arch/arm/mach-s3c2410/usb-simtec.c
- *
- * Copyright 2004-2005 Simtec Electronics
- *   Ben Dooks <ben@simtec.co.uk>
- *
- * http://www.simtec.co.uk/products/EB2410ITX/
- *
- * Simtec BAST and Thorcom VR1000 USB port support functions
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright 2004-2005 Simtec Electronics
+//   Ben Dooks <ben@simtec.co.uk>
+//
+// http://www.simtec.co.uk/products/EB2410ITX/
+//
+// Simtec BAST and Thorcom VR1000 USB port support functions
 
 #define DEBUG
 
@@ -28,15 +23,14 @@
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 
-#include <mach/bast-map.h>
-#include <mach/bast-irq.h>
-
 #include <mach/hardware.h>
+#include <mach/gpio-samsung.h>
 #include <asm/irq.h>
 
-#include <plat/usb-control.h>
+#include <linux/platform_data/usb-ohci-s3c2410.h>
 #include <plat/devs.h>
 
+#include "bast.h"
 #include "simtec.h"
 
 /* control power and monitor over-current events on various Simtec
@@ -79,15 +73,14 @@ static void usb_simtec_enableoc(struct s3c2410_hcd_info *info, int on)
 	int ret;
 
 	if (on) {
-		ret = request_irq(IRQ_USBOC, usb_simtec_ocirq,
-				  IRQF_DISABLED | IRQF_TRIGGER_RISING |
-				   IRQF_TRIGGER_FALLING,
+		ret = request_irq(BAST_IRQ_USBOC, usb_simtec_ocirq,
+				  IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
 				  "USB Over-current", info);
 		if (ret != 0) {
 			printk(KERN_ERR "failed to request usb oc irq\n");
 		}
 	} else {
-		free_irq(IRQ_USBOC, info);
+		free_irq(BAST_IRQ_USBOC, info);
 	}
 }
 
@@ -104,7 +97,7 @@ static struct s3c2410_hcd_info usb_simtec_info __initdata = {
 };
 
 
-int usb_simtec_init(void)
+int __init usb_simtec_init(void)
 {
 	int ret;
 

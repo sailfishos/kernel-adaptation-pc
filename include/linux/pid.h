@@ -1,14 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_PID_H
 #define _LINUX_PID_H
 
-#include <linux/rcupdate.h>
+#include <linux/rculist.h>
 
 enum pid_type
 {
 	PIDTYPE_PID,
+	PIDTYPE_TGID,
 	PIDTYPE_PGID,
 	PIDTYPE_SID,
-	PIDTYPE_MAX
+	PIDTYPE_MAX,
 };
 
 /*
@@ -48,10 +50,8 @@ enum pid_type
  */
 
 struct upid {
-	/* Try to keep pid_chain in the same cacheline as nr for find_vpid */
 	int nr;
 	struct pid_namespace *ns;
-	struct hlist_node pid_chain;
 };
 
 struct pid
@@ -65,12 +65,6 @@ struct pid
 };
 
 extern struct pid init_struct_pid;
-
-struct pid_link
-{
-	struct hlist_node node;
-	struct pid *pid;
-};
 
 static inline struct pid *get_pid(struct pid *pid)
 {
@@ -86,11 +80,9 @@ extern struct task_struct *get_pid_task(struct pid *pid, enum pid_type);
 extern struct pid *get_task_pid(struct task_struct *task, enum pid_type type);
 
 /*
- * attach_pid() and detach_pid() must be called with the tasklist_lock
- * write-held.
+ * these helpers must be called with the tasklist_lock write-held.
  */
-extern void attach_pid(struct task_struct *task, enum pid_type type,
-			struct pid *pid);
+extern void attach_pid(struct task_struct *task, enum pid_type);
 extern void detach_pid(struct task_struct *task, enum pid_type);
 extern void change_pid(struct task_struct *task, enum pid_type,
 			struct pid *pid);
@@ -121,6 +113,7 @@ int next_pidmap(struct pid_namespace *pid_ns, unsigned int last);
 
 extern struct pid *alloc_pid(struct pid_namespace *ns);
 extern void free_pid(struct pid *pid);
+extern void disable_pid_allocation(struct pid_namespace *ns);
 
 /*
  * ns_of_pid() returns the pid namespace in which the specified pid was
@@ -175,10 +168,9 @@ pid_t pid_vnr(struct pid *pid);
 
 #define do_each_pid_task(pid, type, task)				\
 	do {								\
-		struct hlist_node *pos___;				\
 		if ((pid) != NULL)					\
-			hlist_for_each_entry_rcu((task), pos___,	\
-				&(pid)->tasks[type], pids[type].node) {
+			hlist_for_each_entry_rcu((task),		\
+				&(pid)->tasks[type], pid_links[type]) {
 
 			/*
 			 * Both old and new leaders may be attached to
@@ -193,10 +185,10 @@ pid_t pid_vnr(struct pid *pid);
 #define do_each_pid_thread(pid, type, task)				\
 	do_each_pid_task(pid, type, task) {				\
 		struct task_struct *tg___ = task;			\
-		do {
+		for_each_thread(tg___, task) {
 
 #define while_each_pid_thread(pid, type, task)				\
-		} while_each_thread(tg___, task);			\
+		}							\
 		task = tg___;						\
 	} while_each_pid_task(pid, type, task)
 #endif /* _LINUX_PID_H */

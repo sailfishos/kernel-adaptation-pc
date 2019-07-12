@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * OHCI HCD (Host Controller Driver) for USB.
  *
@@ -13,9 +14,7 @@
  * This file is licenced under the GPL.
  */
 
-#include <mach/hardware.h>
 #include <asm/mach-types.h>
-#include <mach/assabet.h>
 #include <asm/hardware/sa1111.h>
 
 #ifndef CONFIG_SA1111
@@ -44,7 +43,7 @@
 #if 0
 static void dump_hci_status(struct usb_hcd *hcd, const char *label)
 {
-	unsigned long status = sa1111_readl(hcd->regs + USB_STATUS);
+	unsigned long status = readl_relaxed(hcd->regs + USB_STATUS);
 
 	printk(KERN_DEBUG "%s USB_STATUS = { %s%s%s%s%s}\n", label,
 	     ((status & USB_STATUS_IRQHCIRMTWKUP) ? "IRQHCIRMTWKUP " : ""),
@@ -63,7 +62,7 @@ static int ohci_sa1111_reset(struct usb_hcd *hcd)
 	return ohci_init(ohci);
 }
 
-static int __devinit ohci_sa1111_start(struct usb_hcd *hcd)
+static int ohci_sa1111_start(struct usb_hcd *hcd)
 {
 	struct ohci_hcd	*ohci = hcd_to_ohci(hcd);
 	int ret;
@@ -127,7 +126,7 @@ static int sa1111_start_hc(struct sa1111_dev *dev)
 	dev_dbg(&dev->dev, "starting SA-1111 OHCI USB Controller\n");
 
 	if (machine_is_xp860() ||
-	    machine_has_neponset() ||
+	    machine_is_assabet() ||
 	    machine_is_pfs168() ||
 	    machine_is_badge4())
 		usb_rst = USB_RESET_PWRSENSELOW | USB_RESET_PWRCTRLLOW;
@@ -136,7 +135,7 @@ static int sa1111_start_hc(struct sa1111_dev *dev)
 	 * Configure the power sense and control lines.  Place the USB
 	 * host controller in reset.
 	 */
-	sa1111_writel(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
+	writel_relaxed(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
 		      dev->mapbase + USB_RESET);
 
 	/*
@@ -146,7 +145,7 @@ static int sa1111_start_hc(struct sa1111_dev *dev)
 	ret = sa1111_enable_device(dev);
 	if (ret == 0) {
 		udelay(11);
-		sa1111_writel(usb_rst, dev->mapbase + USB_RESET);
+		writel_relaxed(usb_rst, dev->mapbase + USB_RESET);
 	}
 
 	return ret;
@@ -161,8 +160,8 @@ static void sa1111_stop_hc(struct sa1111_dev *dev)
 	/*
 	 * Put the USB host controller into reset.
 	 */
-	usb_rst = sa1111_readl(dev->mapbase + USB_RESET);
-	sa1111_writel(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
+	usb_rst = readl_relaxed(dev->mapbase + USB_RESET);
+	writel_relaxed(usb_rst | USB_RESET_FORCEIFRESET | USB_RESET_FORCEHCRESET,
 		      dev->mapbase + USB_RESET);
 
 	/*
@@ -180,10 +179,16 @@ static void sa1111_stop_hc(struct sa1111_dev *dev)
 static int ohci_hcd_sa1111_probe(struct sa1111_dev *dev)
 {
 	struct usb_hcd *hcd;
-	int ret;
+	int ret, irq;
 
 	if (usb_disabled())
 		return -ENODEV;
+
+	/*
+	 * We don't call dma_set_mask_and_coherent() here because the
+	 * DMA mask has already been appropraitely setup by the core
+	 * SA-1111 bus code (which includes bug workarounds.)
+	 */
 
 	hcd = usb_create_hcd(&ohci_sa1111_hc_driver, &dev->dev, "sa1111");
 	if (!hcd)
@@ -191,6 +196,12 @@ static int ohci_hcd_sa1111_probe(struct sa1111_dev *dev)
 
 	hcd->rsrc_start = dev->res.start;
 	hcd->rsrc_len = resource_size(&dev->res);
+
+	irq = sa1111_get_irq(dev, 1);
+	if (irq <= 0) {
+		ret = irq ? : -ENXIO;
+		goto err1;
+	}
 
 	if (!request_mem_region(hcd->rsrc_start, hcd->rsrc_len, hcd_name)) {
 		dev_dbg(&dev->dev, "request_mem_region failed\n");
@@ -204,9 +215,11 @@ static int ohci_hcd_sa1111_probe(struct sa1111_dev *dev)
 	if (ret)
 		goto err2;
 
-	ret = usb_add_hcd(hcd, dev->irq[1], 0);
-	if (ret == 0)
+	ret = usb_add_hcd(hcd, irq, 0);
+	if (ret == 0) {
+		device_wakeup_enable(hcd->self.controller);
 		return ret;
+	}
 
 	sa1111_stop_hc(dev);
  err2:
@@ -235,8 +248,9 @@ static int ohci_hcd_sa1111_remove(struct sa1111_dev *dev)
 	return 0;
 }
 
-static void ohci_hcd_sa1111_shutdown(struct sa1111_dev *dev)
+static void ohci_hcd_sa1111_shutdown(struct device *_dev)
 {
+	struct sa1111_dev *dev = to_sa1111_device(_dev);
 	struct usb_hcd *hcd = sa1111_get_drvdata(dev);
 
 	if (test_bit(HCD_FLAG_HW_ACCESSIBLE, &hcd->flags)) {
@@ -249,9 +263,9 @@ static struct sa1111_driver ohci_hcd_sa1111_driver = {
 	.drv = {
 		.name	= "sa1111-ohci",
 		.owner	= THIS_MODULE,
+		.shutdown = ohci_hcd_sa1111_shutdown,
 	},
 	.devid		= SA1111_DEVID_USB,
 	.probe		= ohci_hcd_sa1111_probe,
 	.remove		= ohci_hcd_sa1111_remove,
-	.shutdown	= ohci_hcd_sa1111_shutdown,
 };

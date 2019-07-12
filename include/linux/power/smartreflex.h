@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * OMAP Smartreflex Defines and Routines
  *
@@ -11,10 +12,6 @@
  *
  * Copyright (C) 2007 Texas Instruments, Inc.
  * Lesly A M <x0080970@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __POWER_SMARTREFLEX_H
@@ -23,7 +20,7 @@
 #include <linux/types.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
-#include <plat/voltage.h>
+#include <linux/platform_data/voltage-omap.h>
 
 /*
  * Different Smartreflex IPs version. The v1 is the 65nm version used in
@@ -143,6 +140,13 @@
 #define OMAP3430_SR_ERRWEIGHT		0x04
 #define OMAP3430_SR_ERRMAXLIMIT		0x02
 
+enum sr_instance {
+	OMAP_SR_MPU,			/* shared with iva on omap3 */
+	OMAP_SR_CORE,
+	OMAP_SR_IVA,
+	OMAP_SR_NR,
+};
+
 struct omap_sr {
 	char				*name;
 	struct list_head		node;
@@ -207,7 +211,6 @@ struct omap_smartreflex_dev_attr {
 	const char      *sensor_voltdm_name;
 };
 
-#ifdef CONFIG_POWER_AVS_OMAP
 /*
  * The smart reflex driver supports CLASS1 CLASS2 and CLASS3 SR.
  * The smartreflex class driver should pass the class type.
@@ -260,8 +263,13 @@ struct omap_sr_nvalue_table {
  *
  * @name:		instance name
  * @ip_type:		Smartreflex IP type.
- * @senp_mod:		SENPENABLE value for the sr
- * @senn_mod:		SENNENABLE value for sr
+ * @senp_mod:		SENPENABLE value of the sr CONFIG register
+ * @senn_mod:		SENNENABLE value for sr CONFIG register
+ * @err_weight		ERRWEIGHT value of the sr ERRCONFIG register
+ * @err_maxlimit	ERRMAXLIMIT value of the sr ERRCONFIG register
+ * @accum_data		ACCUMDATA value of the sr CONFIG register
+ * @senn_avgweight	SENNAVGWEIGHT value of the sr AVGWEIGHT register
+ * @senp_avgweight	SENPAVGWEIGHT value of the sr AVGWEIGHT register
  * @nvalue_count:	Number of distinct nvalues in the nvalue table
  * @enable_on_init:	whether this sr module needs to enabled at
  *			boot up or not.
@@ -274,26 +282,30 @@ struct omap_sr_data {
 	int				ip_type;
 	u32				senp_mod;
 	u32				senn_mod;
+	u32				err_weight;
+	u32				err_maxlimit;
+	u32				accum_data;
+	u32				senn_avgweight;
+	u32				senp_avgweight;
 	int				nvalue_count;
 	bool				enable_on_init;
 	struct omap_sr_nvalue_table	*nvalue_table;
 	struct voltagedomain		*voltdm;
 };
 
+#ifdef CONFIG_POWER_AVS_OMAP
+
 /* Smartreflex module enable/disable interface */
 void omap_sr_enable(struct voltagedomain *voltdm);
 void omap_sr_disable(struct voltagedomain *voltdm);
 void omap_sr_disable_reset_volt(struct voltagedomain *voltdm);
 
-/* API to register the pmic specific data with the smartreflex driver. */
-void omap_sr_register_pmic(struct omap_sr_pmic_data *pmic_data);
-
 /* Smartreflex driver hooks to be called from Smartreflex class driver */
-int sr_enable(struct voltagedomain *voltdm, unsigned long volt);
-void sr_disable(struct voltagedomain *voltdm);
-int sr_configure_errgen(struct voltagedomain *voltdm);
-int sr_disable_errgen(struct voltagedomain *voltdm);
-int sr_configure_minmax(struct voltagedomain *voltdm);
+int sr_enable(struct omap_sr *sr, unsigned long volt);
+void sr_disable(struct omap_sr *sr);
+int sr_configure_errgen(struct omap_sr *sr);
+int sr_disable_errgen(struct omap_sr *sr);
+int sr_configure_minmax(struct omap_sr *sr);
 
 /* API to register the smartreflex class driver with the smartreflex driver */
 int sr_register_class(struct omap_sr_class_data *class_data);
@@ -302,7 +314,5 @@ static inline void omap_sr_enable(struct voltagedomain *voltdm) {}
 static inline void omap_sr_disable(struct voltagedomain *voltdm) {}
 static inline void omap_sr_disable_reset_volt(
 		struct voltagedomain *voltdm) {}
-static inline void omap_sr_register_pmic(
-		struct omap_sr_pmic_data *pmic_data) {}
 #endif
 #endif

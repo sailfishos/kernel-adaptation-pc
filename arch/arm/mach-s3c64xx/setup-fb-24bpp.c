@@ -1,16 +1,11 @@
-/* linux/arch/arm/plat-s3c64xx/setup-fb-24bpp.c
- *
- * Copyright 2008 Openmoko, Inc.
- * Copyright 2008 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *	http://armlinux.simtec.co.uk/
- *
- * Base S3C64XX setup information for 24bpp LCD framebuffer
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright 2008 Openmoko, Inc.
+// Copyright 2008 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//	http://armlinux.simtec.co.uk/
+//
+// Base S3C64XX setup information for 24bpp LCD framebuffer
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -19,6 +14,7 @@
 
 #include <plat/fb.h>
 #include <plat/gpio-cfg.h>
+#include <mach/gpio-samsung.h>
 
 void s3c64xx_fb_gpio_setup_24bpp(void)
 {

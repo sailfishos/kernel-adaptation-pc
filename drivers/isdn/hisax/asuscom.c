@@ -295,7 +295,7 @@ Asus_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 }
 
 #ifdef __ISAPNP__
-static struct isapnp_device_id asus_ids[] __devinitdata = {
+static struct isapnp_device_id asus_ids[] = {
 	{ ISAPNP_VENDOR('A', 'S', 'U'), ISAPNP_FUNCTION(0x1688),
 	  ISAPNP_VENDOR('A', 'S', 'U'), ISAPNP_FUNCTION(0x1688),
 	  (unsigned long) "Asus1688 PnP" },
@@ -311,12 +311,11 @@ static struct isapnp_device_id asus_ids[] __devinitdata = {
 	{ 0, }
 };
 
-static struct isapnp_device_id *ipid __devinitdata = &asus_ids[0];
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct isapnp_device_id *ipid = &asus_ids[0];
+static struct pnp_card *pnp_c = NULL;
 #endif
 
-int __devinit
-setup_asuscom(struct IsdnCard *card)
+int setup_asuscom(struct IsdnCard *card)
 {
 	int bytecnt;
 	struct IsdnCardState *cs = card->cs;
@@ -349,7 +348,7 @@ setup_asuscom(struct IsdnCard *card)
 					}
 					card->para[1] = pnp_port_start(pnp_d, 0);
 					card->para[0] = pnp_irq(pnp_d, 0);
-					if (!card->para[0] || !card->para[1]) {
+					if (card->para[0] == -1 || !card->para[1]) {
 						printk(KERN_ERR "AsusPnP:some resources are missing %ld/%lx\n",
 						       card->para[0], card->para[1]);
 						pnp_disable_dev(pnp_d);

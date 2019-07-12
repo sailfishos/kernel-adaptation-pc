@@ -1,12 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/ieee80211.h>
 #include <linux/export.h>
 #include <net/cfg80211.h>
 #include "nl80211.h"
 #include "core.h"
+#include "rdev-ops.h"
 
 
-static int __cfg80211_stop_ap(struct cfg80211_registered_device *rdev,
-			      struct net_device *dev)
+int __cfg80211_stop_ap(struct cfg80211_registered_device *rdev,
+		       struct net_device *dev, bool notify)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	int err;
@@ -23,23 +25,35 @@ static int __cfg80211_stop_ap(struct cfg80211_registered_device *rdev,
 	if (!wdev->beacon_interval)
 		return -ENOENT;
 
-	err = rdev->ops->stop_ap(&rdev->wiphy, dev);
+	err = rdev_stop_ap(rdev, dev);
 	if (!err) {
+		wdev->conn_owner_nlportid = 0;
 		wdev->beacon_interval = 0;
-		wdev->channel = NULL;
+		memset(&wdev->chandef, 0, sizeof(wdev->chandef));
+		wdev->ssid_len = 0;
+		rdev_set_qos_map(rdev, dev, NULL);
+		if (notify)
+			nl80211_send_ap_stopped(wdev);
+
+		/* Should we apply the grace period during beaconing interface
+		 * shutdown also?
+		 */
+		cfg80211_sched_dfs_chan_update(rdev);
 	}
+
+	schedule_work(&cfg80211_disconnect_work);
 
 	return err;
 }
 
 int cfg80211_stop_ap(struct cfg80211_registered_device *rdev,
-		     struct net_device *dev)
+		     struct net_device *dev, bool notify)
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	int err;
 
 	wdev_lock(wdev);
-	err = __cfg80211_stop_ap(rdev, dev);
+	err = __cfg80211_stop_ap(rdev, dev, notify);
 	wdev_unlock(wdev);
 
 	return err;

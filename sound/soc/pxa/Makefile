@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 # PXA Platform Support
 snd-soc-pxa2xx-objs := pxa2xx-pcm.o
 snd-soc-pxa2xx-ac97-objs := pxa2xx-ac97.o
@@ -23,8 +24,6 @@ snd-soc-e800-objs := e800_wm9712.o
 snd-soc-spitz-objs := spitz.o
 snd-soc-em-x270-objs := em-x270.o
 snd-soc-palm27x-objs := palm27x.o
-snd-soc-saarb-objs := saarb.o
-snd-soc-tavorevb3-objs := tavorevb3.o
 snd-soc-zylonite-objs := zylonite.o
 snd-soc-hx4700-objs := hx4700.o
 snd-soc-magician-objs := magician.o
@@ -48,10 +47,7 @@ obj-$(CONFIG_SND_PXA2XX_SOC_HX4700) += snd-soc-hx4700.o
 obj-$(CONFIG_SND_PXA2XX_SOC_MAGICIAN) += snd-soc-magician.o
 obj-$(CONFIG_SND_PXA2XX_SOC_MIOA701) += snd-soc-mioa701.o
 obj-$(CONFIG_SND_PXA2XX_SOC_Z2) += snd-soc-z2.o
-obj-$(CONFIG_SND_SOC_SAARB) += snd-soc-saarb.o
-obj-$(CONFIG_SND_SOC_TAVOREVB3) += snd-soc-tavorevb3.o
 obj-$(CONFIG_SND_SOC_ZYLONITE) += snd-soc-zylonite.o
 obj-$(CONFIG_SND_PXA2XX_SOC_IMOTE2) += snd-soc-imote2.o
-obj-$(CONFIG_SND_SOC_RAUMFELD) += snd-soc-raumfeld.o
 obj-$(CONFIG_SND_MMP_SOC_BROWNSTONE) += snd-soc-brownstone.o
 obj-$(CONFIG_SND_SOC_TTC_DKB) += snd-soc-ttc-dkb.o

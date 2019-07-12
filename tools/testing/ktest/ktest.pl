@@ -10,6 +10,7 @@ use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use File::Path qw(mkpath);
 use File::Copy qw(cp);
 use FileHandle;
+use FindBin;
 
 my $VERSION = "0.2";
 
@@ -18,13 +19,20 @@ $| = 1;
 my %opt;
 my %repeat_tests;
 my %repeats;
+my %evals;
 
 #default opts
 my %default = (
+    "MAILER"			=> "sendmail",  # default mailer
+    "EMAIL_ON_ERROR"		=> 1,
+    "EMAIL_WHEN_FINISHED"	=> 1,
+    "EMAIL_WHEN_CANCELED"	=> 0,
+    "EMAIL_WHEN_STARTED"	=> 0,
     "NUM_TESTS"			=> 1,
     "TEST_TYPE"			=> "build",
     "BUILD_TYPE"		=> "randconfig",
     "MAKE_CMD"			=> "make",
+    "CLOSE_CONSOLE_SIGNAL"	=> "INT",
     "TIMEOUT"			=> 120,
     "TMP_DIR"			=> "/tmp/ktest/\${MACHINE}",
     "SLEEP_TIME"		=> 60,	# sleep time between tests
@@ -39,6 +47,7 @@ my %default = (
     "CLEAR_LOG"			=> 0,
     "BISECT_MANUAL"		=> 0,
     "BISECT_SKIP"		=> 1,
+    "BISECT_TRIES"		=> 1,
     "MIN_CONFIG_TYPE"		=> "boot",
     "SUCCESS_LINE"		=> "login:",
     "DETECT_TRIPLE_FAULT"	=> 1,
@@ -53,6 +62,10 @@ my %default = (
     "STOP_AFTER_FAILURE"	=> 60,
     "STOP_TEST_AFTER"		=> 600,
     "MAX_MONITOR_WAIT"		=> 1800,
+    "GRUB_REBOOT"		=> "grub2-reboot",
+    "SYSLINUX"			=> "extlinux",
+    "SYSLINUX_PATH"		=> "/boot/extlinux",
+    "CONNECT_TIMEOUT"		=> 25,
 
 # required, and we will ask users if they don't have them but we keep the default
 # value something that is common.
@@ -66,10 +79,11 @@ my %default = (
     "IGNORE_UNUSED"		=> 0,
 );
 
-my $ktest_config;
+my $ktest_config = "ktest.conf";
 my $version;
 my $have_version = 0;
 my $machine;
+my $last_machine;
 my $ssh_user;
 my $tmpdir;
 my $builddir;
@@ -105,7 +119,13 @@ my $scp_to_target;
 my $scp_to_target_install;
 my $power_off;
 my $grub_menu;
+my $last_grub_menu;
+my $grub_file;
 my $grub_number;
+my $grub_reboot;
+my $syslinux;
+my $syslinux_path;
+my $syslinux_label;
 my $target;
 my $make;
 my $pre_install;
@@ -118,6 +138,7 @@ my $start_minconfig_defined;
 my $output_minconfig;
 my $minconfig_type;
 my $use_output_minconfig;
+my $warnings_file;
 my $ignore_config;
 my $ignore_errors;
 my $addconfig;
@@ -126,6 +147,7 @@ my $bisect_bad_commit = "";
 my $reverse_bisect;
 my $bisect_manual;
 my $bisect_skip;
+my $bisect_tries;
 my $config_bisect_good;
 my $bisect_ret_good;
 my $bisect_ret_bad;
@@ -134,7 +156,6 @@ my $bisect_ret_abort;
 my $bisect_ret_default;
 my $in_patchcheck = 0;
 my $run_test;
-my $redirect;
 my $buildlog;
 my $testlog;
 my $dmesg;
@@ -149,9 +170,12 @@ my $store_failures;
 my $store_successes;
 my $test_name;
 my $timeout;
+my $connect_timeout;
+my $config_bisect_exec;
 my $booted_timeout;
 my $detect_triplefault;
 my $console;
+my $close_console_signal;
 my $reboot_success_line;
 my $success_line;
 my $stop_after_success;
@@ -163,6 +187,8 @@ my $checkout;
 my $localversion;
 my $iteration = 0;
 my $successes = 0;
+my $stty_orig;
+my $run_command_status = 0;
 
 my $bisect_good;
 my $bisect_bad;
@@ -179,11 +205,34 @@ my $config_bisect_check;
 
 my $patchcheck_type;
 my $patchcheck_start;
+my $patchcheck_cherry;
 my $patchcheck_end;
+
+my $build_time;
+my $install_time;
+my $reboot_time;
+my $test_time;
+
+my $pwd;
+my $dirname = $FindBin::Bin;
+
+my $mailto;
+my $mailer;
+my $mail_path;
+my $mail_command;
+my $email_on_error;
+my $email_when_finished;
+my $email_when_started;
+my $email_when_canceled;
+
+my $script_start_time = localtime();
 
 # set when a test is something other that just building or install
 # which would require more options.
 my $buildonly = 1;
+
+# tell build not to worry about warnings, even when WARNINGS_FILE is set
+my $warnings_ok = 0;
 
 # set when creating a new config
 my $newconfig = 0;
@@ -203,6 +252,14 @@ my $no_reboot = 1;
 my $reboot_success = 0;
 
 my %option_map = (
+    "MAILTO"			=> \$mailto,
+    "MAILER"			=> \$mailer,
+    "MAIL_PATH"			=> \$mail_path,
+    "MAIL_COMMAND"		=> \$mail_command,
+    "EMAIL_ON_ERROR"		=> \$email_on_error,
+    "EMAIL_WHEN_FINISHED"	=> \$email_when_finished,
+    "EMAIL_WHEN_STARTED"	=> \$email_when_started,
+    "EMAIL_WHEN_CANCELED"	=> \$email_when_canceled,
     "MACHINE"			=> \$machine,
     "SSH_USER"			=> \$ssh_user,
     "TMP_DIR"			=> \$tmpdir,
@@ -227,11 +284,17 @@ my %option_map = (
     "START_MIN_CONFIG"		=> \$start_minconfig,
     "MIN_CONFIG_TYPE"		=> \$minconfig_type,
     "USE_OUTPUT_MIN_CONFIG"	=> \$use_output_minconfig,
+    "WARNINGS_FILE"		=> \$warnings_file,
     "IGNORE_CONFIG"		=> \$ignore_config,
     "TEST"			=> \$run_test,
     "ADD_CONFIG"		=> \$addconfig,
     "REBOOT_TYPE"		=> \$reboot_type,
     "GRUB_MENU"			=> \$grub_menu,
+    "GRUB_FILE"			=> \$grub_file,
+    "GRUB_REBOOT"		=> \$grub_reboot,
+    "SYSLINUX"			=> \$syslinux,
+    "SYSLINUX_PATH"		=> \$syslinux_path,
+    "SYSLINUX_LABEL"		=> \$syslinux_label,
     "PRE_INSTALL"		=> \$pre_install,
     "POST_INSTALL"		=> \$post_install,
     "NO_INSTALL"		=> \$no_install,
@@ -253,6 +316,7 @@ my %option_map = (
     "IGNORE_ERRORS"		=> \$ignore_errors,
     "BISECT_MANUAL"		=> \$bisect_manual,
     "BISECT_SKIP"		=> \$bisect_skip,
+    "BISECT_TRIES"		=> \$bisect_tries,
     "CONFIG_BISECT_GOOD"	=> \$config_bisect_good,
     "BISECT_RET_GOOD"		=> \$bisect_ret_good,
     "BISECT_RET_BAD"		=> \$bisect_ret_bad,
@@ -263,8 +327,11 @@ my %option_map = (
     "STORE_SUCCESSES"		=> \$store_successes,
     "TEST_NAME"			=> \$test_name,
     "TIMEOUT"			=> \$timeout,
+    "CONNECT_TIMEOUT"		=> \$connect_timeout,
+    "CONFIG_BISECT_EXEC"	=> \$config_bisect_exec,
     "BOOTED_TIMEOUT"		=> \$booted_timeout,
     "CONSOLE"			=> \$console,
+    "CLOSE_CONSOLE_SIGNAL"	=> \$close_console_signal,
     "DETECT_TRIPLE_FAULT"	=> \$detect_triplefault,
     "SUCCESS_LINE"		=> \$success_line,
     "REBOOT_SUCCESS_LINE"	=> \$reboot_success_line,
@@ -294,6 +361,7 @@ my %option_map = (
 
     "PATCHCHECK_TYPE"		=> \$patchcheck_type,
     "PATCHCHECK_START"		=> \$patchcheck_start,
+    "PATCHCHECK_CHERRY"		=> \$patchcheck_cherry,
     "PATCHCHECK_END"		=> \$patchcheck_end,
 );
 
@@ -302,6 +370,7 @@ my %used_options;
 
 # default variables that can be used
 chomp ($variable{"PWD"} = `pwd`);
+$pwd = $variable{"PWD"};
 
 $config_help{"MACHINE"} = << "EOF"
  The machine hostname that you will test.
@@ -368,7 +437,7 @@ EOF
     ;
 $config_help{"REBOOT_TYPE"} = << "EOF"
  Way to reboot the box to the test kernel.
- Only valid options so far are "grub" and "script".
+ Only valid options so far are "grub", "grub2", "syslinux", and "script".
 
  If you specify grub, it will assume grub version 1
  and will search in /boot/grub/menu.lst for the title \$GRUB_MENU
@@ -378,11 +447,19 @@ $config_help{"REBOOT_TYPE"} = << "EOF"
 
  The entry in /boot/grub/menu.lst must be entered in manually.
  The test will not modify that file.
+
+ If you specify grub2, then you also need to specify both \$GRUB_MENU
+ and \$GRUB_FILE.
+
+ If you specify syslinux, then you may use SYSLINUX to define the syslinux
+ command (defaults to extlinux), and SYSLINUX_PATH to specify the path to
+ the syslinux install (defaults to /boot/extlinux). But you have to specify
+ SYSLINUX_LABEL to define the label to boot to for the test kernel.
 EOF
     ;
 $config_help{"GRUB_MENU"} = << "EOF"
  The grub title name for the test kernel to boot
- (Only mandatory if REBOOT_TYPE = grub)
+ (Only mandatory if REBOOT_TYPE = grub or grub2)
 
  Note, ktest.pl will not update the grub menu.lst, you need to
  manually add an option for the test. ktest.pl will search
@@ -393,6 +470,22 @@ $config_help{"GRUB_MENU"} = << "EOF"
  title Test Kernel
  kernel vmlinuz-test
  GRUB_MENU = Test Kernel
+
+ For grub2, a search of \$GRUB_FILE is performed for the lines
+ that begin with "menuentry". It will not detect submenus. The
+ menu must be a non-nested menu. Add the quotes used in the menu
+ to guarantee your selection, as the first menuentry with the content
+ of \$GRUB_MENU that is found will be used.
+EOF
+    ;
+$config_help{"GRUB_FILE"} = << "EOF"
+ If grub2 is used, the full path for the grub.cfg file is placed
+ here. Use something like /boot/grub2/grub.cfg to search.
+EOF
+    ;
+$config_help{"SYSLINUX_LABEL"} = << "EOF"
+ If syslinux is used, the label that boots the target kernel must
+ be specified with SYSLINUX_LABEL.
 EOF
     ;
 $config_help{"REBOOT_SCRIPT"} = << "EOF"
@@ -400,6 +493,27 @@ $config_help{"REBOOT_SCRIPT"} = << "EOF"
  (Only mandatory if REBOOT_TYPE = script)
 EOF
     ;
+
+sub _logit {
+    if (defined($opt{"LOG_FILE"})) {
+	open(OUT, ">> $opt{LOG_FILE}") or die "Can't write to $opt{LOG_FILE}";
+	print OUT @_;
+	close(OUT);
+    }
+}
+
+sub logit {
+    if (defined($opt{"LOG_FILE"})) {
+	_logit @_;
+    } else {
+	print @_;
+    }
+}
+
+sub doprint {
+    print @_;
+    _logit @_;
+}
 
 sub read_prompt {
     my ($cancel, $prompt) = @_;
@@ -450,7 +564,7 @@ sub read_ync {
     return read_prompt 1, $prompt;
 }
 
-sub get_ktest_config {
+sub get_mandatory_config {
     my ($config) = @_;
     my $ans;
 
@@ -481,29 +595,89 @@ sub get_ktest_config {
     }
 }
 
-sub get_ktest_configs {
-    get_ktest_config("MACHINE");
-    get_ktest_config("BUILD_DIR");
-    get_ktest_config("OUTPUT_DIR");
+sub show_time {
+    my ($time) = @_;
+
+    my $hours = 0;
+    my $minutes = 0;
+
+    if ($time > 3600) {
+	$hours = int($time / 3600);
+	$time -= $hours * 3600;
+    }
+    if ($time > 60) {
+	$minutes = int($time / 60);
+	$time -= $minutes * 60;
+    }
+
+    if ($hours > 0) {
+	doprint "$hours hour";
+	doprint "s" if ($hours > 1);
+	doprint " ";
+    }
+
+    if ($minutes > 0) {
+	doprint "$minutes minute";
+	doprint "s" if ($minutes > 1);
+	doprint " ";
+    }
+
+    doprint "$time second";
+    doprint "s" if ($time != 1);
+}
+
+sub print_times {
+    doprint "\n";
+    if ($build_time) {
+	doprint "Build time:   ";
+	show_time($build_time);
+	doprint "\n";
+    }
+    if ($install_time) {
+	doprint "Install time: ";
+	show_time($install_time);
+	doprint "\n";
+    }
+    if ($reboot_time) {
+	doprint "Reboot time:  ";
+	show_time($reboot_time);
+	doprint "\n";
+    }
+    if ($test_time) {
+	doprint "Test time:    ";
+	show_time($test_time);
+	doprint "\n";
+    }
+    # reset for iterations like bisect
+    $build_time = 0;
+    $install_time = 0;
+    $reboot_time = 0;
+    $test_time = 0;
+}
+
+sub get_mandatory_configs {
+    get_mandatory_config("MACHINE");
+    get_mandatory_config("BUILD_DIR");
+    get_mandatory_config("OUTPUT_DIR");
 
     if ($newconfig) {
-	get_ktest_config("BUILD_OPTIONS");
+	get_mandatory_config("BUILD_OPTIONS");
     }
 
     # options required for other than just building a kernel
     if (!$buildonly) {
-	get_ktest_config("POWER_CYCLE");
-	get_ktest_config("CONSOLE");
+	get_mandatory_config("POWER_CYCLE");
+	get_mandatory_config("CONSOLE");
     }
 
     # options required for install and more
     if ($buildonly != 1) {
-	get_ktest_config("SSH_USER");
-	get_ktest_config("BUILD_TARGET");
-	get_ktest_config("TARGET_IMAGE");
+	get_mandatory_config("SSH_USER");
+	get_mandatory_config("BUILD_TARGET");
+	get_mandatory_config("TARGET_IMAGE");
     }
 
-    get_ktest_config("LOCALVERSION");
+    get_mandatory_config("LOCALVERSION");
 
     return if ($buildonly);
 
@@ -511,7 +685,7 @@ sub get_ktest_configs {
 
     if (!defined($rtype)) {
 	if (!defined($opt{"GRUB_MENU"})) {
-	    get_ktest_config("REBOOT_TYPE");
+	    get_mandatory_config("REBOOT_TYPE");
 	    $rtype = $entered_configs{"REBOOT_TYPE"};
 	} else {
 	    $rtype = "grub";
@@ -519,7 +693,16 @@ sub get_ktest_configs {
     }
 
     if ($rtype eq "grub") {
-	get_ktest_config("GRUB_MENU");
+	get_mandatory_config("GRUB_MENU");
+    }
+
+    if ($rtype eq "grub2") {
+	get_mandatory_config("GRUB_MENU");
+	get_mandatory_config("GRUB_FILE");
+    }
+
+    if ($rtype eq "syslinux") {
+	get_mandatory_config("SYSLINUX_LABEL");
     }
 }
 
@@ -569,13 +752,17 @@ sub set_value {
 
     my $prvalue = process_variables($rvalue);
 
-    if ($buildonly && $lvalue =~ /^TEST_TYPE(\[.*\])?$/ && $prvalue ne "build") {
+    if ($lvalue =~ /^(TEST|BISECT|CONFIG_BISECT)_TYPE(\[.*\])?$/ &&
+	$prvalue !~ /^(config_|)bisect$/ &&
+	$prvalue !~ /^build$/ &&
+	$buildonly) {
+
 	# Note if a test is something other than build, then we
-	# will need other manditory options.
+	# will need other mandatory options.
 	if ($prvalue ne "install") {
 	    $buildonly = 0;
 	} else {
-	    # install still limits some manditory options.
+	    # install still limits some mandatory options.
 	    $buildonly = 2;
 	}
     }
@@ -590,11 +777,24 @@ sub set_value {
 	}
 	${$overrides}{$lvalue} = $prvalue;
     }
-    if ($rvalue =~ /^\s*$/) {
-	delete $opt{$lvalue};
+
+    $opt{$lvalue} = $prvalue;
+}
+
+sub set_eval {
+    my ($lvalue, $rvalue, $name) = @_;
+
+    my $prvalue = process_variables($rvalue);
+    my $arr;
+
+    if (defined($evals{$lvalue})) {
+	$arr = $evals{$lvalue};
     } else {
-	$opt{$lvalue} = $prvalue;
+	$arr = [];
+	$evals{$lvalue} = $arr;
     }
+
+    push @{$arr}, $rvalue;
 }
 
 sub set_variable {
@@ -840,7 +1040,9 @@ sub __read_config {
 
 		if ($rest =~ /\sIF\s+(.*)/) {
 		    # May be a ELSE IF section.
-		    if (!process_if($name, $1)) {
+		    if (process_if($name, $1)) {
+			$if_set = 1;
+		    } else {
 			$skip = 1;
 		    }
 		    $rest = "";
@@ -878,6 +1080,20 @@ sub __read_config {
 
 	    if (__read_config($file, \$test_num)) {
 		$test_case = 1;
+	    }
+
+	} elsif (/^\s*([A-Z_\[\]\d]+)\s*=~\s*(.*?)\s*$/) {
+
+	    next if ($skip);
+
+	    my $lvalue = $1;
+	    my $rvalue = $2;
+
+	    if ($default || $lvalue =~ /\[\d+\]$/) {
+		set_eval($lvalue, $rvalue, $name);
+	    } else {
+		my $val = "$lvalue\[$test_num\]";
+		set_eval($val, $rvalue, $name);
 	    }
 
 	} elsif (/^\s*([A-Z_\[\]\d]+)\s*=\s*(.*?)\s*$/) {
@@ -950,7 +1166,8 @@ sub __read_config {
 sub get_test_case {
 	print "What test case would you like to run?\n";
 	print " (build, install or boot)\n";
-	print " Other tests are available but require editing the config file\n";
+	print " Other tests are available but require editing ktest.conf\n";
+	print " (see tools/testing/ktest/sample.conf)\n";
 	my $ans = <STDIN>;
 	chomp $ans;
 	$default{"TEST_TYPE"} = $ans;
@@ -965,7 +1182,7 @@ sub read_config {
     $test_case = __read_config $config, \$test_num;
 
     # make sure we have all mandatory configs
-    get_ktest_configs;
+    get_mandatory_configs;
 
     # was a test specified?
     if (!$test_case) {
@@ -1014,7 +1231,7 @@ sub read_config {
 }
 
 sub __eval_option {
-    my ($option, $i) = @_;
+    my ($name, $option, $i) = @_;
 
     # Add space to evaluate the character before $
     $option = " $option";
@@ -1046,7 +1263,11 @@ sub __eval_option {
 	my $o = "$var\[$i\]";
 	my $parento = "$var\[$parent\]";
 
-	if (defined($opt{$o})) {
+	# If a variable contains itself, use the default var
+	if (($var eq $name) && defined($opt{$var})) {
+	    $o = $opt{$var};
+	    $retval = "$retval$o";
+	} elsif (defined($opt{$o})) {
 	    $o = $opt{$o};
 	    $retval = "$retval$o";
 	} elsif ($repeated && defined($opt{$parento})) {
@@ -1055,6 +1276,10 @@ sub __eval_option {
 	} elsif (defined($opt{$var})) {
 	    $o = $opt{$var};
 	    $retval = "$retval$o";
+	} elsif ($var eq "KERNEL_VERSION" && defined($make)) {
+	    # special option KERNEL_VERSION uses kernel version
+	    get_version();
+	    $retval = "$retval$version";
 	} else {
 	    $retval = "$retval\$\{$var\}";
 	}
@@ -1069,8 +1294,35 @@ sub __eval_option {
     return $retval;
 }
 
+sub process_evals {
+    my ($name, $option, $i) = @_;
+
+    my $option_name = "$name\[$i\]";
+    my $ev;
+
+    my $old_option = $option;
+
+    if (defined($evals{$option_name})) {
+	$ev = $evals{$option_name};
+    } elsif (defined($evals{$name})) {
+	$ev = $evals{$name};
+    } else {
+	return $option;
+    }
+
+    for my $e (@{$ev}) {
+	eval "\$option =~ $e";
+    }
+
+    if ($option ne $old_option) {
+	doprint("$name changed from '$old_option' to '$option'\n");
+    }
+
+    return $option;
+}
+
 sub eval_option {
-    my ($option, $i) = @_;
+    my ($name, $option, $i) = @_;
 
     my $prev = "";
 
@@ -1086,31 +1338,12 @@ sub eval_option {
 		"Check for recursive variables\n";
 	}
 	$prev = $option;
-	$option = __eval_option($option, $i);
+	$option = __eval_option($name, $option, $i);
     }
+
+    $option = process_evals($name, $option, $i);
 
     return $option;
-}
-
-sub _logit {
-    if (defined($opt{"LOG_FILE"})) {
-	open(OUT, ">> $opt{LOG_FILE}") or die "Can't write to $opt{LOG_FILE}";
-	print OUT @_;
-	close(OUT);
-    }
-}
-
-sub logit {
-    if (defined($opt{"LOG_FILE"})) {
-	_logit @_;
-    } else {
-	print @_;
-    }
-}
-
-sub doprint {
-    print @_;
-    _logit @_;
 }
 
 sub run_command;
@@ -1120,31 +1353,65 @@ sub wait_for_monitor;
 
 sub reboot {
     my ($time) = @_;
+    my $powercycle = 0;
 
-    if (defined($time)) {
+    # test if the machine can be connected to within a few seconds
+    my $stat = run_ssh("echo check machine status", $connect_timeout);
+    if (!$stat) {
+	doprint("power cycle\n");
+	$powercycle = 1;
+    }
+
+    if ($powercycle) {
+	run_command "$power_cycle";
+
 	start_monitor;
 	# flush out current monitor
 	# May contain the reboot success line
 	wait_for_monitor 1;
-    }
 
-    # try to reboot normally
-    if (run_command $reboot) {
-	if (defined($powercycle_after_reboot)) {
-	    sleep $powercycle_after_reboot;
+    } else {
+	# Make sure everything has been written to disk
+	run_ssh("sync");
+
+	if (defined($time)) {
+	    start_monitor;
+	    # flush out current monitor
+	    # May contain the reboot success line
+	    wait_for_monitor 1;
+	}
+
+	# try to reboot normally
+	if (run_command $reboot) {
+	    if (defined($powercycle_after_reboot)) {
+		sleep $powercycle_after_reboot;
+		run_command "$power_cycle";
+	    }
+	} else {
+	    # nope? power cycle it.
 	    run_command "$power_cycle";
 	}
-    } else {
-	# nope? power cycle it.
-	run_command "$power_cycle";
     }
 
     if (defined($time)) {
-	if (wait_for_monitor($time, $reboot_success_line)) {
+
+	# We only want to get to the new kernel, don't fail
+	# if we stumble over a call trace.
+	my $save_ignore_errors = $ignore_errors;
+	$ignore_errors = 1;
+
+	# Look for the good kernel to boot
+	if (wait_for_monitor($time, "Linux version")) {
 	    # reboot got stuck?
 	    doprint "Reboot did not finish. Forcing power cycle\n";
 	    run_command "$power_cycle";
 	}
+
+	$ignore_errors = $save_ignore_errors;
+
+	# Still need to wait for the reboot to finish
+	wait_for_monitor($time, $reboot_success_line);
+
 	end_monitor;
     }
 }
@@ -1164,10 +1431,18 @@ sub do_not_reboot {
 
     return $test_type eq "build" || $no_reboot ||
 	($test_type eq "patchcheck" && $opt{"PATCHCHECK_TYPE[$i]"} eq "build") ||
-	($test_type eq "bisect" && $opt{"BISECT_TYPE[$i]"} eq "build");
+	($test_type eq "bisect" && $opt{"BISECT_TYPE[$i]"} eq "build") ||
+	($test_type eq "config_bisect" && $opt{"CONFIG_BISECT_TYPE[$i]"} eq "build");
 }
 
+my $in_die = 0;
+
 sub dodie {
+
+    # avoid recusion
+    return if ($in_die);
+    $in_die = 1;
+
     doprint "CRITICAL FAILURE... ", @_, "\n";
 
     my $i = $iteration;
@@ -1186,33 +1461,108 @@ sub dodie {
 	print " See $opt{LOG_FILE} for more info.\n";
     }
 
+    if ($email_on_error) {
+        send_email("KTEST: critical failure for your [$test_type] test",
+                "Your test started at $script_start_time has failed with:\n@_\n");
+    }
+
+    if ($monitor_cnt) {
+	    # restore terminal settings
+	    system("stty $stty_orig");
+    }
+
+    if (defined($post_test)) {
+	run_command $post_test;
+    }
+
     die @_, "\n";
 }
 
-sub open_console {
-    my ($fp) = @_;
+sub create_pty {
+    my ($ptm, $pts) = @_;
+    my $tmp;
+    my $TIOCSPTLCK = 0x40045431;
+    my $TIOCGPTN = 0x80045430;
 
-    my $flags;
+    sysopen($ptm, "/dev/ptmx", O_RDWR | O_NONBLOCK) or
+	dodie "Cant open /dev/ptmx";
 
-    my $pid = open($fp, "$console|") or
+    # unlockpt()
+    $tmp = pack("i", 0);
+    ioctl($ptm, $TIOCSPTLCK, $tmp) or
+	dodie "ioctl TIOCSPTLCK for /dev/ptmx failed";
+
+    # ptsname()
+    ioctl($ptm, $TIOCGPTN, $tmp) or
+	dodie "ioctl TIOCGPTN for /dev/ptmx failed";
+    $tmp = unpack("i", $tmp);
+
+    sysopen($pts, "/dev/pts/$tmp", O_RDWR | O_NONBLOCK) or
+	dodie "Can't open /dev/pts/$tmp";
+}
+
+sub exec_console {
+    my ($ptm, $pts) = @_;
+
+    close($ptm);
+
+    close(\*STDIN);
+    close(\*STDOUT);
+    close(\*STDERR);
+
+    open(\*STDIN, '<&', $pts);
+    open(\*STDOUT, '>&', $pts);
+    open(\*STDERR, '>&', $pts);
+
+    close($pts);
+
+    exec $console or
 	dodie "Can't open console $console";
+}
 
-    $flags = fcntl($fp, F_GETFL, 0) or
-	dodie "Can't get flags for the socket: $!";
-    $flags = fcntl($fp, F_SETFL, $flags | O_NONBLOCK) or
-	dodie "Can't set flags for the socket: $!";
+sub open_console {
+    my ($ptm) = @_;
+    my $pts = \*PTSFD;
+    my $pid;
+
+    # save terminal settings
+    $stty_orig = `stty -g`;
+
+    # place terminal in cbreak mode so that stdin can be read one character at
+    # a time without having to wait for a newline
+    system("stty -icanon -echo -icrnl");
+
+    create_pty($ptm, $pts);
+
+    $pid = fork;
+
+    if (!$pid) {
+	# child
+	exec_console($ptm, $pts)
+    }
+
+    # parent
+    close($pts);
 
     return $pid;
+
+    open(PTSFD, "Stop perl from warning about single use of PTSFD");
 }
 
 sub close_console {
     my ($fp, $pid) = @_;
 
     doprint "kill child process $pid\n";
-    kill 2, $pid;
+    kill $close_console_signal, $pid;
+
+    doprint "wait for child process $pid to exit\n";
+    waitpid($pid, 0);
 
     print "closing!\n";
     close($fp);
+
+    # restore terminal settings
+    system("stty $stty_orig");
 }
 
 sub start_monitor {
@@ -1228,6 +1578,7 @@ sub start_monitor {
 }
 
 sub end_monitor {
+    return if (!defined $console);
     if (--$monitor_cnt) {
 	return;
     }
@@ -1291,6 +1642,12 @@ sub wait_for_monitor {
 	}
     }
     print "** Monitor flushed **\n";
+
+    # if stop is defined but wasn't hit, return error
+    # used by reboot (which wants to see a reboot)
+    if (defined($stop) && !$booted) {
+	$bug = 1;
+    }
     return $bug;
 }
 
@@ -1311,7 +1668,7 @@ sub save_logs {
 
 	if (!-d $dir) {
 	    mkpath($dir) or
-		die "can't create $dir";
+		dodie "can't create $dir";
 	}
 
 	my %files = (
@@ -1324,7 +1681,7 @@ sub save_logs {
 	while (my ($name, $source) = each(%files)) {
 		if (-f "$source") {
 			cp "$source", "$dir/$name" or
-				die "failed to copy $source";
+				dodie "failed to copy $source";
 		}
 	}
 
@@ -1332,10 +1689,6 @@ sub save_logs {
 }
 
 sub fail {
-
-	if (defined($post_test)) {
-		run_command $post_test;
-	}
 
 	if ($die_on_failure) {
 		dodie @_;
@@ -1357,6 +1710,8 @@ sub fail {
 	    $name = " ($test_name)";
 	}
 
+	print_times;
+
 	doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
 	doprint "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%\n";
 	doprint "KTEST RESULT: TEST $i$name Failed: ", @_, "\n";
@@ -1367,19 +1722,27 @@ sub fail {
 	    save_logs "fail", $store_failures;
         }
 
+	if (defined($post_test)) {
+		run_command $post_test;
+	}
+
 	return 1;
 }
 
 sub run_command {
-    my ($command) = @_;
+    my ($command, $redirect, $timeout) = @_;
+    my $start_time;
+    my $end_time;
     my $dolog = 0;
     my $dord = 0;
+    my $dostdout = 0;
     my $pid;
 
     $command =~ s/\$SSH_USER/$ssh_user/g;
     $command =~ s/\$MACHINE/$machine/g;
 
     doprint("$command ... ");
+    $start_time = time;
 
     $pid = open(CMD, "$command 2>&1 |") or
 	(fail "unable to exec $command" and return 0);
@@ -1391,38 +1754,75 @@ sub run_command {
     }
 
     if (defined($redirect)) {
-	open (RD, ">$redirect") or
-	    dodie "failed to write to redirect $redirect";
-	$dord = 1;
+	if ($redirect eq 1) {
+	    $dostdout = 1;
+	    # Have the output of the command on its own line
+	    doprint "\n";
+	} else {
+	    open (RD, ">$redirect") or
+		dodie "failed to write to redirect $redirect";
+	    $dord = 1;
+	}
     }
 
-    while (<CMD>) {
-	print LOG if ($dolog);
-	print RD  if ($dord);
+    my $hit_timeout = 0;
+
+    while (1) {
+	my $fp = \*CMD;
+	if (defined($timeout)) {
+	    doprint "timeout = $timeout\n";
+	}
+	my $line = wait_for_input($fp, $timeout);
+	if (!defined($line)) {
+	    my $now = time;
+	    if (defined($timeout) && (($now - $start_time) >= $timeout)) {
+		doprint "Hit timeout of $timeout, killing process\n";
+		$hit_timeout = 1;
+		kill 9, $pid;
+	    }
+	    last;
+	}
+	print LOG $line if ($dolog);
+	print RD $line if ($dord);
+	print $line if ($dostdout);
     }
 
     waitpid($pid, 0);
-    my $failed = $?;
+    # shift 8 for real exit status
+    $run_command_status = $? >> 8;
 
     close(CMD);
     close(LOG) if ($dolog);
     close(RD)  if ($dord);
 
-    if ($failed) {
+    $end_time = time;
+    my $delta = $end_time - $start_time;
+
+    if ($delta == 1) {
+	doprint "[1 second] ";
+    } else {
+	doprint "[$delta seconds] ";
+    }
+
+    if ($hit_timeout) {
+	$run_command_status = 1;
+    }
+
+    if ($run_command_status) {
 	doprint "FAILED!\n";
     } else {
 	doprint "SUCCESS\n";
     }
 
-    return !$failed;
+    return !$run_command_status;
 }
 
 sub run_ssh {
-    my ($cmd) = @_;
+    my ($cmd, $timeout) = @_;
     my $cp_exec = $ssh_exec;
 
     $cp_exec =~ s/\$SSH_COMMAND/$cmd/g;
-    return run_command "$cp_exec";
+    return run_command "$cp_exec", undef , $timeout;
 }
 
 sub run_scp {
@@ -1450,12 +1850,54 @@ sub run_scp_mod {
     return run_scp($src, $dst, $cp_scp);
 }
 
+sub get_grub2_index {
+
+    return if (defined($grub_number) && defined($last_grub_menu) &&
+	       $last_grub_menu eq $grub_menu && defined($last_machine) &&
+	       $last_machine eq $machine);
+
+    doprint "Find grub2 menu ... ";
+    $grub_number = -1;
+
+    my $ssh_grub = $ssh_exec;
+    $ssh_grub =~ s,\$SSH_COMMAND,cat $grub_file,g;
+
+    open(IN, "$ssh_grub |")
+	or dodie "unable to get $grub_file";
+
+    my $found = 0;
+
+    while (<IN>) {
+	if (/^menuentry.*$grub_menu/) {
+	    $grub_number++;
+	    $found = 1;
+	    last;
+	} elsif (/^menuentry\s|^submenu\s/) {
+	    $grub_number++;
+	}
+    }
+    close(IN);
+
+    dodie "Could not find '$grub_menu' in $grub_file on $machine"
+	if (!$found);
+    doprint "$grub_number\n";
+    $last_grub_menu = $grub_menu;
+    $last_machine = $machine;
+}
+
 sub get_grub_index {
+
+    if ($reboot_type eq "grub2") {
+	get_grub2_index;
+	return;
+    }
 
     if ($reboot_type ne "grub") {
 	return;
     }
-    return if (defined($grub_number));
+    return if (defined($grub_number) && defined($last_grub_menu) &&
+	       $last_grub_menu eq $grub_menu && defined($last_machine) &&
+	       $last_machine eq $machine);
 
     doprint "Find grub menu ... ";
     $grub_number = -1;
@@ -1464,7 +1906,7 @@ sub get_grub_index {
     $ssh_grub =~ s,\$SSH_COMMAND,cat /boot/grub/menu.lst,g;
 
     open(IN, "$ssh_grub |")
-	or die "unable to get menu.lst";
+	or dodie "unable to get menu.lst";
 
     my $found = 0;
 
@@ -1479,16 +1921,21 @@ sub get_grub_index {
     }
     close(IN);
 
-    die "Could not find '$grub_menu' in /boot/grub/menu on $machine"
+    dodie "Could not find '$grub_menu' in /boot/grub/menu on $machine"
 	if (!$found);
     doprint "$grub_number\n";
+    $last_grub_menu = $grub_menu;
+    $last_machine = $machine;
 }
 
 sub wait_for_input
 {
     my ($fp, $time) = @_;
+    my $start_time;
     my $rin;
-    my $ready;
+    my $rout;
+    my $nr;
+    my $buf;
     my $line;
     my $ch;
 
@@ -1498,21 +1945,40 @@ sub wait_for_input
 
     $rin = '';
     vec($rin, fileno($fp), 1) = 1;
-    $ready = select($rin, undef, undef, $time);
+    vec($rin, fileno(\*STDIN), 1) = 1;
 
-    $line = "";
+    $start_time = time;
 
-    # try to read one char at a time
-    while (sysread $fp, $ch, 1) {
-	$line .= $ch;
-	last if ($ch eq "\n");
+    while (1) {
+	$nr = select($rout=$rin, undef, undef, $time);
+
+	last if ($nr <= 0);
+
+	# copy data from stdin to the console
+	if (vec($rout, fileno(\*STDIN), 1) == 1) {
+	    $nr = sysread(\*STDIN, $buf, 1000);
+	    syswrite($fp, $buf, $nr) if ($nr > 0);
+	}
+
+	# The timeout is based on time waiting for the fp data
+	if (vec($rout, fileno($fp), 1) != 1) {
+	    last if (defined($time) && (time - $start_time > $time));
+	    next;
+	}
+
+	$line = "";
+
+	# try to read one char at a time
+	while (sysread $fp, $ch, 1) {
+	    $line .= $ch;
+	    last if ($ch eq "\n");
+	}
+
+	last if (!length($line));
+
+	return $line;
     }
-
-    if (!length($line)) {
-	return undef;
-    }
-
-    return $line;
+    return undef;
 }
 
 sub reboot_to {
@@ -1522,6 +1988,10 @@ sub reboot_to {
 
     if ($reboot_type eq "grub") {
 	run_ssh "'(echo \"savedefault --default=$grub_number --once\" | grub --batch)'";
+    } elsif ($reboot_type eq "grub2") {
+	run_ssh "$grub_reboot $grub_number";
+    } elsif ($reboot_type eq "syslinux") {
+	run_ssh "$syslinux --once \\\"$syslinux_label\\\" $syslinux_path";
     } elsif (defined $reboot_script) {
 	run_command "$reboot_script";
     }
@@ -1556,13 +2026,15 @@ sub monitor {
     my $skip_call_trace = 0;
     my $loops;
 
+    my $start_time = time;
+
     wait_for_monitor 5;
 
     my $line;
     my $full_line = "";
 
     open(DMESG, "> $dmesg") or
-	die "unable to write to $dmesg";
+	dodie "unable to write to $dmesg";
 
     reboot_to;
 
@@ -1660,7 +2132,7 @@ sub monitor {
 		# We already booted into the kernel we are testing,
 		# but now we booted into another kernel?
 		# Consider this a triple fault.
-		doprint "Aleady booted in Linux kernel $version, but now\n";
+		doprint "Already booted in Linux kernel $version, but now\n";
 		doprint "we booted into Linux kernel $1.\n";
 		doprint "Assuming that this is a triple fault.\n";
 		doprint "To disable this: set DETECT_TRIPLE_FAULT to 0\n";
@@ -1679,6 +2151,9 @@ sub monitor {
 	    }
 	}
     }
+
+    my $end_time = time;
+    $reboot_time = $end_time - $start_time;
 
     close(DMESG);
 
@@ -1716,9 +2191,19 @@ sub do_post_install {
 	dodie "Failed to run post install";
 }
 
+# Sometimes the reboot fails, and will hang. We try to ssh to the box
+# and if we fail, we force another reboot, that should powercycle it.
+sub test_booted {
+    if (!run_ssh "echo testing connection") {
+	reboot $sleep_time;
+    }
+}
+
 sub install {
 
     return if ($no_install);
+
+    my $start_time = time;
 
     if (defined($pre_install)) {
 	my $cp_pre_install = eval_kernel_version $pre_install;
@@ -1727,6 +2212,8 @@ sub install {
     }
 
     my $cp_target = eval_kernel_version $target_image;
+
+    test_booted;
 
     run_scp_install "$outputdir/$build_target", "$cp_target" or
 	dodie "failed to copy image";
@@ -1738,8 +2225,10 @@ sub install {
     open(IN, "$output_config") or dodie("Can't read config file");
     while (<IN>) {
 	if (/CONFIG_MODULES(=y)?/) {
-	    $install_mods = 1 if (defined($1));
-	    last;
+	    if (defined($1)) {
+		$install_mods = 1;
+		last;
+	    }
 	}
     }
     close(IN);
@@ -1747,6 +2236,8 @@ sub install {
     if (!$install_mods) {
 	do_post_install;
 	doprint "No modules needed\n";
+	my $end_time = time;
+	$install_time = $end_time - $start_time;
 	return;
     }
 
@@ -1774,36 +2265,118 @@ sub install {
     run_ssh "rm -f /tmp/$modtar";
 
     do_post_install;
+
+    my $end_time = time;
+    $install_time = $end_time - $start_time;
 }
 
 sub get_version {
     # get the release name
     return if ($have_version);
     doprint "$make kernelrelease ... ";
-    $version = `$make kernelrelease | tail -1`;
+    $version = `$make -s kernelrelease | tail -1`;
     chomp($version);
     doprint "$version\n";
     $have_version = 1;
 }
 
-sub start_monitor_and_boot {
+sub start_monitor_and_install {
     # Make sure the stable kernel has finished booting
-    start_monitor;
-    wait_for_monitor 5;
-    end_monitor;
+
+    # Install bisects, don't need console
+    if (defined $console) {
+	start_monitor;
+	wait_for_monitor 5;
+	end_monitor;
+    }
 
     get_grub_index;
     get_version;
     install;
 
-    start_monitor;
+    start_monitor if (defined $console);
     return monitor;
 }
 
+my $check_build_re = ".*:.*(warning|error|Error):.*";
+my $utf8_quote = "\\x{e2}\\x{80}(\\x{98}|\\x{99})";
+
+sub process_warning_line {
+    my ($line) = @_;
+
+    chomp $line;
+
+    # for distcc heterogeneous systems, some compilers
+    # do things differently causing warning lines
+    # to be slightly different. This makes an attempt
+    # to fixe those issues.
+
+    # chop off the index into the line
+    # using distcc, some compilers give different indexes
+    # depending on white space
+    $line =~ s/^(\s*\S+:\d+:)\d+/$1/;
+
+    # Some compilers use UTF-8 extended for quotes and some don't.
+    $line =~ s/$utf8_quote/'/g;
+
+    return $line;
+}
+
+# Read buildlog and check against warnings file for any
+# new warnings.
+#
+# Returns 1 if OK
+#         0 otherwise
 sub check_buildlog {
+    return 1 if (!defined $warnings_file);
+
+    my %warnings_list;
+
+    # Failed builds should not reboot the target
+    my $save_no_reboot = $no_reboot;
+    $no_reboot = 1;
+
+    if (-f $warnings_file) {
+	open(IN, $warnings_file) or
+	    dodie "Error opening $warnings_file";
+
+	while (<IN>) {
+	    if (/$check_build_re/) {
+		my $warning = process_warning_line $_;
+		
+		$warnings_list{$warning} = 1;
+	    }
+	}
+	close(IN);
+    }
+
+    # If warnings file didn't exist, and WARNINGS_FILE exist,
+    # then we fail on any warning!
+
+    open(IN, $buildlog) or dodie "Can't open $buildlog";
+    while (<IN>) {
+	if (/$check_build_re/) {
+	    my $warning = process_warning_line $_;
+
+	    if (!defined $warnings_list{$warning}) {
+		fail "New warning found (not in $warnings_file)\n$_\n";
+		$no_reboot = $save_no_reboot;
+		return 0;
+	    }
+	}
+    }
+    $no_reboot = $save_no_reboot;
+    close(IN);
+}
+
+sub check_patch_buildlog {
     my ($patch) = @_;
 
     my @files = `git show $patch | diffstat -l`;
+
+    foreach my $file (@files) {
+	chomp $file;
+    }
 
     open(IN, "git show $patch |") or
 	dodie "failed to show $patch";
@@ -1871,12 +2444,16 @@ sub make_oldconfig {
 	apply_min_config;
     }
 
-    if (!run_command "$make oldnoconfig") {
-	# Perhaps oldnoconfig doesn't exist in this version of the kernel
-	# try a yes '' | oldconfig
-	doprint "oldnoconfig failed, trying yes '' | make oldconfig\n";
-	run_command "yes '' | $make oldconfig" or
-	    dodie "failed make config oldconfig";
+    if (!run_command "$make olddefconfig") {
+	# Perhaps olddefconfig doesn't exist in this version of the kernel
+	# try oldnoconfig
+	doprint "olddefconfig failed, trying make oldnoconfig\n";
+	if (!run_command "$make oldnoconfig") {
+	    doprint "oldnoconfig failed, trying yes '' | make oldconfig\n";
+	    # try a yes '' | oldconfig
+	    run_command "yes '' | $make oldconfig" or
+		dodie "failed make config oldconfig";
+	}
     }
 }
 
@@ -1903,6 +2480,8 @@ sub build {
 
     unlink $buildlog;
 
+    my $start_time = time;
+
     # Failed builds should not reboot the target
     my $save_no_reboot = $no_reboot;
     $no_reboot = 1;
@@ -1927,7 +2506,7 @@ sub build {
 
     # old config can ask questions
     if ($type eq "oldconfig") {
-	$type = "oldnoconfig";
+	$type = "olddefconfig";
 
 	# allow for empty configs
 	run_command "touch $output_config";
@@ -1957,16 +2536,14 @@ sub build {
 	load_force_config($minconfig);
     }
 
-    if ($type ne "oldnoconfig") {
+    if ($type ne "olddefconfig") {
 	run_command "$make $type" or
 	    dodie "failed make config";
     }
     # Run old config regardless, to enforce min configurations
     make_oldconfig;
 
-    $redirect = "$buildlog";
-    my $build_ret = run_command "$make $build_options";
-    undef $redirect;
+    my $build_ret = run_command "$make $build_options", $buildlog;
 
     if (defined($post_build)) {
 	# Because a post build may change the kernel version
@@ -1990,6 +2567,9 @@ sub build {
 
     $no_reboot = $save_no_reboot;
 
+    my $end_time = time;
+    $build_time = $end_time - $start_time;
+
     return 1;
 }
 
@@ -2008,10 +2588,6 @@ sub halt {
 sub success {
     my ($i) = @_;
 
-    if (defined($post_test)) {
-	run_command $post_test;
-    }
-
     $successes++;
 
     my $name = "";
@@ -2019,6 +2595,8 @@ sub success {
     if (defined($test_name)) {
 	$name = " ($test_name)";
     }
+
+    print_times;
 
     doprint "\n\n*******************************************\n";
     doprint     "*******************************************\n";
@@ -2034,36 +2612,39 @@ sub success {
 	doprint "Reboot and wait $sleep_time seconds\n";
 	reboot_to_good $sleep_time;
     }
+
+    if (defined($post_test)) {
+	run_command $post_test;
+    }
 }
 
 sub answer_bisect {
     for (;;) {
-	doprint "Pass or fail? [p/f]";
+	doprint "Pass, fail, or skip? [p/f/s]";
 	my $ans = <STDIN>;
 	chomp $ans;
 	if ($ans eq "p" || $ans eq "P") {
 	    return 1;
 	} elsif ($ans eq "f" || $ans eq "F") {
 	    return 0;
+	} elsif ($ans eq "s" || $ans eq "S") {
+	    return -1;
 	} else {
-	    print "Please answer 'P' or 'F'\n";
+	    print "Please answer 'p', 'f', or 's'\n";
 	}
     }
 }
 
 sub child_run_test {
-    my $failed = 0;
 
     # child should have no power
     $reboot_on_error = 0;
     $poweroff_on_error = 0;
     $die_on_failure = 1;
 
-    $redirect = "$testlog";
-    run_command $run_test or $failed = 1;
-    undef $redirect;
+    run_command $run_test, $testlog;
 
-    exit $failed;
+    exit $run_command_status;
 }
 
 my $child_done;
@@ -2079,6 +2660,8 @@ sub do_run_test {
     my $full_line;
     my $bug = 0;
     my $bug_ignored = 0;
+
+    my $start_time = time;
 
     wait_for_monitor 1;
 
@@ -2144,7 +2727,10 @@ sub do_run_test {
     }
 
     waitpid $child_pid, 0;
-    $child_exit = $?;
+    $child_exit = $? >> 8;
+
+    my $end_time = time;
+    $test_time = $end_time - $start_time;
 
     if (!$bug && $in_bisect) {
 	if (defined($bisect_ret_good)) {
@@ -2246,7 +2832,7 @@ sub run_bisect_test {
 	dodie "Failed on build" if $failed;
 
 	# Now boot the box
-	start_monitor_and_boot or $failed = 1;
+	start_monitor_and_install or $failed = 1;
 
 	if ($type ne "boot") {
 	    if ($failed && $bisect_skip) {
@@ -2286,10 +2872,27 @@ sub run_bisect {
 	$buildtype = "useconfig:$minconfig";
     }
 
-    my $ret = run_bisect_test $type, $buildtype;
+    # If the user sets bisect_tries to less than 1, then no tries
+    # is a success.
+    my $ret = 1;
 
-    if ($bisect_manual) {
+    # Still let the user manually decide that though.
+    if ($bisect_tries < 1 && $bisect_manual) {
 	$ret = answer_bisect;
+    }
+
+    for (my $i = 0; $i < $bisect_tries; $i++) {
+	if ($bisect_tries > 1) {
+	    my $t = $i + 1;
+	    doprint("Running bisect trial $t of $bisect_tries:\n");
+	}
+	$ret = run_bisect_test $type, $buildtype;
+
+	if ($bisect_manual) {
+	    $ret = answer_bisect;
+	}
+
+	last if (!$ret);
     }
 
     # Are we looking for where it worked, not failed?
@@ -2310,7 +2913,7 @@ sub run_bisect {
 sub update_bisect_replay {
     my $tmp_log = "$tmpdir/ktest_bisect_log";
     run_command "git bisect log > $tmp_log" or
-	die "can't create bisect log";
+	dodie "can't create bisect log";
     return $tmp_log;
 }
 
@@ -2319,9 +2922,9 @@ sub bisect {
 
     my $result;
 
-    die "BISECT_GOOD[$i] not defined\n"	if (!defined($bisect_good));
-    die "BISECT_BAD[$i] not defined\n"	if (!defined($bisect_bad));
-    die "BISECT_TYPE[$i] not defined\n"	if (!defined($bisect_type));
+    dodie "BISECT_GOOD[$i] not defined\n"	if (!defined($bisect_good));
+    dodie "BISECT_BAD[$i] not defined\n"	if (!defined($bisect_bad));
+    dodie "BISECT_TYPE[$i] not defined\n"	if (!defined($bisect_type));
 
     my $good = $bisect_good;
     my $bad = $bisect_bad;
@@ -2384,7 +2987,7 @@ sub bisect {
 	if ($check ne "good") {
 	    doprint "TESTING BISECT BAD [$bad]\n";
 	    run_command "git checkout $bad" or
-		die "Failed to checkout $bad";
+		dodie "Failed to checkout $bad";
 
 	    $result = run_bisect $type;
 
@@ -2396,7 +2999,7 @@ sub bisect {
 	if ($check ne "bad") {
 	    doprint "TESTING BISECT GOOD [$good]\n";
 	    run_command "git checkout $good" or
-		die "Failed to checkout $good";
+		dodie "Failed to checkout $good";
 
 	    $result = run_bisect $type;
 
@@ -2407,21 +3010,23 @@ sub bisect {
 
 	# checkout where we started
 	run_command "git checkout $head" or
-	    die "Failed to checkout $head";
+	    dodie "Failed to checkout $head";
     }
 
     run_command "git bisect start$start_files" or
 	dodie "could not start bisect";
 
-    run_command "git bisect good $good" or
-	dodie "could not set bisect good to $good";
-
-    run_git_bisect "git bisect bad $bad" or
-	dodie "could not set bisect bad to $bad";
-
     if (defined($replay)) {
 	run_command "git bisect replay $replay" or
 	    dodie "failed to run replay";
+    } else {
+
+	run_command "git bisect good $good" or
+	    dodie "could not set bisect good to $good";
+
+	run_git_bisect "git bisect bad $bad" or
+	    dodie "could not set bisect bad to $bad";
+
     }
 
     if (defined($start)) {
@@ -2433,6 +3038,7 @@ sub bisect {
     do {
 	$result = run_bisect $type;
 	$test = run_git_bisect "git bisect $result";
+	print_times;
     } while ($test);
 
     run_command "git bisect log" or
@@ -2456,8 +3062,7 @@ my %config_set;
 
 # config_off holds the set of configs that the bad config had disabled.
 # We need to record them and set them in the .config when running
-# oldnoconfig, because oldnoconfig does not turn off new symbols, but
-# instead just keeps the defaults.
+# olddefconfig, because olddefconfig keeps the defaults.
 my %config_off;
 
 # config_off_tmp holds a set of configs to turn off for now
@@ -2472,11 +3077,16 @@ my %dependency;
 sub assign_configs {
     my ($hash, $config) = @_;
 
+    doprint "Reading configs from $config\n";
+
     open (IN, $config)
 	or dodie "Failed to read $config";
 
     while (<IN>) {
+	chomp;
 	if (/^((CONFIG\S*)=.*)/) {
+	    ${$hash}{$2} = $1;
+	} elsif (/^(# (CONFIG\S*) is not set)/) {
 	    ${$hash}{$2} = $1;
 	}
     }
@@ -2488,27 +3098,6 @@ sub process_config_ignore {
     my ($config) = @_;
 
     assign_configs \%config_ignore, $config;
-}
-
-sub read_current_config {
-    my ($config_ref) = @_;
-
-    %{$config_ref} = ();
-    undef %{$config_ref};
-
-    my @key = keys %{$config_ref};
-    if ($#key >= 0) {
-	print "did not delete!\n";
-	exit;
-    }
-    open (IN, "$output_config");
-
-    while (<IN>) {
-	if (/^(CONFIG\S+)=(.*)/) {
-	    ${$config_ref}{$1} = $2;
-	}
-    }
-    close(IN);
 }
 
 sub get_dependencies {
@@ -2529,336 +3118,201 @@ sub get_dependencies {
     return @deps;
 }
 
-sub create_config {
-    my @configs = @_;
+sub save_config {
+    my ($pc, $file) = @_;
 
-    open(OUT, ">$output_config") or dodie "Can not write to $output_config";
+    my %configs = %{$pc};
 
-    foreach my $config (@configs) {
-	print OUT "$config_set{$config}\n";
-	my @deps = get_dependencies $config;
-	foreach my $dep (@deps) {
-	    print OUT "$config_set{$dep}\n";
-	}
-    }
+    doprint "Saving configs into $file\n";
 
-    # turn off configs to keep off
-    foreach my $config (keys %config_off) {
-	print OUT "# $config is not set\n";
-    }
+    open(OUT, ">$file") or dodie "Can not write to $file";
 
-    # turn off configs that should be off for now
-    foreach my $config (@config_off_tmp) {
-	print OUT "# $config is not set\n";
-    }
-
-    foreach my $config (keys %config_ignore) {
-	print OUT "$config_ignore{$config}\n";
+    foreach my $config (keys %configs) {
+	print OUT "$configs{$config}\n";
     }
     close(OUT);
-
-    make_oldconfig;
 }
 
-sub compare_configs {
-    my (%a, %b) = @_;
+sub create_config {
+    my ($name, $pc) = @_;
 
-    foreach my $item (keys %a) {
-	if (!defined($b{$item})) {
-	    print "diff $item\n";
-	    return 1;
-	}
-	delete $b{$item};
-    }
+    doprint "Creating old config from $name configs\n";
 
-    my @keys = keys %b;
-    if ($#keys) {
-	print "diff2 $keys[0]\n";
-    }
-    return -1 if ($#keys >= 0);
+    save_config $pc, $output_config;
 
-    return 0;
+    make_oldconfig;
 }
 
 sub run_config_bisect_test {
     my ($type) = @_;
 
-    return run_bisect_test $type, "oldconfig";
-}
+    my $ret = run_bisect_test $type, "oldconfig";
 
-sub process_passed {
-    my (%configs) = @_;
-
-    doprint "These configs had no failure: (Enabling them for further compiles)\n";
-    # Passed! All these configs are part of a good compile.
-    # Add them to the min options.
-    foreach my $config (keys %configs) {
-	if (defined($config_list{$config})) {
-	    doprint " removing $config\n";
-	    $config_ignore{$config} = $config_list{$config};
-	    delete $config_list{$config};
-	}
+    if ($bisect_manual) {
+	$ret = answer_bisect;
     }
-    doprint "config copied to $outputdir/config_good\n";
-    run_command "cp -f $output_config $outputdir/config_good";
+
+    return $ret;
 }
 
-sub process_failed {
-    my ($config) = @_;
+sub config_bisect_end {
+    my ($good, $bad) = @_;
+    my $diffexec = "diff -u";
 
+    if (-f "$builddir/scripts/diffconfig") {
+	$diffexec = "$builddir/scripts/diffconfig";
+    }
     doprint "\n\n***************************************\n";
-    doprint "Found bad config: $config\n";
+    doprint "No more config bisecting possible.\n";
+    run_command "$diffexec $good $bad", 1;
     doprint "***************************************\n\n";
 }
 
 sub run_config_bisect {
-
-    my @start_list = keys %config_list;
-
-    if ($#start_list < 0) {
-	doprint "No more configs to test!!!\n";
-	return -1;
-    }
-
-    doprint "***** RUN TEST ***\n";
-    my $type = $config_bisect_type;
+    my ($good, $bad, $last_result) = @_;
+    my $reset = "";
+    my $cmd;
     my $ret;
-    my %current_config;
 
-    my $count = $#start_list + 1;
-    doprint "  $count configs to test\n";
+    if (!length($last_result)) {
+	$reset = "-r";
+    }
+    run_command "$config_bisect_exec $reset -b $outputdir $good $bad $last_result", 1;
 
-    my $half = int($#start_list / 2);
-
-    do {
-	my @tophalf = @start_list[0 .. $half];
-
-	# keep the bottom half off
-	if ($half < $#start_list) {
-	    @config_off_tmp = @start_list[$half + 1 .. $#start_list];
-	} else {
-	    @config_off_tmp = ();
-	}
-
-	create_config @tophalf;
-	read_current_config \%current_config;
-
-	$count = $#tophalf + 1;
-	doprint "Testing $count configs\n";
-	my $found = 0;
-	# make sure we test something
-	foreach my $config (@tophalf) {
-	    if (defined($current_config{$config})) {
-		logit " $config\n";
-		$found = 1;
-	    }
-	}
-	if (!$found) {
-	    # try the other half
-	    doprint "Top half produced no set configs, trying bottom half\n";
-
-	    # keep the top half off
-	    @config_off_tmp = @tophalf;
-	    @tophalf = @start_list[$half + 1 .. $#start_list];
-
-	    create_config @tophalf;
-	    read_current_config \%current_config;
-	    foreach my $config (@tophalf) {
-		if (defined($current_config{$config})) {
-		    logit " $config\n";
-		    $found = 1;
-		}
-	    }
-	    if (!$found) {
-		doprint "Failed: Can't make new config with current configs\n";
-		foreach my $config (@start_list) {
-		    doprint "  CONFIG: $config\n";
-		}
-		return -1;
-	    }
-	    $count = $#tophalf + 1;
-	    doprint "Testing $count configs\n";
-	}
-
-	$ret = run_config_bisect_test $type;
-	if ($bisect_manual) {
-	    $ret = answer_bisect;
-	}
-	if ($ret) {
-	    process_passed %current_config;
-	    return 0;
-	}
-
-	doprint "This config had a failure.\n";
-	doprint "Removing these configs that were not set in this config:\n";
-	doprint "config copied to $outputdir/config_bad\n";
-	run_command "cp -f $output_config $outputdir/config_bad";
-
-	# A config exists in this group that was bad.
-	foreach my $config (keys %config_list) {
-	    if (!defined($current_config{$config})) {
-		doprint " removing $config\n";
-		delete $config_list{$config};
-	    }
-	}
-
-	@start_list = @tophalf;
-
-	if ($#start_list == 0) {
-	    process_failed $start_list[0];
-	    return 1;
-	}
-
-	# remove half the configs we are looking at and see if
-	# they are good.
-	$half = int($#start_list / 2);
-    } while ($#start_list > 0);
-
-    # we found a single config, try it again unless we are running manually
-
-    if ($bisect_manual) {
-	process_failed $start_list[0];
-	return 1;
+    # config-bisect returns:
+    #   0 if there is more to bisect
+    #   1 for finding a good config
+    #   2 if it can not find any more configs
+    #  -1 (255) on error
+    if ($run_command_status) {
+	return $run_command_status;
     }
 
-    my @tophalf = @start_list[0 .. 0];
-
-    $ret = run_config_bisect_test $type;
+    $ret = run_config_bisect_test $config_bisect_type;
     if ($ret) {
-	process_passed %current_config;
-	return 0;
+        doprint "NEW GOOD CONFIG\n";
+	# Return 3 for good config
+	return 3;
+    } else {
+        doprint "NEW BAD CONFIG\n";
+	# Return 4 for bad config
+	return 4;
     }
-
-    process_failed $start_list[0];
-    return 1;
 }
 
 sub config_bisect {
     my ($i) = @_;
 
-    my $start_config = $config_bisect;
+    my $good_config;
+    my $bad_config;
 
-    my $tmpconfig = "$tmpdir/use_config";
-
-    if (defined($config_bisect_good)) {
-	process_config_ignore $config_bisect_good;
-    }
-
-    # Make the file with the bad config and the min config
-    if (defined($minconfig)) {
-	# read the min config for things to ignore
-	run_command "cp $minconfig $tmpconfig" or
-	    dodie "failed to copy $minconfig to $tmpconfig";
-    } else {
-	unlink $tmpconfig;
-    }
-
-    if (-f $tmpconfig) {
-	load_force_config($tmpconfig);
-	process_config_ignore $tmpconfig;
-    }
-
-    # now process the start config
-    run_command "cp $start_config $output_config" or
-	dodie "failed to copy $start_config to $output_config";
-
-    # read directly what we want to check
-    my %config_check;
-    open (IN, $output_config)
-	or dodie "failed to open $output_config";
-
-    while (<IN>) {
-	if (/^((CONFIG\S*)=.*)/) {
-	    $config_check{$2} = $1;
-	}
-    }
-    close(IN);
-
-    # Now run oldconfig with the minconfig
-    make_oldconfig;
-
-    # check to see what we lost (or gained)
-    open (IN, $output_config)
-	or dodie "Failed to read $start_config";
-
-    my %removed_configs;
-    my %added_configs;
-
-    while (<IN>) {
-	if (/^((CONFIG\S*)=.*)/) {
-	    # save off all options
-	    $config_set{$2} = $1;
-	    if (defined($config_check{$2})) {
-		if (defined($config_ignore{$2})) {
-		    $removed_configs{$2} = $1;
-		} else {
-		    $config_list{$2} = $1;
-		}
-	    } elsif (!defined($config_ignore{$2})) {
-		$added_configs{$2} = $1;
-		$config_list{$2} = $1;
-	    }
-	} elsif (/^# ((CONFIG\S*).*)/) {
-	    # Keep these configs disabled
-	    $config_set{$2} = $1;
-	    $config_off{$2} = $1;
-	}
-    }
-    close(IN);
-
-    my @confs = keys %removed_configs;
-    if ($#confs >= 0) {
-	doprint "Configs overridden by default configs and removed from check:\n";
-	foreach my $config (@confs) {
-	    doprint " $config\n";
-	}
-    }
-    @confs = keys %added_configs;
-    if ($#confs >= 0) {
-	doprint "Configs appearing in make oldconfig and added:\n";
-	foreach my $config (@confs) {
-	    doprint " $config\n";
-	}
-    }
-
-    my %config_test;
-    my $once = 0;
-
-    @config_off_tmp = ();
-
-    # Sometimes kconfig does weird things. We must make sure
-    # that the config we autocreate has everything we need
-    # to test, otherwise we may miss testing configs, or
-    # may not be able to create a new config.
-    # Here we create a config with everything set.
-    create_config (keys %config_list);
-    read_current_config \%config_test;
-    foreach my $config (keys %config_list) {
-	if (!defined($config_test{$config})) {
-	    if (!$once) {
-		$once = 1;
-		doprint "Configs not produced by kconfig (will not be checked):\n";
-	    }
-	    doprint "  $config\n";
-	    delete $config_list{$config};
-	}
-    }
+    my $type = $config_bisect_type;
     my $ret;
 
-    if (defined($config_bisect_check) && $config_bisect_check) {
-	doprint " Checking to make sure bad config with min config fails\n";
-	create_config keys %config_list;
-	$ret = run_config_bisect_test $config_bisect_type;
-	if ($ret) {
-	    doprint " FAILED! Bad config with min config boots fine\n";
-	    return -1;
+    $bad_config = $config_bisect;
+
+    if (defined($config_bisect_good)) {
+	$good_config = $config_bisect_good;
+    } elsif (defined($minconfig)) {
+	$good_config = $minconfig;
+    } else {
+	doprint "No config specified, checking if defconfig works";
+	$ret = run_bisect_test $type, "defconfig";
+	if (!$ret) {
+	    fail "Have no good config to compare with, please set CONFIG_BISECT_GOOD";
+	    return 1;
 	}
-	doprint " Bad config with min config fails as expected\n";
+	$good_config = $output_config;
     }
 
+    if (!defined($config_bisect_exec)) {
+	# First check the location that ktest.pl ran
+	my @locations = ( "$pwd/config-bisect.pl",
+			  "$dirname/config-bisect.pl",
+			  "$builddir/tools/testing/ktest/config-bisect.pl",
+			  undef );
+	foreach my $loc (@locations) {
+	    doprint "loc = $loc\n";
+	    $config_bisect_exec = $loc;
+	    last if (defined($config_bisect_exec && -x $config_bisect_exec));
+	}
+	if (!defined($config_bisect_exec)) {
+	    fail "Could not find an executable config-bisect.pl\n",
+		"  Set CONFIG_BISECT_EXEC to point to config-bisect.pl";
+	    return 1;
+	}
+    }
+
+    # we don't want min configs to cause issues here.
+    doprint "Disabling 'MIN_CONFIG' for this test\n";
+    undef $minconfig;
+
+    my %good_configs;
+    my %bad_configs;
+    my %tmp_configs;
+
+    if (-f "$tmpdir/good_config.tmp" || -f "$tmpdir/bad_config.tmp") {
+	if (read_yn "Interrupted config-bisect. Continue (n - will start new)?") {
+	    if (-f "$tmpdir/good_config.tmp") {
+		$good_config = "$tmpdir/good_config.tmp";
+	    } else {
+		$good_config = "$tmpdir/good_config";
+	    }
+	    if (-f "$tmpdir/bad_config.tmp") {
+		$bad_config = "$tmpdir/bad_config.tmp";
+	    } else {
+		$bad_config = "$tmpdir/bad_config";
+	    }
+	}
+    }
+    doprint "Run good configs through make oldconfig\n";
+    assign_configs \%tmp_configs, $good_config;
+    create_config "$good_config", \%tmp_configs;
+    $good_config = "$tmpdir/good_config";
+    system("cp $output_config $good_config") == 0 or dodie "cp good config";
+
+    doprint "Run bad configs through make oldconfig\n";
+    assign_configs \%tmp_configs, $bad_config;
+    create_config "$bad_config", \%tmp_configs;
+    $bad_config = "$tmpdir/bad_config";
+    system("cp $output_config $bad_config") == 0 or dodie "cp bad config";
+
+    if (defined($config_bisect_check) && $config_bisect_check ne "0") {
+	if ($config_bisect_check ne "good") {
+	    doprint "Testing bad config\n";
+
+	    $ret = run_bisect_test $type, "useconfig:$bad_config";
+	    if ($ret) {
+		fail "Bad config succeeded when expected to fail!";
+		return 0;
+	    }
+	}
+	if ($config_bisect_check ne "bad") {
+	    doprint "Testing good config\n";
+
+	    $ret = run_bisect_test $type, "useconfig:$good_config";
+	    if (!$ret) {
+		fail "Good config failed when expected to succeed!";
+		return 0;
+	    }
+	}
+    }
+
+    my $last_run = "";
+
     do {
-	$ret = run_config_bisect;
-    } while (!$ret);
+	$ret = run_config_bisect $good_config, $bad_config, $last_run;
+	if ($ret == 3) {
+	    $last_run = "good";
+	} elsif ($ret == 4) {
+	    $last_run = "bad";
+	}
+	print_times;
+    } while ($ret == 3 || $ret == 4);
+
+    if ($ret == 2) {
+        config_bisect_end "$good_config.tmp", "$bad_config.tmp";
+    }
 
     return $ret if ($ret < 0);
 
@@ -2873,16 +3327,23 @@ sub patchcheck_reboot {
 sub patchcheck {
     my ($i) = @_;
 
-    die "PATCHCHECK_START[$i] not defined\n"
+    dodie "PATCHCHECK_START[$i] not defined\n"
 	if (!defined($patchcheck_start));
-    die "PATCHCHECK_TYPE[$i] not defined\n"
+    dodie "PATCHCHECK_TYPE[$i] not defined\n"
 	if (!defined($patchcheck_type));
 
     my $start = $patchcheck_start;
 
+    my $cherry = $patchcheck_cherry;
+    if (!defined($cherry)) {
+	$cherry = 0;
+    }
+
     my $end = "HEAD";
     if (defined($patchcheck_end)) {
 	$end = $patchcheck_end;
+    } elsif ($cherry) {
+	dodie "PATCHCHECK_END must be defined with PATCHCHECK_CHERRY\n";
     }
 
     # Get the true sha1's since we can use things like HEAD~3
@@ -2896,24 +3357,38 @@ sub patchcheck {
 	$type = "boot";
     }
 
-    open (IN, "git log --pretty=oneline $end|") or
-	dodie "could not get git list";
+    if ($cherry) {
+	open (IN, "git cherry -v $start $end|") or
+	    dodie "could not get git list";
+    } else {
+	open (IN, "git log --pretty=oneline $end|") or
+	    dodie "could not get git list";
+    }
 
     my @list;
 
     while (<IN>) {
 	chomp;
+	# git cherry adds a '+' we want to remove
+	s/^\+ //;
 	$list[$#list+1] = $_;
 	last if (/^$start/);
     }
     close(IN);
 
-    if ($list[$#list] !~ /^$start/) {
-	fail "SHA1 $start not found";
+    if (!$cherry) {
+	if ($list[$#list] !~ /^$start/) {
+	    fail "SHA1 $start not found";
+	}
+
+	# go backwards in the list
+	@list = reverse @list;
     }
 
-    # go backwards in the list
-    @list = reverse @list;
+    doprint("Going to test the following commits:\n");
+    foreach my $l (@list) {
+	doprint "$l\n";
+    }
 
     my $save_clean = $noclean;
     my %ignored_warnings;
@@ -2929,10 +3404,10 @@ sub patchcheck {
 	my $sha1 = $item;
 	$sha1 =~ s/^([[:xdigit:]]+).*/$1/;
 
-	doprint "\nProcessing commit $item\n\n";
+	doprint "\nProcessing commit \"$item\"\n\n";
 
 	run_command "git checkout $sha1" or
-	    die "Failed to checkout $sha1";
+	    dodie "Failed to checkout $sha1";
 
 	# only clean on the first and last patch
 	if ($item eq $list[0] ||
@@ -2949,25 +3424,29 @@ sub patchcheck {
 	    build "oldconfig" or return 0;
 	}
 
-
-	if (!defined($ignored_warnings{$sha1})) {
-	    check_buildlog $sha1 or return 0;
+	# No need to do per patch checking if warnings file exists
+	if (!defined($warnings_file) && !defined($ignored_warnings{$sha1})) {
+	    check_patch_buildlog $sha1 or return 0;
 	}
+
+	check_buildlog or return 0;
 
 	next if ($type eq "build");
 
 	my $failed = 0;
 
-	start_monitor_and_boot or $failed = 1;
+	start_monitor_and_install or $failed = 1;
 
 	if (!$failed && $type ne "boot"){
 	    do_run_test or $failed = 1;
 	}
 	end_monitor;
-	return 0 if ($failed);
-
+	if ($failed) {
+	    print_times;
+	    return 0;
+	}
 	patchcheck_reboot;
-
+	print_times;
     }
     $in_patchcheck = 0;
     success $i;
@@ -3019,7 +3498,7 @@ sub read_kconfig {
     }
 
     open(KIN, "$kconfig")
-	or die "Can't open $kconfig";
+	or dodie "Can't open $kconfig";
     while (<KIN>) {
 	chomp;
 
@@ -3115,8 +3594,6 @@ sub read_depends {
     # what directory to look at.
     if ($arch eq "i386" || $arch eq "x86_64") {
 	$arch = "x86";
-    } elsif ($arch =~ /^tile/) {
-	$arch = "tile";
     }
 
     my $kconfig = "$builddir/arch/$arch/Kconfig";
@@ -3134,29 +3611,6 @@ sub read_depends {
     }
 
     read_kconfig($kconfig);
-}
-
-sub read_config_list {
-    my ($config) = @_;
-
-    open (IN, $config)
-	or dodie "Failed to read $config";
-
-    while (<IN>) {
-	if (/^((CONFIG\S*)=.*)/) {
-	    if (!defined($config_ignore{$2})) {
-		$config_list{$2} = $1;
-	    }
-	}
-    }
-
-    close(IN);
-}
-
-sub read_output_config {
-    my ($config) = @_;
-
-    assign_configs \%config_ignore, $config;
 }
 
 sub make_new_config {
@@ -3203,7 +3657,7 @@ sub get_depends {
 
 	    $dep =~ s/^[^$valid]*[$valid]+//;
 	} else {
-	    die "this should never happen";
+	    dodie "this should never happen";
 	}
     }
 
@@ -3248,7 +3702,7 @@ sub test_this_config {
     }
 
     # Remove this config from the list of configs
-    # do a make oldnoconfig and then read the resulting
+    # do a make olddefconfig and then read the resulting
     # .config to make sure it is missing the config that
     # we had before
     my %configs = %min_configs;
@@ -3258,7 +3712,9 @@ sub test_this_config {
     undef %configs;
     assign_configs \%configs, $output_config;
 
-    return $config if (!defined($configs{$config}));
+    if (!defined($configs{$config}) || $configs{$config} =~ /^#/) {
+	return $config;
+    }
 
     doprint "disabling config $config did not change .config\n";
 
@@ -3441,7 +3897,7 @@ sub make_min_config {
 	my $failed = 0;
 	build "oldconfig" or $failed = 1;
 	if (!$failed) {
-		start_monitor_and_boot or $failed = 1;
+		start_monitor_and_install or $failed = 1;
 
 		if ($type eq "test" && !$failed) {
 		    do_run_test or $failed = 1;
@@ -3462,7 +3918,7 @@ sub make_min_config {
 	    # update new ignore configs
 	    if (defined($ignore_config)) {
 		open (OUT, ">$temp_config")
-		    or die "Can't write to $temp_config";
+		    or dodie "Can't write to $temp_config";
 		foreach my $config (keys %save_configs) {
 		    print OUT "$save_configs{$config}\n";
 		}
@@ -3488,9 +3944,9 @@ sub make_min_config {
 		}
 	    }
 
-	    # Save off all the current mandidory configs
+	    # Save off all the current mandatory configs
 	    open (OUT, ">$temp_config")
-		or die "Can't write to $temp_config";
+		or dodie "Can't write to $temp_config";
 	    foreach my $config (keys %keep_configs) {
 		print OUT "$keep_configs{$config}\n";
 	    }
@@ -3511,7 +3967,40 @@ sub make_min_config {
     return 1;
 }
 
-$#ARGV < 1 or die "ktest.pl version: $VERSION\n   usage: ktest.pl config-file\n";
+sub make_warnings_file {
+    my ($i) = @_;
+
+    if (!defined($warnings_file)) {
+	dodie "Must define WARNINGS_FILE for make_warnings_file test";
+    }
+
+    if ($build_type eq "nobuild") {
+	dodie "BUILD_TYPE can not be 'nobuild' for make_warnings_file test";
+    }
+
+    build $build_type or dodie "Failed to build";
+
+    open(OUT, ">$warnings_file") or dodie "Can't create $warnings_file";
+
+    open(IN, $buildlog) or dodie "Can't open $buildlog";
+    while (<IN>) {
+
+	# Some compilers use UTF-8 extended for quotes
+	# for distcc heterogeneous systems, this causes issues
+	s/$utf8_quote/'/g;
+
+	if (/$check_build_re/) {
+	    print OUT;
+	}
+    }
+    close(IN);
+
+    close(OUT);
+
+    success $i;
+}
+
+$#ARGV < 1 or die "ktest.pl version: $VERSION\n   usage: ktest.pl [config-file]\n";
 
 if ($#ARGV == 0) {
     $ktest_config = $ARGV[0];
@@ -3521,8 +4010,6 @@ if ($#ARGV == 0) {
 	    exit 0;
 	}
     }
-} else {
-    $ktest_config = "ktest.conf";
 }
 
 if (! -f $ktest_config) {
@@ -3556,7 +4043,7 @@ EOF
 read_config $ktest_config;
 
 if (defined($opt{"LOG_FILE"})) {
-    $opt{"LOG_FILE"} = eval_option($opt{"LOG_FILE"}, -1);
+    $opt{"LOG_FILE"} = eval_option("LOG_FILE", $opt{"LOG_FILE"}, -1);
 }
 
 # Append any configs entered in manually to the config file.
@@ -3601,12 +4088,22 @@ for (my $i = 0, my $repeat = 1; $i <= $opt{"NUM_TESTS"}; $i += $repeat) {
     }
 }
 
+sub option_defined {
+    my ($option) = @_;
+
+    if (defined($opt{$option}) && $opt{$option} !~ /^\s*$/) {
+	return 1;
+    }
+
+    return 0;
+}
+
 sub __set_test_option {
     my ($name, $i) = @_;
 
     my $option = "$name\[$i\]";
 
-    if (defined($opt{$option})) {
+    if (option_defined($option)) {
 	return $opt{$option};
     }
 
@@ -3614,13 +4111,13 @@ sub __set_test_option {
 	if ($i >= $test &&
 	    $i < $test + $repeat_tests{$test}) {
 	    $option = "$name\[$test\]";
-	    if (defined($opt{$option})) {
+	    if (option_defined($option)) {
 		return $opt{$option};
 	    }
 	}
     }
 
-    if (defined($opt{$name})) {
+    if (option_defined($name)) {
 	return $opt{$name};
     }
 
@@ -3633,8 +4130,76 @@ sub set_test_option {
     my $option = __set_test_option($name, $i);
     return $option if (!defined($option));
 
-    return eval_option($option, $i);
+    return eval_option($name, $option, $i);
 }
+
+sub find_mailer {
+    my ($mailer) = @_;
+
+    my @paths = split /:/, $ENV{PATH};
+
+    # sendmail is usually in /usr/sbin
+    $paths[$#paths + 1] = "/usr/sbin";
+
+    foreach my $path (@paths) {
+	if (-x "$path/$mailer") {
+	    return $path;
+	}
+    }
+
+    return undef;
+}
+
+sub do_send_mail {
+    my ($subject, $message) = @_;
+
+    if (!defined($mail_path)) {
+	# find the mailer
+	$mail_path = find_mailer $mailer;
+	if (!defined($mail_path)) {
+	    die "\nCan not find $mailer in PATH\n";
+	}
+    }
+
+    if (!defined($mail_command)) {
+	if ($mailer eq "mail" || $mailer eq "mailx") {
+	    $mail_command = "\$MAIL_PATH/\$MAILER -s \'\$SUBJECT\' \$MAILTO <<< \'\$MESSAGE\'";
+	} elsif ($mailer eq "sendmail" ) {
+	    $mail_command =  "echo \'Subject: \$SUBJECT\n\n\$MESSAGE\' | \$MAIL_PATH/\$MAILER -t \$MAILTO";
+	} else {
+	    die "\nYour mailer: $mailer is not supported.\n";
+	}
+    }
+
+    $mail_command =~ s/\$MAILER/$mailer/g;
+    $mail_command =~ s/\$MAIL_PATH/$mail_path/g;
+    $mail_command =~ s/\$MAILTO/$mailto/g;
+    $mail_command =~ s/\$SUBJECT/$subject/g;
+    $mail_command =~ s/\$MESSAGE/$message/g;
+
+    run_command $mail_command;
+}
+
+sub send_email {
+
+    if (defined($mailto)) {
+	if (!defined($mailer)) {
+	    doprint "No email sent: email or mailer not specified in config.\n";
+	    return;
+	}
+	do_send_mail @_;
+    }
+}
+
+sub cancel_test {
+    if ($email_when_canceled) {
+        send_email("KTEST: Your [$test_type] test was cancelled",
+                "Your test started at $script_start_time was cancelled: sig int");
+    }
+    die "\nCaught Sig Int, test interrupted: $!\n"
+}
+
+$SIG{INT} = qw(cancel_test);
 
 # First we need to do is the builds
 for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
@@ -3647,9 +4212,26 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
 
     $iteration = $i;
 
+    $build_time = 0;
+    $install_time = 0;
+    $reboot_time = 0;
+    $test_time = 0;
+
     undef %force_config;
 
     my $makecmd = set_test_option("MAKE_CMD", $i);
+
+    $outputdir = set_test_option("OUTPUT_DIR", $i);
+    $builddir = set_test_option("BUILD_DIR", $i);
+
+    chdir $builddir || dodie "can't change directory to $builddir";
+
+    if (!-d $outputdir) {
+	mkpath($outputdir) or
+	    dodie "can't create $outputdir";
+    }
+
+    $make = "$makecmd O=$outputdir";
 
     # Load all the options into their mapped variable names
     foreach my $opt (keys %option_map) {
@@ -3659,9 +4241,15 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
     $start_minconfig_defined = 1;
 
     # The first test may override the PRE_KTEST option
-    if (defined($pre_ktest) && $i == 1) {
-	doprint "\n";
-	run_command $pre_ktest;
+    if ($i == 1) {
+        if (defined($pre_ktest)) {
+            doprint "\n";
+            run_command $pre_ktest;
+        }
+        if ($email_when_started) {
+            send_email("KTEST: Your [$test_type] test was started",
+                "Your test was started on $script_start_time");
+        }
     }
 
     # Any test can override the POST_KTEST option
@@ -3675,13 +4263,9 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
 	$start_minconfig = $minconfig;
     }
 
-    chdir $builddir || die "can't change directory to $builddir";
-
-    foreach my $dir ($tmpdir, $outputdir) {
-	if (!-d $dir) {
-	    mkpath($dir) or
-		die "can't create $dir";
-	}
+    if (!-d $tmpdir) {
+	mkpath($tmpdir) or
+	    dodie "can't create $tmpdir";
     }
 
     $ENV{"SSH_USER"} = $ssh_user;
@@ -3690,13 +4274,17 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
     $buildlog = "$tmpdir/buildlog-$machine";
     $testlog = "$tmpdir/testlog-$machine";
     $dmesg = "$tmpdir/dmesg-$machine";
-    $make = "$makecmd O=$outputdir";
     $output_config = "$outputdir/.config";
 
     if (!$buildonly) {
 	$target = "$ssh_user\@$machine";
 	if ($reboot_type eq "grub") {
 	    dodie "GRUB_MENU not defined" if (!defined($grub_menu));
+	} elsif ($reboot_type eq "grub2") {
+	    dodie "GRUB_MENU not defined" if (!defined($grub_menu));
+	    dodie "GRUB_FILE not defined" if (!defined($grub_file));
+	} elsif ($reboot_type eq "syslinux") {
+	    dodie "SYSLINUX_LABEL not defined" if (!defined($syslinux_label));
 	}
     }
 
@@ -3707,9 +4295,9 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
 	$run_type = $bisect_type;
     } elsif ($test_type eq "config_bisect") {
 	$run_type = $config_bisect_type;
-    }
-
-    if ($test_type eq "make_min_config") {
+    } elsif ($test_type eq "make_min_config") {
+	$run_type = "";
+    } elsif ($test_type eq "make_warnings_file") {
 	$run_type = "";
     }
 
@@ -3721,8 +4309,14 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
     my $installme = "";
     $installme = " no_install" if ($no_install);
 
+    my $name = "";
+
+    if (defined($test_name)) {
+	$name = " ($test_name)";
+    }
+
     doprint "\n\n";
-    doprint "RUNNING TEST $i of $opt{NUM_TESTS} with option $test_type $run_type$installme\n\n";
+    doprint "RUNNING TEST $i of $opt{NUM_TESTS}$name with option $test_type $run_type$installme\n\n";
 
     if (defined($pre_test)) {
 	run_command $pre_test;
@@ -3744,7 +4338,7 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
 
     if (defined($checkout)) {
 	run_command "git checkout $checkout" or
-	    die "failed to checkout $checkout";
+	    dodie "failed to checkout $checkout";
     }
 
     $no_reboot = 0;
@@ -3766,10 +4360,15 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
     } elsif ($test_type eq "make_min_config") {
 	make_min_config $i;
 	next;
+    } elsif ($test_type eq "make_warnings_file") {
+	$no_reboot = 1;
+	make_warnings_file $i;
+	next;
     }
 
     if ($build_type ne "nobuild") {
 	build $build_type or next;
+	check_buildlog or next;
     }
 
     if ($test_type eq "install") {
@@ -3781,14 +4380,19 @@ for (my $i = 1; $i <= $opt{"NUM_TESTS"}; $i++) {
 
     if ($test_type ne "build") {
 	my $failed = 0;
-	start_monitor_and_boot or $failed = 1;
+	start_monitor_and_install or $failed = 1;
 
 	if (!$failed && $test_type ne "boot" && defined($run_test)) {
 	    do_run_test or $failed = 1;
 	}
 	end_monitor;
-	next if ($failed);
+	if ($failed) {
+	    print_times;
+	    next;
+	}
     }
+
+    print_times;
 
     success $i;
 }
@@ -3809,4 +4413,8 @@ if ($opt{"POWEROFF_ON_SUCCESS"}) {
 
 doprint "\n    $successes of $opt{NUM_TESTS} tests were successful\n\n";
 
+if ($email_when_finished) {
+    send_email("KTEST: Your [$test_type] test has finished!",
+            "$successes of $opt{NUM_TESTS} tests started at $script_start_time were successful!");
+}
 exit 0;

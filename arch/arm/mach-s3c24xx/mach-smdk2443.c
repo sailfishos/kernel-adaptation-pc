@@ -1,17 +1,11 @@
-/* linux/arch/arm/mach-s3c2443/mach-smdk2443.c
- *
- * Copyright (c) 2007 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *
- * http://www.fluff.org/ben/smdk2443/
- *
- * Thanks to Samsung for the loan of an SMDK2443
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright (c) 2007 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//
+// http://www.fluff.org/ben/smdk2443/
+//
+// Thanks to Samsung for the loan of an SMDK2443
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -20,6 +14,7 @@
 #include <linux/timer.h>
 #include <linux/init.h>
 #include <linux/serial_core.h>
+#include <linux/serial_s3c.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
 
@@ -31,21 +26,18 @@
 #include <asm/irq.h>
 #include <asm/mach-types.h>
 
-#include <plat/regs-serial.h>
 #include <mach/regs-gpio.h>
 #include <mach/regs-lcd.h>
 
-#include <mach/idle.h>
 #include <mach/fb.h>
-#include <plat/iic.h>
+#include <linux/platform_data/i2c-s3c2410.h>
 
-#include <plat/s3c2410.h>
-#include <plat/s3c2443.h>
-#include <plat/clock.h>
 #include <plat/devs.h>
 #include <plat/cpu.h>
+#include <plat/samsung-time.h>
 
-#include <plat/common-smdk.h>
+#include "common.h"
+#include "common-smdk.h"
 
 static struct map_desc smdk2443_iodesc[] __initdata = {
 	/* ISA IO Space map (memory space selected by A24) */
@@ -113,26 +105,25 @@ static struct platform_device *smdk2443_devices[] __initdata = {
 	&s3c_device_wdt,
 	&s3c_device_i2c0,
 	&s3c_device_hsmmc1,
-#ifdef CONFIG_SND_SOC_SMDK2443_WM9710
-	&s3c_device_ac97,
-#endif
+	&s3c2443_device_dma,
 };
 
 static void __init smdk2443_map_io(void)
 {
 	s3c24xx_init_io(smdk2443_iodesc, ARRAY_SIZE(smdk2443_iodesc));
-	s3c24xx_init_clocks(12000000);
 	s3c24xx_init_uarts(smdk2443_uartcfgs, ARRAY_SIZE(smdk2443_uartcfgs));
+	samsung_set_timer_source(SAMSUNG_PWM3, SAMSUNG_PWM4);
+}
+
+static void __init smdk2443_init_time(void)
+{
+	s3c2443_init_clocks(12000000);
+	samsung_timer_init();
 }
 
 static void __init smdk2443_machine_init(void)
 {
 	s3c_i2c0_set_platdata(NULL);
-
-#ifdef CONFIG_SND_SOC_SMDK2443_WM9710
-	s3c24xx_ac97_setup_gpio(S3C24XX_AC97_GPE0);
-#endif
-
 	platform_add_devices(smdk2443_devices, ARRAY_SIZE(smdk2443_devices));
 	smdk_machine_init();
 }
@@ -141,9 +132,8 @@ MACHINE_START(SMDK2443, "SMDK2443")
 	/* Maintainer: Ben Dooks <ben-linux@fluff.org> */
 	.atag_offset	= 0x100,
 
-	.init_irq	= s3c24xx_init_irq,
+	.init_irq	= s3c2443_init_irq,
 	.map_io		= smdk2443_map_io,
 	.init_machine	= smdk2443_machine_init,
-	.timer		= &s3c24xx_timer,
-	.restart	= s3c2443_restart,
+	.init_time	= smdk2443_init_time,
 MACHINE_END

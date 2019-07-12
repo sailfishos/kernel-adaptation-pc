@@ -4,7 +4,7 @@
  * Copyright (C) 2008 Panasas Inc.  All rights reserved.
  *
  * Authors:
- *   Boaz Harrosh <bharrosh@panasas.com>
+ *   Boaz Harrosh <ooo@electrozaur.com>
  *   Benny Halevy <bhalevy@panasas.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -14,8 +14,8 @@
 #ifndef __OSD_INITIATOR_H__
 #define __OSD_INITIATOR_H__
 
-#include "osd_protocol.h"
-#include "osd_types.h"
+#include <scsi/osd_protocol.h>
+#include <scsi/osd_types.h>
 
 #include <linux/blkdev.h>
 #include <scsi/scsi_device.h>
@@ -148,7 +148,6 @@ struct osd_request {
 		u8 *pad_buff;
 	} out, in;
 
-	gfp_t alloc_flags;
 	unsigned timeout;
 	unsigned retries;
 	unsigned sense_len;
@@ -157,7 +156,7 @@ struct osd_request {
 
 	osd_req_done_fn *async_done;
 	void *async_private;
-	int async_error;
+	blk_status_t async_error;
 	int req_errors;
 };
 
@@ -202,14 +201,11 @@ static inline bool osd_req_is_ver1(struct osd_request *or)
  *
  * @osd_dev:    OSD device that holds the scsi-device and default values
  *              that the request is associated with.
- * @gfp:        The allocation flags to use for request allocation, and all
- *              subsequent allocations. This will be stored at
- *              osd_request->alloc_flags, can be changed by user later
  *
  * Allocate osd_request and initialize all members to the
  * default/initial state.
  */
-struct osd_request *osd_start_request(struct osd_dev *od, gfp_t gfp);
+struct osd_request *osd_start_request(struct osd_dev *od);
 
 enum osd_req_options {
 	OSD_REQ_FUA = 0x08,	/* Force Unit Access */

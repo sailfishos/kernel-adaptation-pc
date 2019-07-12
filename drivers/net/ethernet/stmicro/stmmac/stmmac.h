@@ -10,10 +10,6 @@
   FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
   more details.
 
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
   The full GNU General Public License is included in this distribution in
   the file called "COPYING".
 
@@ -24,47 +20,134 @@
 #define __STMMAC_H__
 
 #define STMMAC_RESOURCE_NAME   "stmmaceth"
-#define DRV_MODULE_VERSION	"March_2012"
+#define DRV_MODULE_VERSION	"Jan_2016"
 
 #include <linux/clk.h>
 #include <linux/stmmac.h>
 #include <linux/phy.h>
 #include <linux/pci.h>
 #include "common.h"
-#ifdef CONFIG_STMMAC_TIMER
-#include "stmmac_timer.h"
-#endif
+#include <linux/ptp_clock_kernel.h>
+#include <linux/reset.h>
+
+struct stmmac_resources {
+	void __iomem *addr;
+	const char *mac;
+	int wol_irq;
+	int lpi_irq;
+	int irq;
+};
+
+struct stmmac_tx_info {
+	dma_addr_t buf;
+	bool map_as_page;
+	unsigned len;
+	bool last_segment;
+	bool is_jumbo;
+};
+
+/* Frequently used values are kept adjacent for cache effect */
+struct stmmac_tx_queue {
+	u32 tx_count_frames;
+	struct timer_list txtimer;
+	u32 queue_index;
+	struct stmmac_priv *priv_data;
+	struct dma_extended_desc *dma_etx ____cacheline_aligned_in_smp;
+	struct dma_desc *dma_tx;
+	struct sk_buff **tx_skbuff;
+	struct stmmac_tx_info *tx_skbuff_dma;
+	unsigned int cur_tx;
+	unsigned int dirty_tx;
+	dma_addr_t dma_tx_phy;
+	u32 tx_tail_addr;
+	u32 mss;
+};
+
+struct stmmac_rx_queue {
+	u32 queue_index;
+	struct stmmac_priv *priv_data;
+	struct dma_extended_desc *dma_erx;
+	struct dma_desc *dma_rx ____cacheline_aligned_in_smp;
+	struct sk_buff **rx_skbuff;
+	dma_addr_t *rx_skbuff_dma;
+	unsigned int cur_rx;
+	unsigned int dirty_rx;
+	u32 rx_zeroc_thresh;
+	dma_addr_t dma_rx_phy;
+	u32 rx_tail_addr;
+};
+
+struct stmmac_channel {
+	struct napi_struct napi ____cacheline_aligned_in_smp;
+	struct stmmac_priv *priv_data;
+	u32 index;
+	int has_rx;
+	int has_tx;
+};
+
+struct stmmac_tc_entry {
+	bool in_use;
+	bool in_hw;
+	bool is_last;
+	bool is_frag;
+	void *frag_ptr;
+	unsigned int table_pos;
+	u32 handle;
+	u32 prio;
+	struct {
+		u32 match_data;
+		u32 match_en;
+		u8 af:1;
+		u8 rf:1;
+		u8 im:1;
+		u8 nc:1;
+		u8 res1:4;
+		u8 frame_offset;
+		u8 ok_index;
+		u8 dma_ch_no;
+		u32 res2;
+	} __packed val;
+};
+
+#define STMMAC_PPS_MAX		4
+struct stmmac_pps_cfg {
+	bool available;
+	struct timespec64 start;
+	struct timespec64 period;
+};
 
 struct stmmac_priv {
 	/* Frequently used values are kept adjacent for cache effect */
-	struct dma_desc *dma_tx ____cacheline_aligned;
-	dma_addr_t dma_tx_phy;
-	struct sk_buff **tx_skbuff;
-	unsigned int cur_tx;
-	unsigned int dirty_tx;
-	unsigned int dma_tx_size;
+	u32 tx_coal_frames;
+	u32 tx_coal_timer;
+
 	int tx_coalesce;
+	int hwts_tx_en;
+	bool tx_path_in_lpi_mode;
+	bool tso;
 
-	struct dma_desc *dma_rx ;
-	unsigned int cur_rx;
-	unsigned int dirty_rx;
-	struct sk_buff **rx_skbuff;
-	dma_addr_t *rx_skbuff_dma;
-
-	struct net_device *dev;
-	dma_addr_t dma_rx_phy;
-	unsigned int dma_rx_size;
 	unsigned int dma_buf_sz;
+	unsigned int rx_copybreak;
+	u32 rx_riwt;
+	int hwts_rx_en;
+
+	void __iomem *ioaddr;
+	struct net_device *dev;
 	struct device *device;
 	struct mac_device_info *hw;
-	void __iomem *ioaddr;
+	int (*hwif_quirks)(struct stmmac_priv *priv);
+	struct mutex lock;
 
-	struct stmmac_extra_stats xstats;
-	struct napi_struct napi;
-	int no_csum_insertion;
+	/* RX Queue */
+	struct stmmac_rx_queue rx_queue[MTL_MAX_RX_QUEUES];
 
-	struct phy_device *phydev;
-	int oldlink;
+	/* TX Queue */
+	struct stmmac_tx_queue tx_queue[MTL_MAX_TX_QUEUES];
+
+	/* Generic channel for NAPI */
+	struct stmmac_channel channel[STMMAC_CH_MAX];
+
+	bool oldlink;
 	int speed;
 	int oldduplex;
 	unsigned int flow_ctrl;
@@ -72,101 +155,77 @@ struct stmmac_priv {
 	struct mii_bus *mii;
 	int mii_irq[PHY_MAX_ADDR];
 
+	struct stmmac_extra_stats xstats ____cacheline_aligned_in_smp;
+	struct stmmac_safety_stats sstats;
+	struct plat_stmmacenet_data *plat;
+	struct dma_features dma_cap;
+	struct stmmac_counters mmc;
+	int hw_cap_support;
+	int synopsys_id;
 	u32 msg_enable;
-	spinlock_t lock;
-	spinlock_t tx_lock;
 	int wolopts;
 	int wol_irq;
-#ifdef CONFIG_STMMAC_TIMER
-	struct stmmac_timer *tm;
-#endif
-	struct plat_stmmacenet_data *plat;
-	struct stmmac_counters mmc;
-	struct dma_features dma_cap;
-	int hw_cap_support;
-	struct clk *stmmac_clk;
 	int clk_csr;
-	int synopsys_id;
 	struct timer_list eee_ctrl_timer;
-	bool tx_path_in_lpi_mode;
 	int lpi_irq;
 	int eee_enabled;
 	int eee_active;
 	int tx_lpi_timer;
+	unsigned int mode;
+	unsigned int chain_mode;
+	int extend_desc;
+	struct ptp_clock *ptp_clock;
+	struct ptp_clock_info ptp_clock_ops;
+	unsigned int default_addend;
+	u32 sub_second_inc;
+	u32 systime_flags;
+	u32 adv_ts;
+	int use_riwt;
+	int irq_wake;
+	spinlock_t ptp_lock;
+	void __iomem *mmcaddr;
+	void __iomem *ptpaddr;
+
+#ifdef CONFIG_DEBUG_FS
+	struct dentry *dbgfs_dir;
+	struct dentry *dbgfs_rings_status;
+	struct dentry *dbgfs_dma_cap;
+#endif
+
+	unsigned long state;
+	struct workqueue_struct *wq;
+	struct work_struct service_task;
+
+	/* TC Handling */
+	unsigned int tc_entries_max;
+	unsigned int tc_off_max;
+	struct stmmac_tc_entry *tc_entries;
+
+	/* Pulse Per Second output */
+	struct stmmac_pps_cfg pps[STMMAC_PPS_MAX];
 };
 
-extern int phyaddr;
+enum stmmac_state {
+	STMMAC_DOWN,
+	STMMAC_RESET_REQUESTED,
+	STMMAC_RESETING,
+	STMMAC_SERVICE_SCHED,
+};
 
-extern int stmmac_mdio_unregister(struct net_device *ndev);
-extern int stmmac_mdio_register(struct net_device *ndev);
-extern void stmmac_set_ethtool_ops(struct net_device *netdev);
-extern const struct stmmac_desc_ops enh_desc_ops;
-extern const struct stmmac_desc_ops ndesc_ops;
-int stmmac_freeze(struct net_device *ndev);
-int stmmac_restore(struct net_device *ndev);
-int stmmac_resume(struct net_device *ndev);
-int stmmac_suspend(struct net_device *ndev);
-int stmmac_dvr_remove(struct net_device *ndev);
-struct stmmac_priv *stmmac_dvr_probe(struct device *device,
-				     struct plat_stmmacenet_data *plat_dat,
-				     void __iomem *addr);
+int stmmac_mdio_unregister(struct net_device *ndev);
+int stmmac_mdio_register(struct net_device *ndev);
+int stmmac_mdio_reset(struct mii_bus *mii);
+void stmmac_set_ethtool_ops(struct net_device *netdev);
+
+void stmmac_ptp_register(struct stmmac_priv *priv);
+void stmmac_ptp_unregister(struct stmmac_priv *priv);
+int stmmac_resume(struct device *dev);
+int stmmac_suspend(struct device *dev);
+int stmmac_dvr_remove(struct device *dev);
+int stmmac_dvr_probe(struct device *device,
+		     struct plat_stmmacenet_data *plat_dat,
+		     struct stmmac_resources *res);
 void stmmac_disable_eee_mode(struct stmmac_priv *priv);
 bool stmmac_eee_init(struct stmmac_priv *priv);
-
-#ifdef CONFIG_STMMAC_PLATFORM
-extern struct platform_driver stmmac_pltfr_driver;
-static inline int stmmac_register_platform(void)
-{
-	int err;
-
-	err = platform_driver_register(&stmmac_pltfr_driver);
-	if (err)
-		pr_err("stmmac: failed to register the platform driver\n");
-
-	return err;
-}
-static inline void stmmac_unregister_platform(void)
-{
-	platform_driver_register(&stmmac_pltfr_driver);
-}
-#else
-static inline int stmmac_register_platform(void)
-{
-	pr_debug("stmmac: do not register the platf driver\n");
-
-	return -EINVAL;
-}
-static inline void stmmac_unregister_platform(void)
-{
-}
-#endif /* CONFIG_STMMAC_PLATFORM */
-
-#ifdef CONFIG_STMMAC_PCI
-extern struct pci_driver stmmac_pci_driver;
-static inline int stmmac_register_pci(void)
-{
-	int err;
-
-	err = pci_register_driver(&stmmac_pci_driver);
-	if (err)
-		pr_err("stmmac: failed to register the PCI driver\n");
-
-	return err;
-}
-static inline void stmmac_unregister_pci(void)
-{
-	pci_unregister_driver(&stmmac_pci_driver);
-}
-#else
-static inline int stmmac_register_pci(void)
-{
-	pr_debug("stmmac: do not register the PCI driver\n");
-
-	return -EINVAL;
-}
-static inline void stmmac_unregister_pci(void)
-{
-}
-#endif /* CONFIG_STMMAC_PCI */
 
 #endif /* __STMMAC_H__ */

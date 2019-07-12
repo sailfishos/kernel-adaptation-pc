@@ -13,14 +13,13 @@
  */
 #include <linux/gpio.h>
 #include <linux/platform_device.h>
-
-#include <linux/i2c/tps65010.h>
-
-#include <plat/mmc.h>
+#include <linux/platform_data/gpio-omap.h>
+#include <linux/mfd/tps65010.h>
 
 #include "board-h2.h"
+#include "mmc.h"
 
-#if defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE)
+#if IS_ENABLED(CONFIG_MMC_OMAP)
 
 static int mmc_set_power(struct device *dev, int slot, int power_on,
 				int vdd)

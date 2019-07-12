@@ -98,7 +98,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 * can be used, r7 contains NSEC_PER_SEC.
 	 */
 
-	lwz	r5,WTOM_CLOCK_SEC(r9)
+	lwz	r5,(WTOM_CLOCK_SEC+LOPART)(r9)
 	lwz	r6,WTOM_CLOCK_NSEC(r9)
 
 	/* We now have our offset in r5,r6. We create a fake dependency
@@ -139,6 +139,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 */
 99:
 	li	r0,__NR_clock_gettime
+  .cfi_restore lr
 	sc
 	blr
   .cfi_endproc
@@ -181,6 +182,32 @@ V_FUNCTION_END(__kernel_clock_getres)
 
 
 /*
+ * Exact prototype of time()
+ *
+ * time_t time(time *t);
+ *
+ */
+V_FUNCTION_BEGIN(__kernel_time)
+  .cfi_startproc
+	mflr	r12
+  .cfi_register lr,r12
+
+	mr	r11,r3			/* r11 holds t */
+	bl	__get_datapage@local
+	mr	r9, r3			/* datapage ptr in r9 */
+
+	lwz	r3,STAMP_XTIME+TSPEC_TV_SEC(r9)
+
+	cmplwi	r11,0			/* check if t is NULL */
+	beq	2f
+	stw	r3,0(r11)		/* store result at *t */
+2:	mtlr	r12
+	crclr	cr0*4+so
+	blr
+  .cfi_endproc
+V_FUNCTION_END(__kernel_time)
+
+/*
  * This is the core of clock_gettime() and gettimeofday(),
  * it returns the current time in r3 (seconds) and r4.
  * On entry, r7 gives the resolution of r4, either USEC_PER_SEC
@@ -206,9 +233,9 @@ __do_get_tspec:
 	lwz	r6,(CFG_TB_ORIG_STAMP+4)(r9)
 
 	/* Get a stable TB value */
-2:	mftbu	r3
-	mftbl	r4
-	mftbu	r0
+2:	MFTBU(r3)
+	MFTBL(r4)
+	MFTBU(r0)
 	cmplw	cr0,r3,r0
 	bne-	2b
 

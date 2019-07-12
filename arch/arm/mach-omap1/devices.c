@@ -17,40 +17,23 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 
+#include <linux/platform_data/omap-wd-timer.h>
+
 #include <asm/mach/map.h>
 
-#include <plat/tc.h>
-#include <plat/board.h>
-#include <plat/mux.h>
-#include <plat/dma.h>
-#include <plat/mmc.h>
-#include <plat/omap7xx.h>
+#include <mach/tc.h>
+#include <mach/mux.h>
 
-#include <mach/camera.h>
+#include <mach/omap7xx.h>
+#include "camera.h"
 #include <mach/hardware.h>
 
 #include "common.h"
 #include "clock.h"
+#include "mmc.h"
+#include "sram.h"
 
-#if defined(CONFIG_SND_SOC) || defined(CONFIG_SND_SOC_MODULE)
-
-static struct platform_device omap_pcm = {
-	.name	= "omap-pcm-audio",
-	.id	= -1,
-};
-
-static void omap_init_audio(void)
-{
-	platform_device_register(&omap_pcm);
-}
-
-#else
-static inline void omap_init_audio(void) {}
-#endif
-
-/*-------------------------------------------------------------------------*/
-
-#if defined(CONFIG_RTC_DRV_OMAP) || defined(CONFIG_RTC_DRV_OMAP_MODULE)
+#if IS_ENABLED(CONFIG_RTC_DRV_OMAP)
 
 #define	OMAP_RTC_BASE		0xfffb4800
 
@@ -89,7 +72,7 @@ static inline void omap_init_mbox(void) { }
 
 /*-------------------------------------------------------------------------*/
 
-#if defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE)
+#if IS_ENABLED(CONFIG_MMC_OMAP)
 
 static inline void omap1_mmc_mux(struct omap_mmc_platform_data *mmc_controller,
 			int controller_nr)
@@ -176,6 +159,13 @@ static int __init omap_mmc_add(const char *name, int id, unsigned long base,
 	res[3].name = "tx";
 	res[3].flags = IORESOURCE_DMA;
 
+	if (cpu_is_omap7xx())
+		data->slots[0].features = MMC_OMAP7XX;
+	if (cpu_is_omap15xx())
+		data->slots[0].features = MMC_OMAP15XX;
+	if (cpu_is_omap16xx())
+		data->slots[0].features = MMC_OMAP16XX;
+
 	ret = platform_device_add_resources(pdev, res, ARRAY_SIZE(res));
 	if (ret == 0)
 		ret = platform_device_add_data(pdev, data, sizeof(*data));
@@ -214,16 +204,16 @@ void __init omap1_init_mmc(struct omap_mmc_platform_data **mmc_data,
 		case 0:
 			base = OMAP1_MMC1_BASE;
 			irq = INT_MMC;
-			rx_req = OMAP_DMA_MMC_RX;
-			tx_req = OMAP_DMA_MMC_TX;
+			rx_req = 22;
+			tx_req = 21;
 			break;
 		case 1:
 			if (!cpu_is_omap16xx())
 				return;
 			base = OMAP1_MMC2_BASE;
 			irq = INT_1610_MMC2;
-			rx_req = OMAP_DMA_MMC2_RX;
-			tx_req = OMAP_DMA_MMC2_TX;
+			rx_req = 55;
+			tx_req = 54;
 			break;
 		default:
 			continue;
@@ -232,7 +222,7 @@ void __init omap1_init_mmc(struct omap_mmc_platform_data **mmc_data,
 
 		omap_mmc_add("mmci-omap", i, base, size, irq,
 				rx_req, tx_req, mmc_data[i]);
-	};
+	}
 }
 
 #endif
@@ -240,7 +230,7 @@ void __init omap1_init_mmc(struct omap_mmc_platform_data **mmc_data,
 /*-------------------------------------------------------------------------*/
 
 /* OMAP7xx SPI support */
-#if defined(CONFIG_SPI_OMAP_100K) || defined(CONFIG_SPI_OMAP_100K_MODULE)
+#if IS_ENABLED(CONFIG_SPI_OMAP_100K)
 
 struct platform_device omap_spi1 = {
 	.name           = "omap1_spi100k",
@@ -254,6 +244,9 @@ struct platform_device omap_spi2 = {
 
 static void omap_init_spi100k(void)
 {
+	if (!cpu_is_omap7xx())
+		return;
+
 	omap_spi1.dev.platform_data = ioremap(OMAP7XX_SPI1_BASE, 0x7ff);
 	if (omap_spi1.dev.platform_data)
 		platform_device_register(&omap_spi1);
@@ -322,7 +315,7 @@ static inline void omap_init_sti(void) {}
  * mcbsp1..3	= 5..7
  */
 
-#if defined(CONFIG_SPI_OMAP_UWIRE) || defined(CONFIG_SPI_OMAP_UWIRE_MODULE)
+#if IS_ENABLED(CONFIG_SPI_OMAP_UWIRE)
 
 #define	OMAP_UWIRE_BASE		0xfffb3000
 
@@ -358,6 +351,33 @@ static inline void omap_init_uwire(void) {}
 #endif
 
 
+#define OMAP1_RNG_BASE		0xfffe5000
+
+static struct resource omap1_rng_resources[] = {
+	{
+		.start		= OMAP1_RNG_BASE,
+		.end		= OMAP1_RNG_BASE + 0x4f,
+		.flags		= IORESOURCE_MEM,
+	},
+};
+
+static struct platform_device omap1_rng_device = {
+	.name		= "omap_rng",
+	.id		= -1,
+	.num_resources	= ARRAY_SIZE(omap1_rng_resources),
+	.resource	= omap1_rng_resources,
+};
+
+static void omap1_init_rng(void)
+{
+	if (!cpu_is_omap16xx())
+		return;
+
+	(void) platform_device_register(&omap1_rng_device);
+}
+
+/*-------------------------------------------------------------------------*/
+
 /*
  * This gets called after board-specific INIT_MACHINE, and initializes most
  * on-chip peripherals accessible on this board (except for few like USB):
@@ -390,18 +410,18 @@ static int __init omap1_init_devices(void)
 	 * in alphabetical order so they're easier to sort through.
 	 */
 
-	omap_init_audio();
 	omap_init_mbox();
 	omap_init_rtc();
 	omap_init_spi100k();
 	omap_init_sti();
 	omap_init_uwire();
+	omap1_init_rng();
 
 	return 0;
 }
 arch_initcall(omap1_init_devices);
 
-#if defined(CONFIG_OMAP_WATCHDOG) || defined(CONFIG_OMAP_WATCHDOG_MODULE)
+#if IS_ENABLED(CONFIG_OMAP_WATCHDOG)
 
 static struct resource wdt_resources[] = {
 	{
@@ -412,18 +432,31 @@ static struct resource wdt_resources[] = {
 };
 
 static struct platform_device omap_wdt_device = {
-	.name	   = "omap_wdt",
-	.id	     = -1,
+	.name		= "omap_wdt",
+	.id		= -1,
 	.num_resources	= ARRAY_SIZE(wdt_resources),
 	.resource	= wdt_resources,
 };
 
 static int __init omap_init_wdt(void)
 {
+	struct omap_wd_timer_platform_data pdata;
+	int ret;
+
 	if (!cpu_is_omap16xx())
 		return -ENODEV;
 
-	return platform_device_register(&omap_wdt_device);
+	pdata.read_reset_sources = omap1_get_reset_sources;
+
+	ret = platform_device_register(&omap_wdt_device);
+	if (!ret) {
+		ret = platform_device_add_data(&omap_wdt_device, &pdata,
+					       sizeof(pdata));
+		if (ret)
+			platform_device_del(&omap_wdt_device);
+	}
+
+	return ret;
 }
 subsys_initcall(omap_init_wdt);
 #endif

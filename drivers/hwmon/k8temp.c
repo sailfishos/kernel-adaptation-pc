@@ -22,7 +22,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/jiffies.h>
@@ -101,7 +100,7 @@ static struct k8temp_data *k8temp_update_device(struct device *dev)
  * Sysfs stuff
  */
 
-static ssize_t show_name(struct device *dev, struct device_attribute
+static ssize_t name_show(struct device *dev, struct device_attribute
 			 *devattr, char *buf)
 {
 	struct k8temp_data *data = dev_get_drvdata(dev);
@@ -134,16 +133,16 @@ static SENSOR_DEVICE_ATTR_2(temp1_input, S_IRUGO, show_temp, NULL, 0, 0);
 static SENSOR_DEVICE_ATTR_2(temp2_input, S_IRUGO, show_temp, NULL, 0, 1);
 static SENSOR_DEVICE_ATTR_2(temp3_input, S_IRUGO, show_temp, NULL, 1, 0);
 static SENSOR_DEVICE_ATTR_2(temp4_input, S_IRUGO, show_temp, NULL, 1, 1);
-static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
+static DEVICE_ATTR_RO(name);
 
-static DEFINE_PCI_DEVICE_TABLE(k8temp_ids) = {
+static const struct pci_device_id k8temp_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_K8_NB_MISC) },
 	{ 0 },
 };
 
 MODULE_DEVICE_TABLE(pci, k8temp_ids);
 
-static int __devinit is_rev_g_desktop(u8 model)
+static int is_rev_g_desktop(u8 model)
 {
 	u32 brandidx;
 
@@ -174,7 +173,7 @@ static int __devinit is_rev_g_desktop(u8 model)
 	return 1;
 }
 
-static int __devinit k8temp_probe(struct pci_dev *pdev,
+static int k8temp_probe(struct pci_dev *pdev,
 				  const struct pci_device_id *id)
 {
 	int err;
@@ -188,7 +187,7 @@ static int __devinit k8temp_probe(struct pci_dev *pdev,
 		return -ENOMEM;
 
 	model = boot_cpu_data.x86_model;
-	stepping = boot_cpu_data.x86_mask;
+	stepping = boot_cpu_data.x86_stepping;
 
 	/* feature available since SH-C0, exclude older revisions */
 	if ((model == 4 && stepping == 0) ||
@@ -201,8 +200,8 @@ static int __devinit k8temp_probe(struct pci_dev *pdev,
 	 */
 	if (model >= 0x40) {
 		data->swap_core_select = 1;
-		dev_warn(&pdev->dev, "Temperature readouts might be wrong - "
-			 "check erratum #141\n");
+		dev_warn(&pdev->dev,
+			 "Temperature readouts might be wrong - check erratum #141\n");
 	}
 
 	/*
@@ -305,7 +304,7 @@ exit_remove:
 	return err;
 }
 
-static void __devexit k8temp_remove(struct pci_dev *pdev)
+static void k8temp_remove(struct pci_dev *pdev)
 {
 	struct k8temp_data *data = pci_get_drvdata(pdev);
 
@@ -325,7 +324,7 @@ static struct pci_driver k8temp_driver = {
 	.name = "k8temp",
 	.id_table = k8temp_ids,
 	.probe = k8temp_probe,
-	.remove = __devexit_p(k8temp_remove),
+	.remove = k8temp_remove,
 };
 
 module_pci_driver(k8temp_driver);

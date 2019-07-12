@@ -212,7 +212,7 @@ static void isci_port_link_up(struct isci_host *isci_host,
 		memcpy(iphy->sas_phy.attached_sas_addr,
 		       iphy->frame_rcvd.iaf.sas_addr, SAS_ADDR_SIZE);
 	} else {
-		dev_err(&isci_host->pdev->dev, "%s: unkown target\n", __func__);
+		dev_err(&isci_host->pdev->dev, "%s: unknown target\n", __func__);
 		success = false;
 	}
 
@@ -769,9 +769,9 @@ bool sci_port_link_detected(struct isci_port *iport, struct isci_phy *iphy)
 	return true;
 }
 
-static void port_timeout(unsigned long data)
+static void port_timeout(struct timer_list *t)
 {
-	struct sci_timer *tmr = (struct sci_timer *)data;
+	struct sci_timer *tmr = from_timer(tmr, t, timer);
 	struct isci_port *iport = container_of(tmr, typeof(*iport), timer);
 	struct isci_host *ihost = iport->owning_controller;
 	unsigned long flags;
@@ -794,7 +794,7 @@ static void port_timeout(unsigned long data)
 		 * case stay in the stopped state.
 		 */
 		dev_err(sciport_to_dev(iport),
-			"%s: SCIC Port 0x%p failed to stop before tiemout.\n",
+			"%s: SCIC Port 0x%p failed to stop before timeout.\n",
 			__func__,
 			iport);
 	} else if (current_state == SCI_PORT_STOPPING) {

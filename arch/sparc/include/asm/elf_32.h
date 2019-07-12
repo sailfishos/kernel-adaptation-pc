@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASMSPARC_ELF_H
 #define __ASMSPARC_ELF_H
 
@@ -127,7 +128,5 @@ typedef struct {
    intent than poking at uname or /proc/cpuinfo. */
 
 #define ELF_PLATFORM	(NULL)
-
-#define SET_PERSONALITY(ex) set_personality(PER_LINUX)
 
 #endif /* !(__ASMSPARC_ELF_H) */

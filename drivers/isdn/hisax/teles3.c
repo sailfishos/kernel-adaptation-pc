@@ -253,7 +253,7 @@ Teles_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 
 #ifdef __ISAPNP__
 
-static struct isapnp_device_id teles_ids[] __devinitdata = {
+static struct isapnp_device_id teles_ids[] = {
 	{ ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x2110),
 	  ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x2110),
 	  (unsigned long) "Teles 16.3 PnP" },
@@ -266,12 +266,11 @@ static struct isapnp_device_id teles_ids[] __devinitdata = {
 	{ 0, }
 };
 
-static struct isapnp_device_id *ipid __devinitdata = &teles_ids[0];
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct isapnp_device_id *ipid = &teles_ids[0];
+static struct pnp_card *pnp_c = NULL;
 #endif
 
-int __devinit
-setup_teles3(struct IsdnCard *card)
+int setup_teles3(struct IsdnCard *card)
 {
 	u_char val;
 	struct IsdnCardState *cs = card->cs;
@@ -307,7 +306,7 @@ setup_teles3(struct IsdnCard *card)
 					card->para[2] = pnp_port_start(pnp_d, 1);
 					card->para[1] = pnp_port_start(pnp_d, 0);
 					card->para[0] = pnp_irq(pnp_d, 0);
-					if (!card->para[0] || !card->para[1] || !card->para[2]) {
+					if (card->para[0] == -1 || !card->para[1] || !card->para[2]) {
 						printk(KERN_ERR "Teles PnP:some resources are missing %ld/%lx/%lx\n",
 						       card->para[0], card->para[1], card->para[2]);
 						pnp_disable_dev(pnp_d);

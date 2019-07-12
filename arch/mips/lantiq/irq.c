@@ -3,7 +3,7 @@
  *  under the terms of the GNU General Public License version 2 as published
  *  by the Free Software Foundation.
  *
- * Copyright (C) 2010 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2010 John Crispin <john@phrozen.org>
  * Copyright (C) 2010 Thomas Langer <thomas.langer@lantiq.com>
  */
 
@@ -33,17 +33,10 @@
 /* register definitions - external irqs */
 #define LTQ_EIU_EXIN_C		0x0000
 #define LTQ_EIU_EXIN_INIC	0x0004
+#define LTQ_EIU_EXIN_INC	0x0008
 #define LTQ_EIU_EXIN_INEN	0x000C
 
-/* irq numbers used by the external interrupt unit (EIU) */
-#define LTQ_EIU_IR0		(INT_NUM_IM4_IRL0 + 30)
-#define LTQ_EIU_IR1		(INT_NUM_IM3_IRL0 + 31)
-#define LTQ_EIU_IR2		(INT_NUM_IM1_IRL0 + 26)
-#define LTQ_EIU_IR3		INT_NUM_IM1_IRL0
-#define LTQ_EIU_IR4		(INT_NUM_IM1_IRL0 + 1)
-#define LTQ_EIU_IR5		(INT_NUM_IM1_IRL0 + 2)
-#define LTQ_EIU_IR6		(INT_NUM_IM2_IRL0 + 30)
-#define XWAY_EXIN_COUNT		3
+/* number of external interrupts */
 #define MAX_EIU			6
 
 /* the performance counter */
@@ -55,8 +48,8 @@
  */
 #define LTQ_ICU_EBU_IRQ		22
 
-#define ltq_icu_w32(x, y)	ltq_w32((x), ltq_icu_membase + (y))
-#define ltq_icu_r32(x)		ltq_r32(ltq_icu_membase + (x))
+#define ltq_icu_w32(m, x, y)	ltq_w32((x), ltq_icu_membase[m] + (y))
+#define ltq_icu_r32(m, x)	ltq_r32(ltq_icu_membase[m] + (x))
 
 #define ltq_eiu_w32(x, y)	ltq_w32((x), ltq_eiu_membase + (y))
 #define ltq_eiu_r32(x)		ltq_r32(ltq_eiu_membase + (x))
@@ -68,31 +61,28 @@
 /* we have a cascade of 8 irqs */
 #define MIPS_CPU_IRQ_CASCADE		8
 
-#if defined(CONFIG_MIPS_MT_SMP) || defined(CONFIG_MIPS_MT_SMTC)
-int gic_present;
-#endif
-
-static unsigned short ltq_eiu_irq[MAX_EIU] = {
-	LTQ_EIU_IR0,
-	LTQ_EIU_IR1,
-	LTQ_EIU_IR2,
-	LTQ_EIU_IR3,
-	LTQ_EIU_IR4,
-	LTQ_EIU_IR5,
-};
-
 static int exin_avail;
-static void __iomem *ltq_icu_membase;
+static u32 ltq_eiu_irq[MAX_EIU];
+static void __iomem *ltq_icu_membase[MAX_IM];
 static void __iomem *ltq_eiu_membase;
+static struct irq_domain *ltq_domain;
+static int ltq_perfcount_irq;
+
+int ltq_eiu_get_irq(int exin)
+{
+	if (exin < exin_avail)
+		return ltq_eiu_irq[exin];
+	return -1;
+}
 
 void ltq_disable_irq(struct irq_data *d)
 {
 	u32 ier = LTQ_ICU_IM0_IER;
 	int offset = d->hwirq - MIPS_CPU_IRQ_CASCADE;
+	int im = offset / INT_NUM_IM_OFFSET;
 
-	ier += LTQ_ICU_OFFSET * (offset / INT_NUM_IM_OFFSET);
 	offset %= INT_NUM_IM_OFFSET;
-	ltq_icu_w32(ltq_icu_r32(ier) & ~BIT(offset), ier);
+	ltq_icu_w32(im, ltq_icu_r32(im, ier) & ~BIT(offset), ier);
 }
 
 void ltq_mask_and_ack_irq(struct irq_data *d)
@@ -100,32 +90,78 @@ void ltq_mask_and_ack_irq(struct irq_data *d)
 	u32 ier = LTQ_ICU_IM0_IER;
 	u32 isr = LTQ_ICU_IM0_ISR;
 	int offset = d->hwirq - MIPS_CPU_IRQ_CASCADE;
+	int im = offset / INT_NUM_IM_OFFSET;
 
-	ier += LTQ_ICU_OFFSET * (offset / INT_NUM_IM_OFFSET);
-	isr += LTQ_ICU_OFFSET * (offset / INT_NUM_IM_OFFSET);
 	offset %= INT_NUM_IM_OFFSET;
-	ltq_icu_w32(ltq_icu_r32(ier) & ~BIT(offset), ier);
-	ltq_icu_w32(BIT(offset), isr);
+	ltq_icu_w32(im, ltq_icu_r32(im, ier) & ~BIT(offset), ier);
+	ltq_icu_w32(im, BIT(offset), isr);
 }
 
 static void ltq_ack_irq(struct irq_data *d)
 {
 	u32 isr = LTQ_ICU_IM0_ISR;
 	int offset = d->hwirq - MIPS_CPU_IRQ_CASCADE;
+	int im = offset / INT_NUM_IM_OFFSET;
 
-	isr += LTQ_ICU_OFFSET * (offset / INT_NUM_IM_OFFSET);
 	offset %= INT_NUM_IM_OFFSET;
-	ltq_icu_w32(BIT(offset), isr);
+	ltq_icu_w32(im, BIT(offset), isr);
 }
 
 void ltq_enable_irq(struct irq_data *d)
 {
 	u32 ier = LTQ_ICU_IM0_IER;
 	int offset = d->hwirq - MIPS_CPU_IRQ_CASCADE;
+	int im = offset / INT_NUM_IM_OFFSET;
 
-	ier += LTQ_ICU_OFFSET  * (offset / INT_NUM_IM_OFFSET);
 	offset %= INT_NUM_IM_OFFSET;
-	ltq_icu_w32(ltq_icu_r32(ier) | BIT(offset), ier);
+	ltq_icu_w32(im, ltq_icu_r32(im, ier) | BIT(offset), ier);
+}
+
+static int ltq_eiu_settype(struct irq_data *d, unsigned int type)
+{
+	int i;
+
+	for (i = 0; i < exin_avail; i++) {
+		if (d->hwirq == ltq_eiu_irq[i]) {
+			int val = 0;
+			int edge = 0;
+
+			switch (type) {
+			case IRQF_TRIGGER_NONE:
+				break;
+			case IRQF_TRIGGER_RISING:
+				val = 1;
+				edge = 1;
+				break;
+			case IRQF_TRIGGER_FALLING:
+				val = 2;
+				edge = 1;
+				break;
+			case IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING:
+				val = 3;
+				edge = 1;
+				break;
+			case IRQF_TRIGGER_HIGH:
+				val = 5;
+				break;
+			case IRQF_TRIGGER_LOW:
+				val = 6;
+				break;
+			default:
+				pr_err("invalid type %d for irq %ld\n",
+					type, d->hwirq);
+				return -EINVAL;
+			}
+
+			if (edge)
+				irq_set_handler(d->hwirq, handle_edge_irq);
+
+			ltq_eiu_w32(ltq_eiu_r32(LTQ_EIU_EXIN_C) |
+				(val << (i * 4)), LTQ_EIU_EXIN_C);
+		}
+	}
+
+	return 0;
 }
 
 static unsigned int ltq_startup_eiu_irq(struct irq_data *d)
@@ -133,14 +169,13 @@ static unsigned int ltq_startup_eiu_irq(struct irq_data *d)
 	int i;
 
 	ltq_enable_irq(d);
-	for (i = 0; i < MAX_EIU; i++) {
+	for (i = 0; i < exin_avail; i++) {
 		if (d->hwirq == ltq_eiu_irq[i]) {
-			/* low level - we should really handle set_type */
-			ltq_eiu_w32(ltq_eiu_r32(LTQ_EIU_EXIN_C) |
-				(0x6 << (i * 4)), LTQ_EIU_EXIN_C);
+			/* by default we are low level triggered */
+			ltq_eiu_settype(d, IRQF_TRIGGER_LOW);
 			/* clear all pending */
-			ltq_eiu_w32(ltq_eiu_r32(LTQ_EIU_EXIN_INIC) & ~BIT(i),
-				LTQ_EIU_EXIN_INIC);
+			ltq_eiu_w32(ltq_eiu_r32(LTQ_EIU_EXIN_INC) & ~BIT(i),
+				LTQ_EIU_EXIN_INC);
 			/* enable */
 			ltq_eiu_w32(ltq_eiu_r32(LTQ_EIU_EXIN_INEN) | BIT(i),
 				LTQ_EIU_EXIN_INEN);
@@ -156,7 +191,7 @@ static void ltq_shutdown_eiu_irq(struct irq_data *d)
 	int i;
 
 	ltq_disable_irq(d);
-	for (i = 0; i < MAX_EIU; i++) {
+	for (i = 0; i < exin_avail; i++) {
 		if (d->hwirq == ltq_eiu_irq[i]) {
 			/* disable */
 			ltq_eiu_w32(ltq_eiu_r32(LTQ_EIU_EXIN_INEN) & ~BIT(i),
@@ -167,7 +202,7 @@ static void ltq_shutdown_eiu_irq(struct irq_data *d)
 }
 
 static struct irq_chip ltq_irq_type = {
-	"icu",
+	.name = "icu",
 	.irq_enable = ltq_enable_irq,
 	.irq_disable = ltq_disable_irq,
 	.irq_unmask = ltq_enable_irq,
@@ -177,7 +212,7 @@ static struct irq_chip ltq_irq_type = {
 };
 
 static struct irq_chip ltq_eiu_type = {
-	"eiu",
+	.name = "eiu",
 	.irq_startup = ltq_startup_eiu_irq,
 	.irq_shutdown = ltq_shutdown_eiu_irq,
 	.irq_enable = ltq_enable_irq,
@@ -186,13 +221,16 @@ static struct irq_chip ltq_eiu_type = {
 	.irq_ack = ltq_ack_irq,
 	.irq_mask = ltq_disable_irq,
 	.irq_mask_ack = ltq_mask_and_ack_irq,
+	.irq_set_type = ltq_eiu_settype,
 };
 
-static void ltq_hw_irqdispatch(int module)
+static void ltq_hw_irq_handler(struct irq_desc *desc)
 {
+	int module = irq_desc_get_irq(desc) - 2;
 	u32 irq;
+	int hwirq;
 
-	irq = ltq_icu_r32(LTQ_ICU_IM0_IOSR + (module * LTQ_ICU_OFFSET));
+	irq = ltq_icu_r32(module, LTQ_ICU_IM0_IOSR);
 	if (irq == 0)
 		return;
 
@@ -201,7 +239,8 @@ static void ltq_hw_irqdispatch(int module)
 	 * other bits might be bogus
 	 */
 	irq = __fls(irq);
-	do_IRQ((int)irq + MIPS_CPU_IRQ_CASCADE + (INT_NUM_IM_OFFSET * module));
+	hwirq = irq + MIPS_CPU_IRQ_CASCADE + (INT_NUM_IM_OFFSET * module);
+	generic_handle_irq(irq_linear_revmap(ltq_domain, hwirq));
 
 	/* if this is a EBU irq, we need to ack it or get a deadlock */
 	if ((irq == LTQ_ICU_EBU_IRQ) && (module == 0) && LTQ_EBU_PCC_ISTAT)
@@ -209,95 +248,19 @@ static void ltq_hw_irqdispatch(int module)
 			LTQ_EBU_PCC_ISTAT);
 }
 
-#define DEFINE_HWx_IRQDISPATCH(x)					\
-	static void ltq_hw ## x ## _irqdispatch(void)			\
-	{								\
-		ltq_hw_irqdispatch(x);					\
-	}
-DEFINE_HWx_IRQDISPATCH(0)
-DEFINE_HWx_IRQDISPATCH(1)
-DEFINE_HWx_IRQDISPATCH(2)
-DEFINE_HWx_IRQDISPATCH(3)
-DEFINE_HWx_IRQDISPATCH(4)
-
-static void ltq_hw5_irqdispatch(void)
-{
-	do_IRQ(MIPS_CPU_TIMER_IRQ);
-}
-
-#ifdef CONFIG_MIPS_MT_SMP
-void __init arch_init_ipiirq(int irq, struct irqaction *action)
-{
-	setup_irq(irq, action);
-	irq_set_handler(irq, handle_percpu_irq);
-}
-
-static void ltq_sw0_irqdispatch(void)
-{
-	do_IRQ(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_RESCHED_IRQ);
-}
-
-static void ltq_sw1_irqdispatch(void)
-{
-	do_IRQ(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_CALL_IRQ);
-}
-static irqreturn_t ipi_resched_interrupt(int irq, void *dev_id)
-{
-	scheduler_ipi();
-	return IRQ_HANDLED;
-}
-
-static irqreturn_t ipi_call_interrupt(int irq, void *dev_id)
-{
-	smp_call_function_interrupt();
-	return IRQ_HANDLED;
-}
-
-static struct irqaction irq_resched = {
-	.handler	= ipi_resched_interrupt,
-	.flags		= IRQF_PERCPU,
-	.name		= "IPI_resched"
-};
-
-static struct irqaction irq_call = {
-	.handler	= ipi_call_interrupt,
-	.flags		= IRQF_PERCPU,
-	.name		= "IPI_call"
-};
-#endif
-
-asmlinkage void plat_irq_dispatch(void)
-{
-	unsigned int pending = read_c0_status() & read_c0_cause() & ST0_IM;
-	unsigned int i;
-
-	if (pending & CAUSEF_IP7) {
-		do_IRQ(MIPS_CPU_TIMER_IRQ);
-		goto out;
-	} else {
-		for (i = 0; i < 5; i++) {
-			if (pending & (CAUSEF_IP2 << i)) {
-				ltq_hw_irqdispatch(i);
-				goto out;
-			}
-		}
-	}
-	pr_alert("Spurious IRQ: CAUSE=0x%08x\n", read_c0_status());
-
-out:
-	return;
-}
-
 static int icu_map(struct irq_domain *d, unsigned int irq, irq_hw_number_t hw)
 {
 	struct irq_chip *chip = &ltq_irq_type;
 	int i;
 
+	if (hw < MIPS_CPU_IRQ_CASCADE)
+		return 0;
+
 	for (i = 0; i < exin_avail; i++)
 		if (hw == ltq_eiu_irq[i])
 			chip = &ltq_eiu_type;
 
-	irq_set_chip_and_handler(hw, chip, handle_level_irq);
+	irq_set_chip_and_handler(irq, chip, handle_level_irq);
 
 	return 0;
 }
@@ -307,41 +270,63 @@ static const struct irq_domain_ops irq_domain_ops = {
 	.map = icu_map,
 };
 
-static struct irqaction cascade = {
-	.handler = no_action,
-	.name = "cascade",
-};
-
 int __init icu_of_init(struct device_node *node, struct device_node *parent)
 {
 	struct device_node *eiu_node;
 	struct resource res;
-	int i;
+	int i, ret;
 
-	if (of_address_to_resource(node, 0, &res))
-		panic("Failed to get icu memory range");
+	for (i = 0; i < MAX_IM; i++) {
+		if (of_address_to_resource(node, i, &res))
+			panic("Failed to get icu memory range");
 
-	if (request_mem_region(res.start, resource_size(&res), res.name) < 0)
-		pr_err("Failed to request icu memory");
+		if (!request_mem_region(res.start, resource_size(&res),
+					res.name))
+			pr_err("Failed to request icu memory");
 
-	ltq_icu_membase = ioremap_nocache(res.start, resource_size(&res));
-	if (!ltq_icu_membase)
-		panic("Failed to remap icu memory");
+		ltq_icu_membase[i] = ioremap_nocache(res.start,
+					resource_size(&res));
+		if (!ltq_icu_membase[i])
+			panic("Failed to remap icu memory");
+	}
+
+	/* turn off all irqs by default */
+	for (i = 0; i < MAX_IM; i++) {
+		/* make sure all irqs are turned off by default */
+		ltq_icu_w32(i, 0, LTQ_ICU_IM0_IER);
+		/* clear all possibly pending interrupts */
+		ltq_icu_w32(i, ~0, LTQ_ICU_IM0_ISR);
+	}
+
+	mips_cpu_irq_init();
+
+	for (i = 0; i < MAX_IM; i++)
+		irq_set_chained_handler(i + 2, ltq_hw_irq_handler);
+
+	ltq_domain = irq_domain_add_linear(node,
+		(MAX_IM * INT_NUM_IM_OFFSET) + MIPS_CPU_IRQ_CASCADE,
+		&irq_domain_ops, 0);
+
+	/* tell oprofile which irq to use */
+	ltq_perfcount_irq = irq_create_mapping(ltq_domain, LTQ_PERF_IRQ);
 
 	/* the external interrupts are optional and xway only */
-	eiu_node = of_find_compatible_node(NULL, NULL, "lantiq,eiu");
-	if (eiu_node && of_address_to_resource(eiu_node, 0, &res)) {
+	eiu_node = of_find_compatible_node(NULL, NULL, "lantiq,eiu-xway");
+	if (eiu_node && !of_address_to_resource(eiu_node, 0, &res)) {
 		/* find out how many external irq sources we have */
-		const __be32 *count = of_get_property(node,
-							"lantiq,count",	NULL);
+		exin_avail = of_property_count_u32_elems(eiu_node,
+							 "lantiq,eiu-irqs");
 
-		if (count)
-			exin_avail = *count;
 		if (exin_avail > MAX_EIU)
 			exin_avail = MAX_EIU;
 
-		if (request_mem_region(res.start, resource_size(&res),
-							res.name) < 0)
+		ret = of_property_read_u32_array(eiu_node, "lantiq,eiu-irqs",
+						ltq_eiu_irq, exin_avail);
+		if (ret)
+			panic("failed to load external irq resources");
+
+		if (!request_mem_region(res.start, resource_size(&res),
+							res.name))
 			pr_err("Failed to request eiu memory");
 
 		ltq_eiu_membase = ioremap_nocache(res.start,
@@ -350,57 +335,16 @@ int __init icu_of_init(struct device_node *node, struct device_node *parent)
 			panic("Failed to remap eiu memory");
 	}
 
-	/* turn off all irqs by default */
-	for (i = 0; i < 5; i++) {
-		/* make sure all irqs are turned off by default */
-		ltq_icu_w32(0, LTQ_ICU_IM0_IER + (i * LTQ_ICU_OFFSET));
-		/* clear all possibly pending interrupts */
-		ltq_icu_w32(~0, LTQ_ICU_IM0_ISR + (i * LTQ_ICU_OFFSET));
-	}
-
-	mips_cpu_irq_init();
-
-	for (i = 2; i <= 6; i++)
-		setup_irq(i, &cascade);
-
-	if (cpu_has_vint) {
-		pr_info("Setting up vectored interrupts\n");
-		set_vi_handler(2, ltq_hw0_irqdispatch);
-		set_vi_handler(3, ltq_hw1_irqdispatch);
-		set_vi_handler(4, ltq_hw2_irqdispatch);
-		set_vi_handler(5, ltq_hw3_irqdispatch);
-		set_vi_handler(6, ltq_hw4_irqdispatch);
-		set_vi_handler(7, ltq_hw5_irqdispatch);
-	}
-
-	irq_domain_add_linear(node, 6 * INT_NUM_IM_OFFSET,
-		&irq_domain_ops, 0);
-
-#if defined(CONFIG_MIPS_MT_SMP)
-	if (cpu_has_vint) {
-		pr_info("Setting up IPI vectored interrupts\n");
-		set_vi_handler(MIPS_CPU_IPI_RESCHED_IRQ, ltq_sw0_irqdispatch);
-		set_vi_handler(MIPS_CPU_IPI_CALL_IRQ, ltq_sw1_irqdispatch);
-	}
-	arch_init_ipiirq(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_RESCHED_IRQ,
-		&irq_resched);
-	arch_init_ipiirq(MIPS_CPU_IRQ_BASE + MIPS_CPU_IPI_CALL_IRQ, &irq_call);
-#endif
-
-#if !defined(CONFIG_MIPS_MT_SMP) && !defined(CONFIG_MIPS_MT_SMTC)
-	set_c0_status(IE_IRQ0 | IE_IRQ1 | IE_IRQ2 |
-		IE_IRQ3 | IE_IRQ4 | IE_IRQ5);
-#else
-	set_c0_status(IE_SW0 | IE_SW1 | IE_IRQ0 | IE_IRQ1 |
-		IE_IRQ2 | IE_IRQ3 | IE_IRQ4 | IE_IRQ5);
-#endif
-
-	/* tell oprofile which irq to use */
-	cp0_perfcount_irq = LTQ_PERF_IRQ;
 	return 0;
 }
 
-unsigned int __cpuinit get_c0_compare_int(void)
+int get_c0_perfcount_int(void)
+{
+	return ltq_perfcount_irq;
+}
+EXPORT_SYMBOL_GPL(get_c0_perfcount_int);
+
+unsigned int get_c0_compare_int(void)
 {
 	return CP0_LEGACY_COMPARE_IRQ;
 }

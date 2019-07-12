@@ -10,26 +10,23 @@ struct pt_regs;
 
 struct task_struct;
 
-#include "asm/ptrace.h"
-#include "registers.h"
-#include "sysdep/archsetjmp.h"
+#include <asm/ptrace.h>
+#include <registers.h>
+#include <sysdep/archsetjmp.h>
 
 #include <linux/prefetch.h>
 
 struct mm_struct;
 
 struct thread_struct {
-	struct task_struct *saved_task;
 	struct pt_regs regs;
+	struct pt_regs *segv_regs;
 	int singlestep_syscall;
 	void *fault_addr;
 	jmp_buf *fault_catcher;
 	struct task_struct *prev_sched;
-	unsigned long temp_stack;
-	jmp_buf *exec_buf;
 	struct arch_thread arch;
 	jmp_buf switch_buf;
-	int mm_count;
 	struct {
 		int op;
 		union {
@@ -53,8 +50,6 @@ struct thread_struct {
 	.regs		   	= EMPTY_REGS,	\
 	.fault_addr		= NULL, \
 	.prev_sched		= NULL, \
-	.temp_stack		= 0, \
-	.exec_buf		= NULL, \
 	.arch			= INIT_ARCH_THREAD, \
 	.request		= { 0 } \
 }
@@ -63,16 +58,10 @@ static inline void release_thread(struct task_struct *task)
 {
 }
 
-extern int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
-
-extern unsigned long thread_saved_pc(struct task_struct *t);
-
 static inline void mm_copy_segments(struct mm_struct *from_mm,
 				    struct mm_struct *new_mm)
 {
 }
-
-#define init_stack	(init_thread_union.stack)
 
 /*
  * User space process size: 3GB (default).
@@ -105,16 +94,8 @@ struct cpuinfo_um {
 
 extern struct cpuinfo_um boot_cpu_data;
 
-#define my_cpu_data		cpu_data[smp_processor_id()]
-
-#ifdef CONFIG_SMP
-extern struct cpuinfo_um cpu_data[];
-#define current_cpu_data cpu_data[smp_processor_id()]
-#else
 #define cpu_data (&boot_cpu_data)
 #define current_cpu_data boot_cpu_data
-#endif
-
 
 #define KSTK_REG(tsk, reg) get_thread_reg(reg, &tsk->thread.switch_buf)
 extern unsigned long get_wchan(struct task_struct *p);

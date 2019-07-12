@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * xtsonic.c
  *
@@ -72,14 +73,6 @@ extern void xtboard_get_ether_addr(unsigned char *buf);
 #define SONIC_WRITE(reg,val) \
 	*((volatile unsigned int *)dev->base_addr+reg) = val
 
-
-/* Use 0 for production, 1 for verification, and >2 for debug */
-#ifdef SONIC_DEBUG
-static unsigned int sonic_debug = SONIC_DEBUG;
-#else
-static unsigned int sonic_debug = 1;
-#endif
-
 /*
  * We cannot use station (ethernet) address prefixes to detect the
  * sonic controller since these are board manufacturer depended.
@@ -95,8 +88,7 @@ static int xtsonic_open(struct net_device *dev)
 {
 	int retval;
 
-	retval = request_irq(dev->irq, sonic_interrupt, IRQF_DISABLED,
-				"sonic", dev);
+	retval = request_irq(dev->irq, sonic_interrupt, 0, "sonic", dev);
 	if (retval) {
 		printk(KERN_ERR "%s: unable to get IRQ %d.\n",
 		       dev->name, dev->irq);
@@ -125,13 +117,11 @@ static const struct net_device_ops xtsonic_netdev_ops = {
 	.ndo_set_rx_mode	= sonic_multicast_list,
 	.ndo_tx_timeout		= sonic_tx_timeout,
 	.ndo_validate_addr	= eth_validate_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address	= eth_mac_addr,
 };
 
 static int __init sonic_probe1(struct net_device *dev)
 {
-	static unsigned version_printed = 0;
 	unsigned int silicon_revision;
 	struct sonic_local *lp = netdev_priv(dev);
 	unsigned int base_addr = dev->base_addr;
@@ -147,22 +137,16 @@ static int __init sonic_probe1(struct net_device *dev)
 	 * the expected location.
 	 */
 	silicon_revision = SONIC_READ(SONIC_SR);
-	if (sonic_debug > 1)
-		printk("SONIC Silicon Revision = 0x%04x\n",silicon_revision);
-
 	i = 0;
 	while ((known_revisions[i] != 0xffff) &&
 			(known_revisions[i] != silicon_revision))
 		i++;
 
 	if (known_revisions[i] == 0xffff) {
-		printk("SONIC ethernet controller not found (0x%4x)\n",
-				silicon_revision);
+		pr_info("SONIC ethernet controller not found (0x%4x)\n",
+			silicon_revision);
 		return -ENODEV;
 	}
-
-	if (sonic_debug  &&  version_printed++ == 0)
-		printk(version);
 
 	/*
 	 * Put the sonic into software reset, then retrieve ethernet address.
@@ -197,14 +181,13 @@ static int __init sonic_probe1(struct net_device *dev)
 	 *  We also allocate extra space for a pointer to allow freeing
 	 *  this structure later on (in xtsonic_cleanup_module()).
 	 */
-	lp->descriptors =
-		dma_alloc_coherent(lp->device,
-			SIZEOF_SONIC_DESC * SONIC_BUS_SCALE(lp->dma_bitmode),
-			&lp->descriptors_laddr, GFP_KERNEL);
-
+	lp->descriptors = dma_alloc_coherent(lp->device,
+					     SIZEOF_SONIC_DESC *
+					     SONIC_BUS_SCALE(lp->dma_bitmode),
+					     &lp->descriptors_laddr,
+					     GFP_KERNEL);
 	if (lp->descriptors == NULL) {
-		printk(KERN_ERR "%s: couldn't alloc DMA memory for "
-				" descriptors.\n", dev_name(lp->device));
+		err = -ENOMEM;
 		goto out;
 	}
 
@@ -248,7 +231,7 @@ out:
  * Actually probing is superfluous but we're paranoid.
  */
 
-int __devinit xtsonic_probe(struct platform_device *pdev)
+int xtsonic_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
 	struct sonic_local *lp;
@@ -266,6 +249,7 @@ int __devinit xtsonic_probe(struct platform_device *pdev)
 
 	lp = netdev_priv(dev);
 	lp->device = &pdev->dev;
+	platform_set_drvdata(pdev, dev);
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	netdev_boot_setup_check(dev);
 
@@ -274,11 +258,14 @@ int __devinit xtsonic_probe(struct platform_device *pdev)
 
 	if ((err = sonic_probe1(dev)))
 		goto out;
+
+	pr_info("SONIC ethernet @%08lx, MAC %pM, IRQ %d\n",
+		dev->base_addr, dev->dev_addr, dev->irq);
+
+	sonic_msg_init(dev);
+
 	if ((err = register_netdev(dev)))
 		goto out1;
-
-	printk("%s: SONIC ethernet @%08lx, MAC %pM, IRQ %d\n", dev->name,
-	       dev->base_addr, dev->dev_addr, dev->irq);
 
 	return 0;
 
@@ -291,12 +278,10 @@ out:
 }
 
 MODULE_DESCRIPTION("Xtensa XT2000 SONIC ethernet driver");
-module_param(sonic_debug, int, 0);
-MODULE_PARM_DESC(sonic_debug, "xtsonic debug level (1-4)");
 
 #include "sonic.c"
 
-static int __devexit xtsonic_device_remove (struct platform_device *pdev)
+static int xtsonic_device_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct sonic_local *lp = netdev_priv(dev);
@@ -313,7 +298,7 @@ static int __devexit xtsonic_device_remove (struct platform_device *pdev)
 
 static struct platform_driver xtsonic_driver = {
 	.probe = xtsonic_probe,
-	.remove = __devexit_p(xtsonic_device_remove),
+	.remove = xtsonic_device_remove,
 	.driver = {
 		.name = xtsonic_string,
 	},

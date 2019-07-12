@@ -184,8 +184,8 @@ static void sci_io_request_build_ssp_command_iu(struct isci_request *ireq)
 	cmd_iu->task_attr = task->ssp_task.task_attr;
 	cmd_iu->_r_c = 0;
 
-	sci_swab32_cpy(&cmd_iu->cdb, task->ssp_task.cdb,
-		       sizeof(task->ssp_task.cdb) / sizeof(u32));
+	sci_swab32_cpy(&cmd_iu->cdb, task->ssp_task.cmd->cmnd,
+		       (task->ssp_task.cmd->cmd_len+3) / sizeof(u32));
 }
 
 static void sci_task_request_build_ssp_task_iu(struct isci_request *ireq)
@@ -213,7 +213,7 @@ static void sci_task_request_build_ssp_task_iu(struct isci_request *ireq)
  * @task_context:
  *
  */
-static void scu_ssp_reqeust_construct_task_context(
+static void scu_ssp_request_construct_task_context(
 	struct isci_request *ireq,
 	struct scu_task_context *task_context)
 {
@@ -425,7 +425,7 @@ static void scu_ssp_io_request_construct_task_context(struct isci_request *ireq,
 	u8 prot_type = scsi_get_prot_type(scmd);
 	u8 prot_op = scsi_get_prot_op(scmd);
 
-	scu_ssp_reqeust_construct_task_context(ireq, task_context);
+	scu_ssp_request_construct_task_context(ireq, task_context);
 
 	task_context->ssp_command_iu_length =
 		sizeof(struct ssp_cmd_iu) / sizeof(u32);
@@ -472,7 +472,7 @@ static void scu_ssp_task_request_construct_task_context(struct isci_request *ire
 {
 	struct scu_task_context *task_context = ireq->tc;
 
-	scu_ssp_reqeust_construct_task_context(ireq, task_context);
+	scu_ssp_request_construct_task_context(ireq, task_context);
 
 	task_context->control_frame                = 1;
 	task_context->priority                     = SCU_TASK_PRIORITY_HIGH;
@@ -495,7 +495,7 @@ static void scu_ssp_task_request_construct_task_context(struct isci_request *ire
  * the command buffer is complete. none Revisit task context construction to
  * determine what is common for SSP/SMP/STP task context structures.
  */
-static void scu_sata_reqeust_construct_task_context(
+static void scu_sata_request_construct_task_context(
 	struct isci_request *ireq,
 	struct scu_task_context *task_context)
 {
@@ -562,7 +562,7 @@ static void scu_stp_raw_request_construct_task_context(struct isci_request *ireq
 {
 	struct scu_task_context *task_context = ireq->tc;
 
-	scu_sata_reqeust_construct_task_context(ireq, task_context);
+	scu_sata_request_construct_task_context(ireq, task_context);
 
 	task_context->control_frame         = 0;
 	task_context->priority              = SCU_TASK_PRIORITY_NORMAL;
@@ -613,7 +613,7 @@ static void sci_stp_optimized_request_construct(struct isci_request *ireq,
 	struct scu_task_context *task_context = ireq->tc;
 
 	/* Build the STP task context structure */
-	scu_sata_reqeust_construct_task_context(ireq, task_context);
+	scu_sata_request_construct_task_context(ireq, task_context);
 
 	/* Copy over the SGL elements */
 	sci_request_build_sgl(ireq);
@@ -694,7 +694,7 @@ sci_io_request_construct_sata(struct isci_request *ireq,
 	}
 
 	/* ATAPI */
-	if (dev->sata_dev.command_set == ATAPI_COMMAND_SET &&
+	if (dev->sata_dev.class == ATA_DEV_ATAPI &&
 	    task->ata_task.fis.command == ATA_CMD_PACKET) {
 		sci_atapi_construct(ireq);
 		return SCI_SUCCESS;
@@ -894,7 +894,7 @@ sci_io_request_terminate(struct isci_request *ireq)
 		 * and don't wait for the task response.
 		 */
 		sci_change_state(&ireq->sm, SCI_REQ_ABORTING);
-		/* Fall through and handle like ABORTING... */
+		/* Fall through - and handle like ABORTING... */
 	case SCI_REQ_ABORTING:
 		if (!isci_remote_device_is_safe_to_abort(ireq->target_device))
 			set_bit(IREQ_PENDING_ABORT, &ireq->flags);
@@ -1401,7 +1401,7 @@ static enum sci_status sci_stp_request_pio_data_out_transmit_data(struct isci_re
  * @data_buffer: The buffer of data to be copied.
  * @length: The length of the data transfer.
  *
- * Copy the data from the buffer for the length specified to the IO reqeust SGL
+ * Copy the data from the buffer for the length specified to the IO request SGL
  * specified data region. enum sci_status
  */
 static enum sci_status
@@ -1626,9 +1626,9 @@ static enum sci_status atapi_d2h_reg_frame_handler(struct isci_request *ireq,
 
 	if (status == SCI_SUCCESS) {
 		if (ireq->stp.rsp.status & ATA_ERR)
-			status = SCI_IO_FAILURE_RESPONSE_VALID;
+			status = SCI_FAILURE_IO_RESPONSE_VALID;
 	} else {
-		status = SCI_IO_FAILURE_RESPONSE_VALID;
+		status = SCI_FAILURE_IO_RESPONSE_VALID;
 	}
 
 	if (status != SCI_SUCCESS) {
@@ -2240,7 +2240,7 @@ static enum sci_status atapi_data_tc_completion_handler(struct isci_request *ire
 			status = ireq->sci_status;
 			sci_change_state(&idev->sm, SCI_STP_DEV_ATAPI_ERROR);
 		} else {
-			/* If receiving any non-sucess TC status, no UF
+			/* If receiving any non-success TC status, no UF
 			 * received yet, then an UF for the status fis
 			 * is coming after (XXX: suspect this is
 			 * actually a protocol error or a bug like the
@@ -2473,7 +2473,7 @@ static void isci_request_process_response_iu(
 		"%s: resp_iu = %p "
 		"resp_iu->status = 0x%x,\nresp_iu->datapres = %d "
 		"resp_iu->response_data_len = %x, "
-		"resp_iu->sense_data_len = %x\nrepsonse data: ",
+		"resp_iu->sense_data_len = %x\nresponse data: ",
 		__func__,
 		resp_iu,
 		resp_iu->status,
@@ -2723,13 +2723,9 @@ static void isci_process_stp_response(struct sas_task *task, struct dev_to_host_
 	memcpy(resp->ending_fis, fis, sizeof(*fis));
 	ts->buf_valid_size = sizeof(*resp);
 
-	/* If the device fault bit is set in the status register, then
-	 * set the sense data and return.
-	 */
-	if (fis->status & ATA_DF)
+	/* If an error is flagged let libata decode the fis */
+	if (ac_err_mask(fis->status))
 		ts->stat = SAS_PROTO_RESPONSE;
-	else if (fis->status & ATA_ERR)
-		ts->stat = SAM_STAT_CHECK_CONDITION;
 	else
 		ts->stat = SAM_STAT_GOOD;
 
@@ -2978,13 +2974,13 @@ static void sci_request_started_state_enter(struct sci_base_state_machine *sm)
 	/* all unaccelerated request types (non ssp or ncq) handled with
 	 * substates
 	 */
-	if (!task && dev->dev_type == SAS_END_DEV) {
+	if (!task && dev->dev_type == SAS_END_DEVICE) {
 		state = SCI_REQ_TASK_WAIT_TC_COMP;
 	} else if (task && task->task_proto == SAS_PROTOCOL_SMP) {
 		state = SCI_REQ_SMP_WAIT_RESP;
 	} else if (task && sas_protocol_ata(task->task_proto) &&
 		   !task->ata_task.use_ncq) {
-		if (dev->sata_dev.command_set == ATAPI_COMMAND_SET &&
+		if (dev->sata_dev.class == ATA_DEV_ATAPI &&
 			task->ata_task.fis.command == ATA_CMD_PACKET) {
 			state = SCI_REQ_ATAPI_WAIT_H2D;
 		} else if (task->data_dir == DMA_NONE) {
@@ -3101,7 +3097,7 @@ sci_io_request_construct(struct isci_host *ihost,
 	if (idev->rnc.remote_node_index == SCIC_SDS_REMOTE_NODE_CONTEXT_INVALID_INDEX)
 		return SCI_FAILURE_INVALID_REMOTE_DEVICE;
 
-	if (dev->dev_type == SAS_END_DEV)
+	if (dev->dev_type == SAS_END_DEVICE)
 		/* pass */;
 	else if (dev_is_sata(dev))
 		memset(&ireq->stp.cmd, 0, sizeof(ireq->stp.cmd));
@@ -3125,7 +3121,7 @@ enum sci_status sci_task_request_construct(struct isci_host *ihost,
 	/* Build the common part of the request */
 	sci_general_request_construct(ihost, idev, ireq);
 
-	if (dev->dev_type == SAS_END_DEV || dev_is_sata(dev)) {
+	if (dev->dev_type == SAS_END_DEVICE || dev_is_sata(dev)) {
 		set_bit(IREQ_TMF, &ireq->flags);
 		memset(ireq->tc, 0, sizeof(struct scu_task_context));
 
@@ -3173,7 +3169,10 @@ static enum sci_status isci_request_stp_request_construct(struct isci_request *i
 	status = sci_io_request_construct_basic_sata(ireq);
 
 	if (qc && (qc->tf.command == ATA_CMD_FPDMA_WRITE ||
-		   qc->tf.command == ATA_CMD_FPDMA_READ)) {
+		   qc->tf.command == ATA_CMD_FPDMA_READ ||
+		   qc->tf.command == ATA_CMD_FPDMA_RECV ||
+		   qc->tf.command == ATA_CMD_FPDMA_SEND ||
+		   qc->tf.command == ATA_CMD_NCQ_NON_DATA)) {
 		fis->sector_count = qc->tag << 3;
 		ireq->tc->type.stp.ncq_tag = qc->tag;
 	}

@@ -272,8 +272,8 @@ long long ubifs_calc_available(const struct ubifs_info *c, int min_idx_lebs)
  */
 static int can_use_rp(struct ubifs_info *c)
 {
-	if (current_fsuid() == c->rp_uid || capable(CAP_SYS_RESOURCE) ||
-	    (c->rp_gid != 0 && in_group_p(c->rp_gid)))
+	if (uid_eq(current_fsuid(), c->rp_uid) || capable(CAP_SYS_RESOURCE) ||
+	    (!gid_eq(c->rp_gid, GLOBAL_ROOT_GID) && in_group_p(c->rp_gid)))
 		return 1;
 	return 0;
 }
@@ -342,9 +342,8 @@ static int do_budget_space(struct ubifs_info *c)
 	lebs = c->lst.empty_lebs + c->freeable_cnt + c->idx_gc_cnt -
 	       c->lst.taken_empty_lebs;
 	if (unlikely(rsvd_idx_lebs > lebs)) {
-		dbg_budg("out of indexing space: min_idx_lebs %d (old %d), "
-			 "rsvd_idx_lebs %d", min_idx_lebs, c->bi.min_idx_lebs,
-			 rsvd_idx_lebs);
+		dbg_budg("out of indexing space: min_idx_lebs %d (old %d), rsvd_idx_lebs %d",
+			 min_idx_lebs, c->bi.min_idx_lebs, rsvd_idx_lebs);
 		return -ENOSPC;
 	}
 
@@ -438,19 +437,18 @@ static int calc_dd_growth(const struct ubifs_info *c,
  */
 int ubifs_budget_space(struct ubifs_info *c, struct ubifs_budget_req *req)
 {
-	int uninitialized_var(cmt_retries), uninitialized_var(wb_retries);
 	int err, idx_growth, data_growth, dd_growth, retried = 0;
 
-	ubifs_assert(req->new_page <= 1);
-	ubifs_assert(req->dirtied_page <= 1);
-	ubifs_assert(req->new_dent <= 1);
-	ubifs_assert(req->mod_dent <= 1);
-	ubifs_assert(req->new_ino <= 1);
-	ubifs_assert(req->new_ino_d <= UBIFS_MAX_INO_DATA);
-	ubifs_assert(req->dirtied_ino <= 4);
-	ubifs_assert(req->dirtied_ino_d <= UBIFS_MAX_INO_DATA * 4);
-	ubifs_assert(!(req->new_ino_d & 7));
-	ubifs_assert(!(req->dirtied_ino_d & 7));
+	ubifs_assert(c, req->new_page <= 1);
+	ubifs_assert(c, req->dirtied_page <= 1);
+	ubifs_assert(c, req->new_dent <= 1);
+	ubifs_assert(c, req->mod_dent <= 1);
+	ubifs_assert(c, req->new_ino <= 1);
+	ubifs_assert(c, req->new_ino_d <= UBIFS_MAX_INO_DATA);
+	ubifs_assert(c, req->dirtied_ino <= 4);
+	ubifs_assert(c, req->dirtied_ino_d <= UBIFS_MAX_INO_DATA * 4);
+	ubifs_assert(c, !(req->new_ino_d & 7));
+	ubifs_assert(c, !(req->dirtied_ino_d & 7));
 
 	data_growth = calc_data_growth(c, req);
 	dd_growth = calc_dd_growth(c, req);
@@ -460,9 +458,9 @@ int ubifs_budget_space(struct ubifs_info *c, struct ubifs_budget_req *req)
 
 again:
 	spin_lock(&c->space_lock);
-	ubifs_assert(c->bi.idx_growth >= 0);
-	ubifs_assert(c->bi.data_growth >= 0);
-	ubifs_assert(c->bi.dd_growth >= 0);
+	ubifs_assert(c, c->bi.idx_growth >= 0);
+	ubifs_assert(c, c->bi.data_growth >= 0);
+	ubifs_assert(c, c->bi.dd_growth >= 0);
 
 	if (unlikely(c->bi.nospace) && (c->bi.nospace_rp || !can_use_rp(c))) {
 		dbg_budg("no space");
@@ -511,7 +509,7 @@ again:
 			c->bi.nospace_rp = 1;
 		smp_wmb();
 	} else
-		ubifs_err("cannot budget space, error %d", err);
+		ubifs_err(c, "cannot budget space, error %d", err);
 	return err;
 }
 
@@ -528,20 +526,20 @@ again:
  */
 void ubifs_release_budget(struct ubifs_info *c, struct ubifs_budget_req *req)
 {
-	ubifs_assert(req->new_page <= 1);
-	ubifs_assert(req->dirtied_page <= 1);
-	ubifs_assert(req->new_dent <= 1);
-	ubifs_assert(req->mod_dent <= 1);
-	ubifs_assert(req->new_ino <= 1);
-	ubifs_assert(req->new_ino_d <= UBIFS_MAX_INO_DATA);
-	ubifs_assert(req->dirtied_ino <= 4);
-	ubifs_assert(req->dirtied_ino_d <= UBIFS_MAX_INO_DATA * 4);
-	ubifs_assert(!(req->new_ino_d & 7));
-	ubifs_assert(!(req->dirtied_ino_d & 7));
+	ubifs_assert(c, req->new_page <= 1);
+	ubifs_assert(c, req->dirtied_page <= 1);
+	ubifs_assert(c, req->new_dent <= 1);
+	ubifs_assert(c, req->mod_dent <= 1);
+	ubifs_assert(c, req->new_ino <= 1);
+	ubifs_assert(c, req->new_ino_d <= UBIFS_MAX_INO_DATA);
+	ubifs_assert(c, req->dirtied_ino <= 4);
+	ubifs_assert(c, req->dirtied_ino_d <= UBIFS_MAX_INO_DATA * 4);
+	ubifs_assert(c, !(req->new_ino_d & 7));
+	ubifs_assert(c, !(req->dirtied_ino_d & 7));
 	if (!req->recalculate) {
-		ubifs_assert(req->idx_growth >= 0);
-		ubifs_assert(req->data_growth >= 0);
-		ubifs_assert(req->dd_growth >= 0);
+		ubifs_assert(c, req->idx_growth >= 0);
+		ubifs_assert(c, req->data_growth >= 0);
+		ubifs_assert(c, req->dd_growth >= 0);
 	}
 
 	if (req->recalculate) {
@@ -563,13 +561,13 @@ void ubifs_release_budget(struct ubifs_info *c, struct ubifs_budget_req *req)
 	c->bi.dd_growth -= req->dd_growth;
 	c->bi.min_idx_lebs = ubifs_calc_min_idx_lebs(c);
 
-	ubifs_assert(c->bi.idx_growth >= 0);
-	ubifs_assert(c->bi.data_growth >= 0);
-	ubifs_assert(c->bi.dd_growth >= 0);
-	ubifs_assert(c->bi.min_idx_lebs < c->main_lebs);
-	ubifs_assert(!(c->bi.idx_growth & 7));
-	ubifs_assert(!(c->bi.data_growth & 7));
-	ubifs_assert(!(c->bi.dd_growth & 7));
+	ubifs_assert(c, c->bi.idx_growth >= 0);
+	ubifs_assert(c, c->bi.data_growth >= 0);
+	ubifs_assert(c, c->bi.dd_growth >= 0);
+	ubifs_assert(c, c->bi.min_idx_lebs < c->main_lebs);
+	ubifs_assert(c, !(c->bi.idx_growth & 7));
+	ubifs_assert(c, !(c->bi.data_growth & 7));
+	ubifs_assert(c, !(c->bi.dd_growth & 7));
 	spin_unlock(&c->space_lock);
 }
 
@@ -682,7 +680,7 @@ long long ubifs_get_free_space_nolock(struct ubifs_info *c)
 	int rsvd_idx_lebs, lebs;
 	long long available, outstanding, free;
 
-	ubifs_assert(c->bi.min_idx_lebs == ubifs_calc_min_idx_lebs(c));
+	ubifs_assert(c, c->bi.min_idx_lebs == ubifs_calc_min_idx_lebs(c));
 	outstanding = c->bi.data_growth + c->bi.dd_growth;
 	available = ubifs_calc_available(c, c->bi.min_idx_lebs);
 

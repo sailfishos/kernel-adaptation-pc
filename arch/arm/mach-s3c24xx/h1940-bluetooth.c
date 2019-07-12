@@ -1,14 +1,8 @@
-/*
- * arch/arm/mach-s3c2410/h1940-bluetooth.c
- * Copyright (c) Arnaud Patard <arnaud.patard@rtp-net.org>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file COPYING in the main directory of this archive for
- * more details.
- *
- *	    S3C2410 bluetooth "driver"
- *
- */
+// SPDX-License-Identifier: GPL-1.0+
+//
+// Copyright (c) Arnaud Patard <arnaud.patard@rtp-net.org>
+//
+//	    S3C2410 bluetooth "driver"
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -19,10 +13,12 @@
 #include <linux/gpio.h>
 #include <linux/rfkill.h>
 
-#include <mach/regs-gpio.h>
+#include <plat/gpio-cfg.h>
 #include <mach/hardware.h>
-#include <mach/h1940-latch.h>
-#include <mach/h1940.h>
+#include <mach/regs-gpio.h>
+#include <mach/gpio-samsung.h>
+
+#include "h1940.h"
 
 #define DRV_NAME "h1940-bt"
 
@@ -39,7 +35,7 @@ static void h1940bt_enable(int on)
 		mdelay(10);
 		gpio_set_value(S3C2410_GPH(1), 0);
 
-		h1940_led_blink_set(-EINVAL, GPIO_LED_BLINK, NULL, NULL);
+		h1940_led_blink_set(NULL, GPIO_LED_BLINK, NULL, NULL);
 	}
 	else {
 		gpio_set_value(S3C2410_GPH(1), 1);
@@ -48,7 +44,7 @@ static void h1940bt_enable(int on)
 		mdelay(10);
 		gpio_set_value(H1940_LATCH_BLUETOOTH_POWER, 0);
 
-		h1940_led_blink_set(-EINVAL, GPIO_LED_NO_BLINK_LOW, NULL, NULL);
+		h1940_led_blink_set(NULL, GPIO_LED_NO_BLINK_LOW, NULL, NULL);
 	}
 }
 
@@ -62,7 +58,7 @@ static const struct rfkill_ops h1940bt_rfkill_ops = {
 	.set_block = h1940bt_set_block,
 };
 
-static int __devinit h1940bt_probe(struct platform_device *pdev)
+static int h1940bt_probe(struct platform_device *pdev)
 {
 	struct rfkill *rfk;
 	int ret = 0;
@@ -138,19 +134,7 @@ static struct platform_driver h1940bt_driver = {
 	.remove		= h1940bt_remove,
 };
 
-
-static int __init h1940bt_init(void)
-{
-	return platform_driver_register(&h1940bt_driver);
-}
-
-static void __exit h1940bt_exit(void)
-{
-	platform_driver_unregister(&h1940bt_driver);
-}
-
-module_init(h1940bt_init);
-module_exit(h1940bt_exit);
+module_platform_driver(h1940bt_driver);
 
 MODULE_AUTHOR("Arnaud Patard <arnaud.patard@rtp-net.org>");
 MODULE_DESCRIPTION("Driver for the iPAQ H1940 bluetooth chip");

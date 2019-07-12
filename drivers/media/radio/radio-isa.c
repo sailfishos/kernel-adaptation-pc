@@ -13,11 +13,6 @@
  * WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #include <linux/module.h>
@@ -47,12 +42,12 @@ static int radio_isa_querycap(struct file *file, void  *priv,
 {
 	struct radio_isa_card *isa = video_drvdata(file);
 
-	strlcpy(v->driver, isa->drv->driver.driver.name, sizeof(v->driver));
-	strlcpy(v->card, isa->drv->card, sizeof(v->card));
+	strscpy(v->driver, isa->drv->driver.driver.name, sizeof(v->driver));
+	strscpy(v->card, isa->drv->card, sizeof(v->card));
 	snprintf(v->bus_info, sizeof(v->bus_info), "ISA:%s", isa->v4l2_dev.name);
 
-	v->capabilities = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
-	v->device_caps = v->capabilities | V4L2_CAP_DEVICE_CAPS;
+	v->device_caps = V4L2_CAP_TUNER | V4L2_CAP_RADIO;
+	v->capabilities = v->device_caps | V4L2_CAP_DEVICE_CAPS;
 	return 0;
 }
 
@@ -65,7 +60,7 @@ static int radio_isa_g_tuner(struct file *file, void *priv,
 	if (v->index > 0)
 		return -EINVAL;
 
-	strlcpy(v->name, "FM", sizeof(v->name));
+	strscpy(v->name, "FM", sizeof(v->name));
 	v->type = V4L2_TUNER_RADIO;
 	v->rangelow = FREQ_LOW;
 	v->rangehigh = FREQ_HIGH;
@@ -87,7 +82,7 @@ static int radio_isa_g_tuner(struct file *file, void *priv,
 }
 
 static int radio_isa_s_tuner(struct file *file, void *priv,
-				struct v4l2_tuner *v)
+				const struct v4l2_tuner *v)
 {
 	struct radio_isa_card *isa = video_drvdata(file);
 	const struct radio_isa_ops *ops = isa->drv->ops;
@@ -102,17 +97,18 @@ static int radio_isa_s_tuner(struct file *file, void *priv,
 }
 
 static int radio_isa_s_frequency(struct file *file, void *priv,
-				struct v4l2_frequency *f)
+				const struct v4l2_frequency *f)
 {
 	struct radio_isa_card *isa = video_drvdata(file);
+	u32 freq = f->frequency;
 	int res;
 
 	if (f->tuner != 0 || f->type != V4L2_TUNER_RADIO)
 		return -EINVAL;
-	f->frequency = clamp(f->frequency, FREQ_LOW, FREQ_HIGH);
-	res = isa->drv->ops->s_frequency(isa, f->frequency);
+	freq = clamp(freq, FREQ_LOW, FREQ_HIGH);
+	res = isa->drv->ops->s_frequency(isa, freq);
 	if (res == 0)
-		isa->freq = f->frequency;
+		isa->freq = freq;
 	return res;
 }
 
@@ -191,7 +187,7 @@ static bool radio_isa_valid_io(const struct radio_isa_driver *drv, int io)
 	return false;
 }
 
-struct radio_isa_card *radio_isa_alloc(struct radio_isa_driver *drv,
+static struct radio_isa_card *radio_isa_alloc(struct radio_isa_driver *drv,
 				struct device *pdev)
 {
 	struct v4l2_device *v4l2_dev;
@@ -202,13 +198,14 @@ struct radio_isa_card *radio_isa_alloc(struct radio_isa_driver *drv,
 	dev_set_drvdata(pdev, isa);
 	isa->drv = drv;
 	v4l2_dev = &isa->v4l2_dev;
-	strlcpy(v4l2_dev->name, dev_name(pdev), sizeof(v4l2_dev->name));
+	strscpy(v4l2_dev->name, dev_name(pdev), sizeof(v4l2_dev->name));
 
 	return isa;
 }
 
-int radio_isa_common_probe(struct radio_isa_card *isa, struct device *pdev,
-				int radio_nr, unsigned region_size)
+static int radio_isa_common_probe(struct radio_isa_card *isa,
+				  struct device *pdev,
+				  int radio_nr, unsigned region_size)
 {
 	const struct radio_isa_driver *drv = isa->drv;
 	const struct radio_isa_ops *ops = drv->ops;
@@ -246,12 +243,11 @@ int radio_isa_common_probe(struct radio_isa_card *isa, struct device *pdev,
 
 	mutex_init(&isa->lock);
 	isa->vdev.lock = &isa->lock;
-	strlcpy(isa->vdev.name, v4l2_dev->name, sizeof(isa->vdev.name));
+	strscpy(isa->vdev.name, v4l2_dev->name, sizeof(isa->vdev.name));
 	isa->vdev.v4l2_dev = v4l2_dev;
 	isa->vdev.fops = &radio_isa_fops;
 	isa->vdev.ioctl_ops = &radio_isa_ioctl_ops;
 	isa->vdev.release = video_device_release_empty;
-	set_bit(V4L2_FL_USE_FH_PRIO, &isa->vdev.flags);
 	video_set_drvdata(&isa->vdev, isa);
 	isa->freq = FREQ_LOW;
 	isa->stereo = drv->has_stereo;
@@ -287,7 +283,8 @@ err_dev_reg:
 	return res;
 }
 
-int radio_isa_common_remove(struct radio_isa_card *isa, unsigned region_size)
+static int radio_isa_common_remove(struct radio_isa_card *isa,
+				   unsigned region_size)
 {
 	const struct radio_isa_ops *ops = isa->drv->ops;
 

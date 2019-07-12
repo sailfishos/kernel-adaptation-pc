@@ -22,7 +22,6 @@
 extern const struct seq_operations cpuinfo_op;
 
 # define cpu_relax()		barrier()
-# define cpu_sleep()		do {} while (0)
 
 #define task_pt_regs(tsk) \
 		(((struct pt_regs *)(THREAD_SIZE + task_stack_page(tsk))) - 1)
@@ -31,6 +30,7 @@ extern const struct seq_operations cpuinfo_op;
 void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long usp);
 
 extern void ret_from_fork(void);
+extern void ret_from_kernel_thread(void);
 
 # endif /* __ASSEMBLY__ */
 
@@ -44,12 +44,6 @@ extern void ret_from_fork(void);
  * physical memory. thus, we set TASK_SIZE == amount of total memory.
  */
 # define TASK_SIZE	(0x81000000 - 0x80000000)
-
-/*
- * Default implementation of macro that returns current
- * instruction pointer ("program counter").
- */
-# define current_text_addr() ({ __label__ _l; _l: &&_l; })
 
 /*
  * This decides where the kernel will search for a free chunk of vm
@@ -69,19 +63,7 @@ static inline void release_thread(struct task_struct *dead_task)
 {
 }
 
-/* Free all resources held by a thread. */
-static inline void exit_thread(void)
-{
-}
-
-extern unsigned long thread_saved_pc(struct task_struct *t);
-
 extern unsigned long get_wchan(struct task_struct *p);
-
-/*
- * create a kernel thread without removing it from tasklists
- */
-extern int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 
 # define KSTK_EIP(tsk)	(0)
 # define KSTK_ESP(tsk)	(0)
@@ -104,12 +86,6 @@ extern int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
 
 #  ifndef __ASSEMBLY__
 
-/*
- * Default implementation of macro that returns current
- * instruction pointer ("program counter").
- */
-#  define current_text_addr()	({ __label__ _l; _l: &&_l; })
-
 /* If you change this, you must change the associated assembly-languages
  * constants defined below, THREAD_*.
  */
@@ -127,20 +103,9 @@ struct thread_struct {
 }
 
 /* Free all resources held by a thread. */
-extern inline void release_thread(struct task_struct *dead_task)
+static inline void release_thread(struct task_struct *dead_task)
 {
 }
-
-extern int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
-
-/* Free current thread data structures etc.  */
-static inline void exit_thread(void)
-{
-}
-
-/* Return saved (kernel) PC of a blocked thread.  */
-#  define thread_saved_pc(tsk)	\
-	((tsk)->thread.regs ? (tsk)->thread.regs->r15 : 0)
 
 unsigned long get_wchan(struct task_struct *p);
 
@@ -165,10 +130,6 @@ unsigned long get_wchan(struct task_struct *p);
 
 #  define STACK_TOP	TASK_SIZE
 #  define STACK_TOP_MAX	STACK_TOP
-
-void disable_hlt(void);
-void enable_hlt(void);
-void default_idle(void);
 
 #ifdef CONFIG_DEBUG_FS
 extern struct dentry *of_debugfs_root;

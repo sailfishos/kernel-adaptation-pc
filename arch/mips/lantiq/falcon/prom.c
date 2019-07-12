@@ -4,10 +4,12 @@
  * by the Free Software Foundation.
  *
  * Copyright (C) 2012 Thomas Langer <thomas.langer@lantiq.com>
- * Copyright (C) 2012 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2012 John Crispin <john@phrozen.org>
  */
 
 #include <linux/kernel.h>
+#include <asm/cacheflush.h>
+#include <asm/traps.h>
 #include <asm/io.h>
 
 #include <lantiq_soc.h>
@@ -84,4 +86,7 @@ void __init ltq_soc_detect(struct ltq_soc_info *i)
 		unreachable();
 		break;
 	}
+
+	board_nmi_handler_setup = ltq_soc_nmi_setup;
+	board_ejtag_handler_setup = ltq_soc_ejtag_setup;
 }

@@ -12,6 +12,7 @@
  * for more details.
  */
 
+#include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -27,7 +28,6 @@
 #include <linux/platform_device.h>
 
 #include <asm/io.h>
-#include <asm/rtc.h>
 #include <asm/bootinfo.h>
 #include <asm/pgtable.h>
 #include <asm/setup.h>
@@ -40,10 +40,9 @@ extern void q40_init_IRQ(void);
 static void q40_get_model(char *model);
 extern void q40_sched_init(irq_handler_t handler);
 
-static unsigned long q40_gettimeoffset(void);
+static u32 q40_gettimeoffset(void);
 static int q40_hwclk(int, struct rtc_time *);
 static unsigned int q40_get_ss(void);
-static int q40_set_clock_mmss(unsigned long);
 static int q40_get_rtc_pll(struct rtc_pll_info *pll);
 static int q40_set_rtc_pll(struct rtc_pll_info *pll);
 
@@ -84,7 +83,7 @@ static int __init q40_debug_setup(char *arg)
 {
 	/* useful for early debugging stages - writes kernel messages into SRAM */
 	if (MACH_IS_Q40 && !strncmp(arg, "mem", 3)) {
-		/*printk("using NVRAM debug, q40_mem_cptr=%p\n",q40_mem_cptr);*/
+		/*pr_info("using NVRAM debug, q40_mem_cptr=%p\n",q40_mem_cptr);*/
 		_cpleft = 2000 - ((long)q40_mem_cptr-0xff020000) / 4;
 		register_console(&q40_console_driver);
 	}
@@ -124,8 +123,8 @@ static void q40_heartbeat(int on)
 
 static void q40_reset(void)
 {
-        halted = 1;
-        printk("\n\n*******************************************\n"
+	halted = 1;
+	pr_info("*******************************************\n"
 		"Called q40_reset : press the RESET button!!\n"
 		"*******************************************\n");
 	Q40_LED_ON();
@@ -135,10 +134,10 @@ static void q40_reset(void)
 
 static void q40_halt(void)
 {
-        halted = 1;
-        printk("\n\n*******************\n"
-		   "  Called q40_halt\n"
-		   "*******************\n");
+	halted = 1;
+	pr_info("*******************\n"
+		"  Called q40_halt\n"
+		"*******************\n");
 	Q40_LED_ON();
 	while (1)
 		;
@@ -154,7 +153,7 @@ static unsigned int serports[] =
 	0x3f8,0x2f8,0x3e8,0x2e8,0
 };
 
-static void q40_disable_irqs(void)
+static void __init q40_disable_irqs(void)
 {
 	unsigned i, j;
 
@@ -170,17 +169,16 @@ void __init config_q40(void)
 	mach_sched_init = q40_sched_init;
 
 	mach_init_IRQ = q40_init_IRQ;
-	mach_gettimeoffset = q40_gettimeoffset;
+	arch_gettimeoffset = q40_gettimeoffset;
 	mach_hwclk = q40_hwclk;
 	mach_get_ss = q40_get_ss;
 	mach_get_rtc_pll = q40_get_rtc_pll;
 	mach_set_rtc_pll = q40_set_rtc_pll;
-	mach_set_clock_mmss = q40_set_clock_mmss;
 
 	mach_reset = q40_reset;
 	mach_get_model = q40_get_model;
 
-#if defined(CONFIG_INPUT_M68K_BEEP) || defined(CONFIG_INPUT_M68K_BEEP_MODULE)
+#if IS_ENABLED(CONFIG_INPUT_M68K_BEEP)
 	mach_beep = q40_mksound;
 #endif
 #ifdef CONFIG_HEARTBEAT
@@ -198,15 +196,15 @@ void __init config_q40(void)
 }
 
 
-int q40_parse_bootinfo(const struct bi_record *rec)
+int __init q40_parse_bootinfo(const struct bi_record *rec)
 {
 	return 1;
 }
 
 
-static unsigned long q40_gettimeoffset(void)
+static u32 q40_gettimeoffset(void)
 {
-	return 5000 * (ql_ticks != 0);
+	return 5000 * (ql_ticks != 0) * 1000;
 }
 
 
@@ -267,34 +265,6 @@ static unsigned int q40_get_ss(void)
 	return bcd2bin(Q40_RTC_SECS);
 }
 
-/*
- * Set the minutes and seconds from seconds value 'nowtime'.  Fail if
- * clock is out by > 30 minutes.  Logic lifted from atari code.
- */
-
-static int q40_set_clock_mmss(unsigned long nowtime)
-{
-	int retval = 0;
-	short real_seconds = nowtime % 60, real_minutes = (nowtime / 60) % 60;
-
-	int rtc_minutes;
-
-	rtc_minutes = bcd2bin(Q40_RTC_MINS);
-
-	if ((rtc_minutes < real_minutes ?
-	     real_minutes - rtc_minutes :
-	     rtc_minutes - real_minutes) < 30) {
-		Q40_RTC_CTRL |= Q40_RTC_WRITE;
-		Q40_RTC_MINS = bin2bcd(real_minutes);
-		Q40_RTC_SECS = bin2bcd(real_seconds);
-		Q40_RTC_CTRL &= ~(Q40_RTC_WRITE);
-	} else
-		retval = -1;
-
-	return retval;
-}
-
-
 /* get and set PLL calibration of RTC clock */
 #define Q40_RTC_PLL_MASK ((1<<5)-1)
 #define Q40_RTC_PLL_SIGN (1<<5)
@@ -338,9 +308,6 @@ static __init int q40_add_kbd_device(void)
 		return -ENODEV;
 
 	pdev = platform_device_register_simple("q40kbd", -1, NULL, 0);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(pdev);
 }
 arch_initcall(q40_add_kbd_device);

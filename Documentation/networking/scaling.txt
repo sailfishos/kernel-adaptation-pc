@@ -122,7 +122,7 @@ associated flow of the packet. The hash is either provided by hardware
 or will be computed in the stack. Capable hardware can pass the hash in
 the receive descriptor for the packet; this would usually be the same
 hash used for RSS (e.g. computed Toeplitz hash). The hash is saved in
-skb->rx_hash and can be used elsewhere in the stack as a hash of the
+skb->hash and can be used elsewhere in the stack as a hash of the
 packet’s flow.
 
 Each receive hardware queue has an associated list of CPUs to which
@@ -162,6 +162,64 @@ receive queue is mapped to each CPU, then RPS is probably redundant
 and unnecessary. If there are fewer hardware queues than CPUs, then
 RPS might be beneficial if the rps_cpus for each queue are the ones that
 share the same memory domain as the interrupting CPU for that queue.
+
+==== RPS Flow Limit
+
+RPS scales kernel receive processing across CPUs without introducing
+reordering. The trade-off to sending all packets from the same flow
+to the same CPU is CPU load imbalance if flows vary in packet rate.
+In the extreme case a single flow dominates traffic. Especially on
+common server workloads with many concurrent connections, such
+behavior indicates a problem such as a misconfiguration or spoofed
+source Denial of Service attack.
+
+Flow Limit is an optional RPS feature that prioritizes small flows
+during CPU contention by dropping packets from large flows slightly
+ahead of those from small flows. It is active only when an RPS or RFS
+destination CPU approaches saturation.  Once a CPU's input packet
+queue exceeds half the maximum queue length (as set by sysctl
+net.core.netdev_max_backlog), the kernel starts a per-flow packet
+count over the last 256 packets. If a flow exceeds a set ratio (by
+default, half) of these packets when a new packet arrives, then the
+new packet is dropped. Packets from other flows are still only
+dropped once the input packet queue reaches netdev_max_backlog.
+No packets are dropped when the input packet queue length is below
+the threshold, so flow limit does not sever connections outright:
+even large flows maintain connectivity.
+
+== Interface
+
+Flow limit is compiled in by default (CONFIG_NET_FLOW_LIMIT), but not
+turned on. It is implemented for each CPU independently (to avoid lock
+and cache contention) and toggled per CPU by setting the relevant bit
+in sysctl net.core.flow_limit_cpu_bitmap. It exposes the same CPU
+bitmap interface as rps_cpus (see above) when called from procfs:
+
+ /proc/sys/net/core/flow_limit_cpu_bitmap
+
+Per-flow rate is calculated by hashing each packet into a hashtable
+bucket and incrementing a per-bucket counter. The hash function is
+the same that selects a CPU in RPS, but as the number of buckets can
+be much larger than the number of CPUs, flow limit has finer-grained
+identification of large flows and fewer false positives. The default
+table has 4096 buckets. This value can be modified through sysctl
+
+ net.core.flow_limit_table_len
+
+The value is only consulted when a new table is allocated. Modifying
+it does not update active tables.
+
+== Suggested Configuration
+
+Flow limit is useful on systems with many concurrent connections,
+where a single connection taking up 50% of a CPU indicates a problem.
+In such environments, enable the feature on all CPUs that handle
+network rx interrupts (as set in /proc/irq/N/smp_affinity).
+
+The feature depends on the input packet queue length to exceed
+the flow limit threshold (50%) + the flow history length (256).
+Setting net.core.netdev_max_backlog to either 1000 or 10000
+performed well in experiments.
 
 
 RFS: Receive Flow Steering
@@ -224,7 +282,7 @@ following is true:
 
 - The current CPU's queue head counter >= the recorded tail counter
   value in rps_dev_flow[i]
-- The current CPU is unset (equal to RPS_NO_CPU)
+- The current CPU is unset (>= nr_cpu_ids)
 - The current CPU is offline
 
 After this check, the packet is sent to the (possibly updated) current
@@ -308,8 +366,13 @@ XPS: Transmit Packet Steering
 
 Transmit Packet Steering is a mechanism for intelligently selecting
 which transmit queue to use when transmitting a packet on a multi-queue
-device. To accomplish this, a mapping from CPU to hardware queue(s) is
-recorded. The goal of this mapping is usually to assign queues
+device. This can be accomplished by recording two kinds of maps, either
+a mapping of CPU to hardware queue(s) or a mapping of receive queue(s)
+to hardware transmit queue(s).
+
+1. XPS using CPUs map
+
+The goal of this mapping is usually to assign queues
 exclusively to a subset of CPUs, where the transmit completions for
 these queues are processed on a CPU within this set. This choice
 provides two benefits. First, contention on the device queue lock is
@@ -319,15 +382,40 @@ transmit queue). Secondly, cache miss rate on transmit completion is
 reduced, in particular for data cache lines that hold the sk_buff
 structures.
 
-XPS is configured per transmit queue by setting a bitmap of CPUs that
-may use that queue to transmit. The reverse mapping, from CPUs to
-transmit queues, is computed and maintained for each network device.
-When transmitting the first packet in a flow, the function
-get_xps_queue() is called to select a queue. This function uses the ID
-of the running CPU as a key into the CPU-to-queue lookup table. If the
+2. XPS using receive queues map
+
+This mapping is used to pick transmit queue based on the receive
+queue(s) map configuration set by the administrator. A set of receive
+queues can be mapped to a set of transmit queues (many:many), although
+the common use case is a 1:1 mapping. This will enable sending packets
+on the same queue associations for transmit and receive. This is useful for
+busy polling multi-threaded workloads where there are challenges in
+associating a given CPU to a given application thread. The application
+threads are not pinned to CPUs and each thread handles packets
+received on a single queue. The receive queue number is cached in the
+socket for the connection. In this model, sending the packets on the same
+transmit queue corresponding to the associated receive queue has benefits
+in keeping the CPU overhead low. Transmit completion work is locked into
+the same queue-association that a given application is polling on. This
+avoids the overhead of triggering an interrupt on another CPU. When the
+application cleans up the packets during the busy poll, transmit completion
+may be processed along with it in the same thread context and so result in
+reduced latency.
+
+XPS is configured per transmit queue by setting a bitmap of
+CPUs/receive-queues that may use that queue to transmit. The reverse
+mapping, from CPUs to transmit queues or from receive-queues to transmit
+queues, is computed and maintained for each network device. When
+transmitting the first packet in a flow, the function get_xps_queue() is
+called to select a queue. This function uses the ID of the receive queue
+for the socket connection for a match in the receive queue-to-transmit queue
+lookup table. Alternatively, this function can also use the ID of the
+running CPU as a key into the CPU-to-queue lookup table. If the
 ID matches a single queue, that is used for transmission. If multiple
 queues match, one is selected by using the flow hash to compute an index
-into the set.
+into the set. When selecting the transmit queue based on receive queue(s)
+map, the transmit device is not validated against the receive device as it
+requires expensive lookup operation in the datapath.
 
 The queue chosen for transmitting a particular flow is saved in the
 corresponding socket structure for the flow (e.g. a TCP connection).
@@ -346,10 +434,14 @@ acknowledged.
 
 XPS is only available if the kconfig symbol CONFIG_XPS is enabled (on by
 default for SMP). The functionality remains disabled until explicitly
-configured. To enable XPS, the bitmap of CPUs that may use a transmit
-queue is configured using the sysfs file entry:
+configured. To enable XPS, the bitmap of CPUs/receive-queues that may
+use a transmit queue is configured using the sysfs file entry:
 
+For selection based on CPUs map:
 /sys/class/net/<dev>/queues/tx-<n>/xps_cpus
+
+For selection based on receive-queues map:
+/sys/class/net/<dev>/queues/tx-<n>/xps_rxqs
 
 == Suggested Configuration
 
@@ -363,6 +455,20 @@ best CPUs to share a given queue are probably those that share the cache
 with the CPU that processes transmit completions for that queue
 (transmit interrupts).
 
+For transmit queue selection based on receive queue(s), XPS has to be
+explicitly configured mapping receive-queue(s) to transmit queue(s). If the
+user configuration for receive-queue map does not apply, then the transmit
+queue is selected based on the CPUs map.
+
+Per TX Queue rate limitation:
+=============================
+
+These are rate-limitation mechanisms implemented by HW, where currently
+a max-rate attribute is supported, by setting a Mbps value to
+
+/sys/class/net/<dev>/queues/tx-<n>/tx_maxrate
+
+A value of zero means disabled, and this is the default.
 
 Further Information
 ===================
@@ -371,7 +477,7 @@ RPS and RFS were introduced in kernel 2.6.35. XPS was incorporated into
 (therbert@google.com)
 
 Accelerated RFS was introduced in 2.6.35. Original patches were
-submitted by Ben Hutchings (bhutchings@solarflare.com)
+submitted by Ben Hutchings (bwh@kernel.org)
 
 Authors:
 Tom Herbert (therbert@google.com)

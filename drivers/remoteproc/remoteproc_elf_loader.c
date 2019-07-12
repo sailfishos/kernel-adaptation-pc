@@ -39,8 +39,7 @@
  *
  * Make sure this fw image is sane.
  */
-static int
-rproc_elf_sanity_check(struct rproc *rproc, const struct firmware *fw)
+int rproc_elf_sanity_check(struct rproc *rproc, const struct firmware *fw)
 {
 	const char *name = rproc->firmware;
 	struct device *dev = &rproc->dev;
@@ -66,13 +65,13 @@ rproc_elf_sanity_check(struct rproc *rproc, const struct firmware *fw)
 		return -EINVAL;
 	}
 
-	/* We assume the firmware has the same endianess as the host */
+	/* We assume the firmware has the same endianness as the host */
 # ifdef __LITTLE_ENDIAN
 	if (ehdr->e_ident[EI_DATA] != ELFDATA2LSB) {
 # else /* BIG ENDIAN */
 	if (ehdr->e_ident[EI_DATA] != ELFDATA2MSB) {
 # endif
-		dev_err(dev, "Unsupported firmware endianess\n");
+		dev_err(dev, "Unsupported firmware endianness\n");
 		return -EINVAL;
 	}
 
@@ -98,6 +97,7 @@ rproc_elf_sanity_check(struct rproc *rproc, const struct firmware *fw)
 
 	return 0;
 }
+EXPORT_SYMBOL(rproc_elf_sanity_check);
 
 /**
  * rproc_elf_get_boot_addr() - Get rproc's boot address.
@@ -110,13 +110,13 @@ rproc_elf_sanity_check(struct rproc *rproc, const struct firmware *fw)
  * Note that the boot address is not a configurable property of all remote
  * processors. Some will always boot at a specific hard-coded address.
  */
-static
 u32 rproc_elf_get_boot_addr(struct rproc *rproc, const struct firmware *fw)
 {
 	struct elf32_hdr *ehdr  = (struct elf32_hdr *)fw->data;
 
 	return ehdr->e_entry;
 }
+EXPORT_SYMBOL(rproc_elf_get_boot_addr);
 
 /**
  * rproc_elf_load_segments() - load firmware segments to memory
@@ -142,8 +142,7 @@ u32 rproc_elf_get_boot_addr(struct rproc *rproc, const struct firmware *fw)
  * directly allocate memory for every segment/resource. This is not yet
  * supported, though.
  */
-static int
-rproc_elf_load_segments(struct rproc *rproc, const struct firmware *fw)
+int rproc_elf_load_segments(struct rproc *rproc, const struct firmware *fw)
 {
 	struct device *dev = &rproc->dev;
 	struct elf32_hdr *ehdr;
@@ -166,18 +165,18 @@ rproc_elf_load_segments(struct rproc *rproc, const struct firmware *fw)
 			continue;
 
 		dev_dbg(dev, "phdr: type %d da 0x%x memsz 0x%x filesz 0x%x\n",
-					phdr->p_type, da, memsz, filesz);
+			phdr->p_type, da, memsz, filesz);
 
 		if (filesz > memsz) {
 			dev_err(dev, "bad phdr filesz 0x%x memsz 0x%x\n",
-							filesz, memsz);
+				filesz, memsz);
 			ret = -EINVAL;
 			break;
 		}
 
 		if (offset + filesz > fw->size) {
 			dev_err(dev, "truncated fw: need 0x%x avail 0x%zx\n",
-					offset + filesz, fw->size);
+				offset + filesz, fw->size);
 			ret = -EINVAL;
 			break;
 		}
@@ -207,42 +206,24 @@ rproc_elf_load_segments(struct rproc *rproc, const struct firmware *fw)
 
 	return ret;
 }
+EXPORT_SYMBOL(rproc_elf_load_segments);
 
-/**
- * rproc_elf_find_rsc_table() - find the resource table
- * @rproc: the rproc handle
- * @fw: the ELF firmware image
- * @tablesz: place holder for providing back the table size
- *
- * This function finds the resource table inside the remote processor's
- * firmware. It is used both upon the registration of @rproc (in order
- * to look for and register the supported virito devices), and when the
- * @rproc is booted.
- *
- * Returns the pointer to the resource table if it is found, and write its
- * size into @tablesz. If a valid table isn't found, NULL is returned
- * (and @tablesz isn't set).
- */
-static struct resource_table *
-rproc_elf_find_rsc_table(struct rproc *rproc, const struct firmware *fw,
-							int *tablesz)
+static struct elf32_shdr *
+find_table(struct device *dev, struct elf32_hdr *ehdr, size_t fw_size)
 {
-	struct elf32_hdr *ehdr;
 	struct elf32_shdr *shdr;
-	const char *name_table;
-	struct device *dev = &rproc->dev;
-	struct resource_table *table = NULL;
 	int i;
-	const u8 *elf_data = fw->data;
+	const char *name_table;
+	struct resource_table *table = NULL;
+	const u8 *elf_data = (void *)ehdr;
 
-	ehdr = (struct elf32_hdr *)elf_data;
+	/* look for the resource table and handle it */
 	shdr = (struct elf32_shdr *)(elf_data + ehdr->e_shoff);
 	name_table = elf_data + shdr[ehdr->e_shstrndx].sh_offset;
 
-	/* look for the resource table and handle it */
 	for (i = 0; i < ehdr->e_shnum; i++, shdr++) {
-		int size = shdr->sh_size;
-		int offset = shdr->sh_offset;
+		u32 size = shdr->sh_size;
+		u32 offset = shdr->sh_offset;
 
 		if (strcmp(name_table + shdr->sh_name, ".resource_table"))
 			continue;
@@ -250,7 +231,7 @@ rproc_elf_find_rsc_table(struct rproc *rproc, const struct firmware *fw,
 		table = (struct resource_table *)(elf_data + offset);
 
 		/* make sure we have the entire table */
-		if (offset + size > fw->size) {
+		if (offset + size > fw_size || offset + size < size) {
 			dev_err(dev, "resource table truncated\n");
 			return NULL;
 		}
@@ -280,16 +261,78 @@ rproc_elf_find_rsc_table(struct rproc *rproc, const struct firmware *fw,
 			return NULL;
 		}
 
-		*tablesz = shdr->sh_size;
-		break;
+		return shdr;
 	}
 
-	return table;
+	return NULL;
 }
 
-const struct rproc_fw_ops rproc_elf_fw_ops = {
-	.load = rproc_elf_load_segments,
-	.find_rsc_table = rproc_elf_find_rsc_table,
-	.sanity_check = rproc_elf_sanity_check,
-	.get_boot_addr = rproc_elf_get_boot_addr
-};
+/**
+ * rproc_elf_load_rsc_table() - load the resource table
+ * @rproc: the rproc handle
+ * @fw: the ELF firmware image
+ *
+ * This function finds the resource table inside the remote processor's
+ * firmware, load it into the @cached_table and update @table_ptr.
+ *
+ * Return: 0 on success, negative errno on failure.
+ */
+int rproc_elf_load_rsc_table(struct rproc *rproc, const struct firmware *fw)
+{
+	struct elf32_hdr *ehdr;
+	struct elf32_shdr *shdr;
+	struct device *dev = &rproc->dev;
+	struct resource_table *table = NULL;
+	const u8 *elf_data = fw->data;
+	size_t tablesz;
+
+	ehdr = (struct elf32_hdr *)elf_data;
+
+	shdr = find_table(dev, ehdr, fw->size);
+	if (!shdr)
+		return -EINVAL;
+
+	table = (struct resource_table *)(elf_data + shdr->sh_offset);
+	tablesz = shdr->sh_size;
+
+	/*
+	 * Create a copy of the resource table. When a virtio device starts
+	 * and calls vring_new_virtqueue() the address of the allocated vring
+	 * will be stored in the cached_table. Before the device is started,
+	 * cached_table will be copied into device memory.
+	 */
+	rproc->cached_table = kmemdup(table, tablesz, GFP_KERNEL);
+	if (!rproc->cached_table)
+		return -ENOMEM;
+
+	rproc->table_ptr = rproc->cached_table;
+	rproc->table_sz = tablesz;
+
+	return 0;
+}
+EXPORT_SYMBOL(rproc_elf_load_rsc_table);
+
+/**
+ * rproc_elf_find_loaded_rsc_table() - find the loaded resource table
+ * @rproc: the rproc handle
+ * @fw: the ELF firmware image
+ *
+ * This function finds the location of the loaded resource table. Don't
+ * call this function if the table wasn't loaded yet - it's a bug if you do.
+ *
+ * Returns the pointer to the resource table if it is found or NULL otherwise.
+ * If the table wasn't loaded yet the result is unspecified.
+ */
+struct resource_table *rproc_elf_find_loaded_rsc_table(struct rproc *rproc,
+						       const struct firmware *fw)
+{
+	struct elf32_hdr *ehdr = (struct elf32_hdr *)fw->data;
+	struct elf32_shdr *shdr;
+
+	shdr = find_table(&rproc->dev, ehdr, fw->size);
+	if (!shdr)
+		return NULL;
+
+	return rproc_da_to_va(rproc, shdr->sh_addr, shdr->sh_size);
+}
+EXPORT_SYMBOL(rproc_elf_find_loaded_rsc_table);

@@ -1,13 +1,6 @@
-/*
- * linux/arch/arm/mach-s3c64xx/mach-smartq5.c
- *
- * Copyright (C) 2010 Maurus Cuelenaere
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- */
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright (C) 2010 Maurus Cuelenaere
 
 #include <linux/fb.h>
 #include <linux/gpio.h>
@@ -17,18 +10,20 @@
 #include <linux/leds.h>
 #include <linux/platform_device.h>
 
-#include <asm/hardware/vic.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
+#include <video/samsung_fimd.h>
+#include <mach/irqs.h>
 #include <mach/map.h>
 #include <mach/regs-gpio.h>
+#include <mach/gpio-samsung.h>
 
 #include <plat/cpu.h>
 #include <plat/devs.h>
 #include <plat/fb.h>
 #include <plat/gpio-cfg.h>
-#include <plat/regs-fb-v4.h>
+#include <plat/samsung-time.h>
 
 #include "common.h"
 #include "mach-smartq.h"
@@ -152,11 +147,10 @@ static void __init smartq5_machine_init(void)
 MACHINE_START(SMARTQ5, "SmartQ 5")
 	/* Maintainer: Maurus Cuelenaere <mcuelenaere AT gmail DOT com> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= S3C64XX_NR_IRQS,
 	.init_irq	= s3c6410_init_irq,
-	.handle_irq	= vic_handle_irq,
 	.map_io		= smartq_map_io,
 	.init_machine	= smartq5_machine_init,
-	.init_late	= s3c64xx_init_late,
-	.timer		= &s3c24xx_timer,
+	.init_time	= samsung_timer_init,
 	.restart	= s3c64xx_restart,
 MACHINE_END

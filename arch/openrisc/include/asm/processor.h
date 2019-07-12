@@ -30,11 +30,6 @@
 		   | SPR_SR_DCE | SPR_SR_SM)
 #define USER_SR   (SPR_SR_DME | SPR_SR_IME | SPR_SR_ICE \
 		   | SPR_SR_DCE | SPR_SR_IEE | SPR_SR_TEE)
-/*
- * Default implementation of macro that returns current
- * instruction pointer ("program counter").
- */
-#define current_text_addr() ({ __label__ _l; _l: &&_l; })
 
 /*
  * User space process size. This is hardcoded into a few places,
@@ -70,7 +65,6 @@ struct thread_struct {
  */
 
 #define task_pt_regs(task) user_regs(task_thread_info(task))
-#define current_regs() user_regs(current_thread_info())
 
 #define INIT_SP         (sizeof(init_stack) + (unsigned long) &init_stack)
 
@@ -81,29 +75,11 @@ struct thread_struct {
 #define KSTK_ESP(tsk)   (task_pt_regs(tsk)->sp)
 
 
-extern int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
-
 void start_thread(struct pt_regs *regs, unsigned long nip, unsigned long sp);
 void release_thread(struct task_struct *);
 unsigned long get_wchan(struct task_struct *p);
 
-/*
- * Free current thread data structures etc..
- */
-
-extern inline void exit_thread(void)
-{
-	/* Nothing needs to be done.  */
-}
-
-/*
- * Return saved PC of a blocked thread. For now, this is the "user" PC
- */
-extern unsigned long thread_saved_pc(struct task_struct *t);
-
-#define init_stack      (init_thread_union.stack)
-
-#define cpu_relax()     do { } while (0)
+#define cpu_relax()     barrier()
 
 #endif /* __ASSEMBLY__ */
 #endif /* __ASM_OPENRISC_PROCESSOR_H */

@@ -34,6 +34,8 @@
 #include <asm/ptrace.h>
 #include <asm/bug.h>
 #include <asm/kvm_book3s_asm.h>
+#include <asm/export.h>
+#include <asm/feature-fixups.h>
 
 /* 601 only have IBAT; cr0.eq is set on 601 when using this macro */
 #define LOAD_BAT(n, reg, RA, RB)	\
@@ -174,10 +176,10 @@ __after_mmu_off:
 	bl	reloc_offset
 	li	r24,0			/* cpu# */
 	bl	call_setup_cpu		/* Call setup_cpu for this CPU */
-#ifdef CONFIG_6xx
+#ifdef CONFIG_PPC_BOOK3S_32
 	bl	reloc_offset
 	bl	init_idle_6xx
-#endif /* CONFIG_6xx */
+#endif /* CONFIG_PPC_BOOK3S_32 */
 
 
 /*
@@ -266,7 +268,6 @@ __secondary_hold_acknowledge:
 
 
 #define EXCEPTION_PROLOG_2	\
-	CLR_TOP32(r11);		\
 	stw	r10,_CCR(r11);		/* save registers */ \
 	stw	r12,GPR12(r11);	\
 	stw	r9,GPR9(r11);	\
@@ -388,11 +389,13 @@ DataAccess:
 	EXCEPTION_PROLOG
 	mfspr	r10,SPRN_DSISR
 	stw	r10,_DSISR(r11)
-	andis.	r0,r10,0xa470		/* weird error? */
+	andis.	r0,r10,(DSISR_BAD_FAULT_32S|DSISR_DABRMATCH)@h
 	bne	1f			/* if not, try to put a PTE */
 	mfspr	r4,SPRN_DAR		/* into the hash table */
 	rlwinm	r3,r10,32-15,21,21	/* DSISR_STORE -> _PAGE_RW */
+BEGIN_MMU_FTR_SECTION
 	bl	hash_page
+END_MMU_FTR_SECTION_IFSET(MMU_FTR_HPTE_TABLE)
 1:	lwz	r5,_DSISR(r11)		/* get DSISR value */
 	mfspr	r4,SPRN_DAR
 	EXC_XFER_LITE(0x300, handle_page_fault)
@@ -403,13 +406,15 @@ DataAccess:
 	DO_KVM  0x400
 InstructionAccess:
 	EXCEPTION_PROLOG
-	andis.	r0,r9,0x4000		/* no pte found? */
+	andis.	r0,r9,SRR1_ISI_NOPT@h	/* no pte found? */
 	beq	1f			/* if so, try to put a PTE */
 	li	r3,0			/* into the hash table */
 	mr	r4,r12			/* SRR0 is fault address */
+BEGIN_MMU_FTR_SECTION
 	bl	hash_page
+END_MMU_FTR_SECTION_IFSET(MMU_FTR_HPTE_TABLE)
 1:	mr	r4,r12
-	mr	r5,r9
+	andis.	r5,r9,DSISR_SRR1_MATCH_32S@h /* Filter relevant SRR1 bits */
 	EXC_XFER_LITE(0x400, handle_page_fault)
 
 /* External interrupt */
@@ -498,7 +503,7 @@ InstructionTLBMiss:
 	lis	r1,PAGE_OFFSET@h		/* check if kernel address */
 	cmplw	0,r1,r3
 	mfspr	r2,SPRN_SPRG_THREAD
-	li	r1,_PAGE_USER|_PAGE_PRESENT /* low addresses tested as user */
+	li	r1,_PAGE_USER|_PAGE_PRESENT|_PAGE_EXEC /* low addresses tested as user */
 	lwz	r2,PGDIR(r2)
 	bge-	112f
 	mfspr	r2,SPRN_SRR1		/* and MSR_PR bit from SRR1 */
@@ -735,10 +740,7 @@ END_MMU_FTR_SECTION_IFSET(MMU_FTR_NEED_DTLB_SW_LRU)
 	EXCEPTION(0x2c00, Trap_2c, unknown_exception, EXC_XFER_EE)
 	EXCEPTION(0x2d00, Trap_2d, unknown_exception, EXC_XFER_EE)
 	EXCEPTION(0x2e00, Trap_2e, unknown_exception, EXC_XFER_EE)
-	EXCEPTION(0x2f00, MOLTrampoline, unknown_exception, EXC_XFER_EE_LITE)
-
-	.globl mol_trampoline
-	.set mol_trampoline, i0x2f00
+	EXCEPTION(0x2f00, Trap_2f, unknown_exception, EXC_XFER_EE)
 
 	. = 0x3000
 
@@ -838,10 +840,10 @@ __secondary_start:
 	lis	r3,-KERNELBASE@h
 	mr	r4,r24
 	bl	call_setup_cpu		/* Call setup_cpu for this CPU */
-#ifdef CONFIG_6xx
+#ifdef CONFIG_PPC_BOOK3S_32
 	lis	r3,-KERNELBASE@h
 	bl	init_idle_6xx
-#endif /* CONFIG_6xx */
+#endif /* CONFIG_PPC_BOOK3S_32 */
 
 	/* get current_thread_info and current */
 	lis	r1,secondary_ti@ha
@@ -862,14 +864,12 @@ __secondary_start:
 	/* ptr to phys current thread */
 	tophys(r4,r2)
 	addi	r4,r4,THREAD	/* phys address of our thread_struct */
-	CLR_TOP32(r4)
 	mtspr	SPRN_SPRG_THREAD,r4
 	li	r3,0
 	mtspr	SPRN_SPRG_RTAS,r3	/* 0 => not in RTAS */
 
 	/* enable MMU and jump to start_secondary */
 	li	r4,MSR_KERNEL
-	FIX_SRR1(r4,r5)
 	lis	r3,start_secondary@h
 	ori	r3,r3,start_secondary@l
 	mtspr	SPRN_SRR0,r3
@@ -884,14 +884,14 @@ __secondary_start:
 
 /*
  * Those generic dummy functions are kept for CPUs not
- * included in CONFIG_6xx
+ * included in CONFIG_PPC_BOOK3S_32
  */
-#if !defined(CONFIG_6xx)
+#if !defined(CONFIG_PPC_BOOK3S_32)
 _ENTRY(__save_cpu_setup)
 	blr
 _ENTRY(__restore_cpu_setup)
 	blr
-#endif /* !defined(CONFIG_6xx) */
+#endif /* !defined(CONFIG_PPC_BOOK3S_32) */
 
 
 /*
@@ -949,7 +949,6 @@ start_here:
 	/* ptr to phys current thread */
 	tophys(r4,r2)
 	addi	r4,r4,THREAD	/* init task's THREAD */
-	CLR_TOP32(r4)
 	mtspr	SPRN_SPRG_THREAD,r4
 	li	r3,0
 	mtspr	SPRN_SPRG_RTAS,r3	/* 0 => not in RTAS */
@@ -978,7 +977,6 @@ start_here:
 	ori	r4,r4,2f@l
 	tophys(r4,r4)
 	li	r3,MSR_KERNEL & ~(MSR_IR|MSR_DR)
-	FIX_SRR1(r3,r5)
 	mtspr	SPRN_SRR0,r4
 	mtspr	SPRN_SRR1,r3
 	SYNC
@@ -1002,7 +1000,6 @@ start_here:
 
 /* Now turn on the MMU for real! */
 	li	r4,MSR_KERNEL
-	FIX_SRR1(r4,r5)
 	lis	r3,start_kernel@h
 	ori	r3,r3,start_kernel@l
 	mtspr	SPRN_SRR0,r3
@@ -1048,6 +1045,7 @@ _ENTRY(switch_mmu_context)
 4:	trap
 	EMIT_BUG_ENTRY 4b,__FILE__,__LINE__,0
 	blr
+EXPORT_SYMBOL(switch_mmu_context)
 
 /*
  * An undocumented "feature" of 604e requires that the v bit
@@ -1275,19 +1273,11 @@ sdata:
 	.globl	empty_zero_page
 empty_zero_page:
 	.space	4096
+EXPORT_SYMBOL(empty_zero_page)
 
 	.globl	swapper_pg_dir
 swapper_pg_dir:
 	.space	PGD_TABLE_SIZE
-
-	.globl intercept_table
-intercept_table:
-	.long 0, 0, i0x200, i0x300, i0x400, 0, i0x600, i0x700
-	.long i0x800, 0, 0, 0, 0, i0xd00, 0, 0
-	.long 0, 0, 0, i0x1300, 0, 0, 0, 0
-	.long 0, 0, 0, 0, 0, 0, 0, 0
-	.long 0, 0, 0, 0, 0, 0, 0, 0
-	.long 0, 0, 0, 0, 0, 0, 0, 0
 
 /* Room for two PTE pointers, usually the kernel and current user pointers
  * to their respective root page table.

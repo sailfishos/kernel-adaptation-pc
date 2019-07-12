@@ -26,25 +26,14 @@
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/eisa_eeprom.h>
 
 #define 	EISA_EEPROM_MINOR 241
 
-static loff_t eisa_eeprom_llseek(struct file *file, loff_t offset, int origin )
+static loff_t eisa_eeprom_llseek(struct file *file, loff_t offset, int origin)
 {
-	switch (origin) {
-	  case 0:
-		/* nothing to do */
-		break;
-	  case 1:
-		offset += file->f_pos;
-		break;
-	  case 2:
-		offset += HPEE_MAX_LENGTH;
-		break;
-	}
-	return (offset >= 0 && offset < HPEE_MAX_LENGTH) ? (file->f_pos = offset) : -EINVAL;
+	return fixed_size_llseek(file, offset, origin, HPEE_MAX_LENGTH);
 }
 
 static ssize_t eisa_eeprom_read(struct file * file,
@@ -117,7 +106,7 @@ static int __init eisa_eeprom_init(void)
 		return retval;
 	}
 
-	printk(KERN_INFO "EISA EEPROM at 0x%p\n", eisa_eeprom_addr);
+	printk(KERN_INFO "EISA EEPROM at 0x%px\n", eisa_eeprom_addr);
 	return 0;
 }
 

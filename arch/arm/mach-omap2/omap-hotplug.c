@@ -19,29 +19,18 @@
 #include <linux/smp.h>
 #include <linux/io.h>
 
-#include <asm/cacheflush.h>
-#include <mach/omap-wakeupgen.h>
-
+#include "omap-wakeupgen.h"
 #include "common.h"
-
 #include "powerdomain.h"
-
-int platform_cpu_kill(unsigned int cpu)
-{
-	return 1;
-}
 
 /*
  * platform-specific code to shutdown a CPU
  * Called with IRQs disabled
  */
-void __ref platform_cpu_die(unsigned int cpu)
+void omap4_cpu_die(unsigned int cpu)
 {
 	unsigned int boot_cpu = 0;
 	void __iomem *base = omap_get_wakeupgen_base();
-
-	flush_cache_all();
-	dsb();
 
 	/*
 	 * we're ready for shutdown now, so do it
@@ -50,7 +39,7 @@ void __ref platform_cpu_die(unsigned int cpu)
 		if (omap_modify_auxcoreboot0(0x0, 0x200) != 0x0)
 			pr_err("Secure clear status failed\n");
 	} else {
-		__raw_writel(0, base + OMAP_AUX_CORE_BOOT_0);
+		writel_relaxed(0, base + OMAP_AUX_CORE_BOOT_0);
 	}
 
 
@@ -61,10 +50,10 @@ void __ref platform_cpu_die(unsigned int cpu)
 		omap4_hotplug_cpu(cpu, PWRDM_POWER_OFF);
 
 		if (omap_secure_apis_support())
-			boot_cpu = omap_read_auxcoreboot0();
+			boot_cpu = omap_read_auxcoreboot0() >> 9;
 		else
 			boot_cpu =
-				__raw_readl(base + OMAP_AUX_CORE_BOOT_0) >> 5;
+				readl_relaxed(base + OMAP_AUX_CORE_BOOT_0) >> 5;
 
 		if (boot_cpu == smp_processor_id()) {
 			/*
@@ -76,11 +65,8 @@ void __ref platform_cpu_die(unsigned int cpu)
 	}
 }
 
-int platform_cpu_disable(unsigned int cpu)
+/* Needed by kexec and platform_can_cpu_hotplug() */
+int omap4_cpu_kill(unsigned int cpu)
 {
-	/*
-	 * we don't allow CPU 0 to be shutdown (it is still too special
-	 * e.g. clock tick interrupts)
-	 */
-	return cpu == 0 ? -EPERM : 0;
+	return 1;
 }

@@ -96,14 +96,14 @@ static int cpu_last_target;
 static struct wf_pid_state backside_pid;
 static int backside_tick;
 static struct wf_pid_state slots_pid;
-static int slots_started;
+static bool slots_started;
 static struct wf_pid_state drive_bay_pid;
 static int drive_bay_tick;
 
 static int nr_cores;
 static int have_all_controls;
 static int have_all_sensors;
-static int started;
+static bool started;
 
 static int failure_state;
 #define FAILURE_SENSOR		1
@@ -462,7 +462,7 @@ static void slots_fan_tick(void)
 		/* first time; initialize things */
 		printk(KERN_INFO "windfarm: Slots control loop started.\n");
 		wf_pid_init(&slots_pid, &slots_param);
-		slots_started = 1;
+		slots_started = true;
 	}
 
 	err = slots_power->ops->get_value(slots_power, &power);
@@ -506,7 +506,7 @@ static void pm112_tick(void)
 	int i, last_failure;
 
 	if (!started) {
-		started = 1;
+		started = true;
 		printk(KERN_INFO "windfarm: CPUs control loops started.\n");
 		for (i = 0; i < nr_cores; ++i) {
 			if (create_cpu_loop(i) < 0) {
@@ -656,7 +656,7 @@ static int wf_pm112_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __devexit wf_pm112_remove(struct platform_device *dev)
+static int wf_pm112_remove(struct platform_device *dev)
 {
 	wf_unregister_client(&pm112_events);
 	/* should release all sensors and controls */
@@ -665,10 +665,9 @@ static int __devexit wf_pm112_remove(struct platform_device *dev)
 
 static struct platform_driver wf_pm112_driver = {
 	.probe = wf_pm112_probe,
-	.remove = __devexit_p(wf_pm112_remove),
+	.remove = wf_pm112_remove,
 	.driver = {
 		.name = "windfarm",
-		.owner	= THIS_MODULE,
 	},
 };
 
@@ -681,7 +680,7 @@ static int __init wf_pm112_init(void)
 
 	/* Count the number of CPU cores */
 	nr_cores = 0;
-	for (cpu = NULL; (cpu = of_find_node_by_type(cpu, "cpu")) != NULL; )
+	for_each_node_by_type(cpu, "cpu")
 		++nr_cores;
 
 	printk(KERN_INFO "windfarm: initializing for dual-core desktop G5\n");

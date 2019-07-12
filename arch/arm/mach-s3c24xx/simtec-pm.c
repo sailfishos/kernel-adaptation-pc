@@ -1,16 +1,11 @@
-/* linux/arch/arm/plat-s3c24xx/pm-simtec.c
- *
- * Copyright 2004 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *
- * http://armlinux.simtec.co.uk/
- *
- * Power Management helpers for Simtec S3C24XX implementations
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright 2004 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//
+// http://armlinux.simtec.co.uk/
+//
+// Power Management helpers for Simtec S3C24XX implementations
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -28,11 +23,12 @@
 
 #include <mach/map.h>
 #include <mach/regs-gpio.h>
-#include <mach/regs-mem.h>
 
 #include <asm/mach-types.h>
 
 #include <plat/pm.h>
+
+#include "regs-mem.h"
 
 #define COPYRIGHT ", Copyright 2005 Simtec Electronics"
 

@@ -1,25 +1,9 @@
-/* linux/arch/arm/mach-s3c2410/bast-irq.c
- *
- * Copyright 2003-2005 Simtec Electronics
- *   Ben Dooks <ben@simtec.co.uk>
- *
- * http://www.simtec.co.uk/products/EB2410ITX/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
-*/
-
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Copyright 2003-2005 Simtec Electronics
+//   Ben Dooks <ben@simtec.co.uk>
+//
+// http://www.simtec.co.uk/products/EB2410ITX/
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -27,33 +11,24 @@
 #include <linux/device.h>
 #include <linux/io.h>
 
-#include <asm/mach-types.h>
-
-#include <mach/hardware.h>
 #include <asm/irq.h>
-
+#include <asm/mach-types.h>
 #include <asm/mach/irq.h>
 
+#include <mach/hardware.h>
 #include <mach/regs-irq.h>
-#include <mach/bast-map.h>
-#include <mach/bast-irq.h>
 
-#include <plat/irq.h>
-
-#if 0
-#include <asm/debug-ll.h>
-#endif
+#include "bast.h"
 
 #define irqdbf(x...)
 #define irqdbf2(x...)
-
 
 /* handle PC104 ISA interrupts from the system CPLD */
 
 /* table of ISA irq nos to the relevant mask... zero means
  * the irq is not implemented
 */
-static unsigned char bast_pc104_irqmasks[] = {
+static const unsigned char bast_pc104_irqmasks[] = {
 	0,   /* 0 */
 	0,   /* 1 */
 	0,   /* 2 */
@@ -72,7 +47,7 @@ static unsigned char bast_pc104_irqmasks[] = {
 	0,   /* 15 */
 };
 
-static unsigned char bast_pc104_irqs[] = { 3, 5, 7, 10 };
+static const unsigned char bast_pc104_irqs[] = { 3, 5, 7, 10 };
 
 static void
 bast_pc104_mask(struct irq_data *data)
@@ -87,7 +62,7 @@ bast_pc104_mask(struct irq_data *data)
 static void
 bast_pc104_maskack(struct irq_data *data)
 {
-	struct irq_desc *desc = irq_desc + IRQ_ISA;
+	struct irq_desc *desc = irq_desc + BAST_IRQ_ISA;
 
 	bast_pc104_mask(data);
 	desc->irq_data.chip->irq_ack(&desc->irq_data);
@@ -109,9 +84,7 @@ static struct irq_chip  bast_pc104_chip = {
 	.irq_ack	= bast_pc104_maskack
 };
 
-static void
-bast_irq_pc104_demux(unsigned int irq,
-		     struct irq_desc *desc)
+static void bast_irq_pc104_demux(struct irq_desc *desc)
 {
 	unsigned int stat;
 	unsigned int irqno;
@@ -122,7 +95,7 @@ bast_irq_pc104_demux(unsigned int irq,
 	if (unlikely(stat == 0)) {
 		/* ack if we get an irq with nothing (ie, startup) */
 
-		desc = irq_desc + IRQ_ISA;
+		desc = irq_desc + BAST_IRQ_ISA;
 		desc->irq_data.chip->irq_ack(&desc->irq_data);
 	} else {
 		/* handle the IRQ */
@@ -147,7 +120,7 @@ static __init int bast_irq_init(void)
 
 		__raw_writeb(0x0, BAST_VA_PC104_IRQMASK);
 
-		irq_set_chained_handler(IRQ_ISA, bast_irq_pc104_demux);
+		irq_set_chained_handler(BAST_IRQ_ISA, bast_irq_pc104_demux);
 
 		/* register our IRQs */
 
@@ -156,7 +129,7 @@ static __init int bast_irq_init(void)
 
 			irq_set_chip_and_handler(irqno, &bast_pc104_chip,
 						 handle_level_irq);
-			set_irq_flags(irqno, IRQF_VALID);
+			irq_clear_status_flags(irqno, IRQ_NOREQUEST);
 		}
 	}
 

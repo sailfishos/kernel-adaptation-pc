@@ -4,9 +4,9 @@
  */
 
 #include <linux/interrupt.h>
-#include "irq_kern.h"
-#include "os.h"
-#include "sigio.h"
+#include <irq_kern.h>
+#include <os.h>
+#include <sigio.h>
 
 /* Protected by sigio_lock() called from write_sigio_workaround */
 static int sigio_irq_fd = -1;
@@ -16,7 +16,6 @@ static irqreturn_t sigio_interrupt(int irq, void *data)
 	char c;
 
 	os_read_file(sigio_irq_fd, &c, sizeof(c));
-	reactivate_fd(sigio_irq_fd, SIGIO_WRITE_IRQ);
 	return IRQ_HANDLED;
 }
 

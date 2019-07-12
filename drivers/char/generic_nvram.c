@@ -20,7 +20,8 @@
 #include <linux/fcntl.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
-#include <asm/uaccess.h>
+#include <linux/pagemap.h>
+#include <linux/uaccess.h>
 #include <asm/nvram.h>
 #ifdef CONFIG_PPC_PMAC
 #include <asm/machdep.h>
@@ -33,24 +34,8 @@ static ssize_t nvram_len;
 
 static loff_t nvram_llseek(struct file *file, loff_t offset, int origin)
 {
-	switch (origin) {
-	case 0:
-		break;
-	case 1:
-		offset += file->f_pos;
-		break;
-	case 2:
-		offset += nvram_len;
-		break;
-	default:
-		offset = -1;
-	}
-	if (offset < 0)
-		return -EINVAL;
-
-	file->f_pos = offset;
-
-	return file->f_pos;
+	return generic_file_llseek_size(file, offset, origin,
+					MAX_LFS_FILESIZE, nvram_len);
 }
 
 static ssize_t read_nvram(struct file *file, char __user *buf,
@@ -59,7 +44,7 @@ static ssize_t read_nvram(struct file *file, char __user *buf,
 	unsigned int i;
 	char __user *p = buf;
 
-	if (!access_ok(VERIFY_WRITE, buf, count))
+	if (!access_ok(buf, count))
 		return -EFAULT;
 	if (*ppos >= nvram_len)
 		return 0;
@@ -77,7 +62,7 @@ static ssize_t write_nvram(struct file *file, const char __user *buf,
 	const char __user *p = buf;
 	char c;
 
-	if (!access_ok(VERIFY_READ, buf, count))
+	if (!access_ok(buf, count))
 		return -EFAULT;
 	if (*ppos >= nvram_len)
 		return 0;

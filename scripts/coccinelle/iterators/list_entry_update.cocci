@@ -9,13 +9,13 @@
 // Copyright: (C) 2010 Gilles Muller, INRIA/LiP6.  GPLv2.
 // URL: http://coccinelle.lip6.fr/
 // Comments:
-// Options: -no_includes -include_headers
+// Options: --no-includes --include-headers
 
 virtual context
 virtual org
 virtual report
 
-@r@
+@r exists@
 iterator name list_for_each_entry;
 expression x,E;
 position p1,p2;

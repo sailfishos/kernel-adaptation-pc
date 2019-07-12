@@ -21,52 +21,35 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include <errno.h>
 
 #include "../perf.h"
-#include "util.h"
+#include "debug.h"
 #include "trace-event.h"
 
-int header_page_size_size;
-int header_page_ts_size;
-int header_page_data_offset;
-
-bool latency_format;
-
-struct pevent *read_trace_init(int file_bigendian, int host_bigendian)
-{
-	struct pevent *pevent = pevent_alloc();
-
-	if (pevent != NULL) {
-		pevent_set_flag(pevent, PEVENT_NSEC_OUTPUT);
-		pevent_set_file_bigendian(pevent, file_bigendian);
-		pevent_set_host_bigendian(pevent, host_bigendian);
-	}
-
-	return pevent;
-}
+#include "sane_ctype.h"
 
 static int get_common_field(struct scripting_context *context,
 			    int *offset, int *size, const char *type)
 {
-	struct pevent *pevent = context->pevent;
-	struct event_format *event;
-	struct format_field *field;
+	struct tep_handle *pevent = context->pevent;
+	struct tep_event *event;
+	struct tep_format_field *field;
 
 	if (!*size) {
-		if (!pevent->events)
+
+		event = tep_get_first_event(pevent);
+		if (!event)
 			return 0;
 
-		event = pevent->events[0];
-		field = pevent_find_common_field(event, type);
+		field = tep_find_common_field(event, type);
 		if (!field)
 			return 0;
 		*offset = field->offset;
 		*size = field->size;
 	}
 
-	return pevent_read_number(pevent, context->event_data + *offset, *size);
+	return tep_read_number(pevent, context->event_data + *offset, *size);
 }
 
 int common_lock_depth(struct scripting_context *context)
@@ -112,75 +95,30 @@ int common_pc(struct scripting_context *context)
 }
 
 unsigned long long
-raw_field_value(struct event_format *event, const char *name, void *data)
+raw_field_value(struct tep_event *event, const char *name, void *data)
 {
-	struct format_field *field;
+	struct tep_format_field *field;
 	unsigned long long val;
 
-	field = pevent_find_any_field(event, name);
+	field = tep_find_any_field(event, name);
 	if (!field)
 		return 0ULL;
 
-	pevent_read_number_field(field, data, &val);
+	tep_read_number_field(field, data, &val);
 
 	return val;
 }
 
-void *raw_field_ptr(struct event_format *event, const char *name, void *data)
+unsigned long long read_size(struct tep_event *event, void *ptr, int size)
 {
-	struct format_field *field;
-
-	field = pevent_find_any_field(event, name);
-	if (!field)
-		return NULL;
-
-	if (field->flags & FIELD_IS_DYNAMIC) {
-		int offset;
-
-		offset = *(int *)(data + field->offset);
-		offset &= 0xffff;
-
-		return data + offset;
-	}
-
-	return data + field->offset;
+	return tep_read_number(event->pevent, ptr, size);
 }
 
-int trace_parse_common_type(struct pevent *pevent, void *data)
+void event_format__fprintf(struct tep_event *event,
+			   int cpu, void *data, int size, FILE *fp)
 {
-	struct pevent_record record;
-
-	record.data = data;
-	return pevent_data_type(pevent, &record);
-}
-
-int trace_parse_common_pid(struct pevent *pevent, void *data)
-{
-	struct pevent_record record;
-
-	record.data = data;
-	return pevent_data_pid(pevent, &record);
-}
-
-unsigned long long read_size(struct pevent *pevent, void *ptr, int size)
-{
-	return pevent_read_number(pevent, ptr, size);
-}
-
-void print_trace_event(struct pevent *pevent, int cpu, void *data, int size)
-{
-	struct event_format *event;
-	struct pevent_record record;
+	struct tep_record record;
 	struct trace_seq s;
-	int type;
-
-	type = trace_parse_common_type(pevent, data);
-
-	event = pevent_find_event(pevent, type);
-	if (!event) {
-		warning("ug! no event found for type %d", type);
-		return;
-	}
 
 	memset(&record, 0, sizeof(record));
 	record.cpu = cpu;
@@ -188,125 +126,97 @@ void print_trace_event(struct pevent *pevent, int cpu, void *data, int size)
 	record.data = data;
 
 	trace_seq_init(&s);
-	pevent_event_info(&s, event, &record);
-	trace_seq_do_printf(&s);
+	tep_event_info(&s, event, &record);
+	trace_seq_do_fprintf(&s, fp);
+	trace_seq_destroy(&s);
 }
 
-void print_event(struct pevent *pevent, int cpu, void *data, int size,
-		 unsigned long long nsecs, char *comm)
+void event_format__print(struct tep_event *event,
+			 int cpu, void *data, int size)
 {
-	struct pevent_record record;
-	struct trace_seq s;
-	int pid;
-
-	pevent->latency_format = latency_format;
-
-	record.ts = nsecs;
-	record.cpu = cpu;
-	record.size = size;
-	record.data = data;
-	pid = pevent_data_pid(pevent, &record);
-
-	if (!pevent_pid_is_registered(pevent, pid))
-		pevent_register_comm(pevent, comm, pid);
-
-	trace_seq_init(&s);
-	pevent_print_event(pevent, &s, &record);
-	trace_seq_do_printf(&s);
-	printf("\n");
+	return event_format__fprintf(event, cpu, data, size, stdout);
 }
 
-void parse_proc_kallsyms(struct pevent *pevent,
-			 char *file, unsigned int size __unused)
-{
-	unsigned long long addr;
-	char *func;
-	char *line;
-	char *next = NULL;
-	char *addr_str;
-	char *mod;
-	char ch;
-
-	line = strtok_r(file, "\n", &next);
-	while (line) {
-		mod = NULL;
-		sscanf(line, "%as %c %as\t[%as",
-		       (float *)(void *)&addr_str, /* workaround gcc warning */
-		       &ch, (float *)(void *)&func, (float *)(void *)&mod);
-		addr = strtoull(addr_str, NULL, 16);
-		free(addr_str);
-
-		/* truncate the extra ']' */
-		if (mod)
-			mod[strlen(mod) - 1] = 0;
-
-		pevent_register_function(pevent, func, addr, mod);
-		free(func);
-		free(mod);
-
-		line = strtok_r(NULL, "\n", &next);
-	}
-}
-
-void parse_ftrace_printk(struct pevent *pevent,
-			 char *file, unsigned int size __unused)
+void parse_ftrace_printk(struct tep_handle *pevent,
+			 char *file, unsigned int size __maybe_unused)
 {
 	unsigned long long addr;
 	char *printk;
 	char *line;
 	char *next = NULL;
 	char *addr_str;
-	char *fmt;
+	char *fmt = NULL;
 
 	line = strtok_r(file, "\n", &next);
 	while (line) {
 		addr_str = strtok_r(line, ":", &fmt);
 		if (!addr_str) {
-			warning("printk format with empty entry");
+			pr_warning("printk format with empty entry");
 			break;
 		}
 		addr = strtoull(addr_str, NULL, 16);
 		/* fmt still has a space, skip it */
 		printk = strdup(fmt+1);
 		line = strtok_r(NULL, "\n", &next);
-		pevent_register_print_string(pevent, printk, addr);
+		tep_register_print_string(pevent, printk, addr);
+		free(printk);
 	}
 }
 
-int parse_ftrace_file(struct pevent *pevent, char *buf, unsigned long size)
+void parse_saved_cmdline(struct tep_handle *pevent,
+			 char *file, unsigned int size __maybe_unused)
 {
-	return pevent_parse_event(pevent, buf, size, "ftrace");
+	char comm[17]; /* Max comm length in the kernel is 16. */
+	char *line;
+	char *next = NULL;
+	int pid;
+
+	line = strtok_r(file, "\n", &next);
+	while (line) {
+		if (sscanf(line, "%d %16s", &pid, comm) == 2)
+			tep_register_comm(pevent, comm, pid);
+		line = strtok_r(NULL, "\n", &next);
+	}
 }
 
-int parse_event_file(struct pevent *pevent,
+int parse_ftrace_file(struct tep_handle *pevent, char *buf, unsigned long size)
+{
+	return tep_parse_event(pevent, buf, size, "ftrace");
+}
+
+int parse_event_file(struct tep_handle *pevent,
 		     char *buf, unsigned long size, char *sys)
 {
-	return pevent_parse_event(pevent, buf, size, sys);
+	return tep_parse_event(pevent, buf, size, sys);
 }
 
-struct event_format *trace_find_next_event(struct pevent *pevent,
-					   struct event_format *event)
+struct tep_event *trace_find_next_event(struct tep_handle *pevent,
+					struct tep_event *event)
 {
 	static int idx;
+	int events_count;
+	struct tep_event *all_events;
 
-	if (!pevent->events)
+	all_events = tep_get_first_event(pevent);
+	events_count = tep_get_events_count(pevent);
+	if (!pevent || !all_events || events_count < 1)
 		return NULL;
 
 	if (!event) {
 		idx = 0;
-		return pevent->events[0];
+		return all_events;
 	}
 
-	if (idx < pevent->nr_events && event == pevent->events[idx]) {
+	if (idx < events_count && event == (all_events + idx)) {
 		idx++;
-		if (idx == pevent->nr_events)
+		if (idx == events_count)
 			return NULL;
-		return pevent->events[idx];
+		return (all_events + idx);
 	}
 
-	for (idx = 1; idx < pevent->nr_events; idx++) {
-		if (event == pevent->events[idx - 1])
-			return pevent->events[idx];
+	for (idx = 1; idx < events_count; idx++) {
+		if (event == (all_events + (idx - 1)))
+			return (all_events + idx);
 	}
 	return NULL;
 }
@@ -322,7 +232,7 @@ static const struct flag flags[] = {
 	{ "NET_TX_SOFTIRQ", 2 },
 	{ "NET_RX_SOFTIRQ", 3 },
 	{ "BLOCK_SOFTIRQ", 4 },
-	{ "BLOCK_IOPOLL_SOFTIRQ", 5 },
+	{ "IRQ_POLL_SOFTIRQ", 5 },
 	{ "TASKLET_SOFTIRQ", 6 },
 	{ "SCHED_SOFTIRQ", 7 },
 	{ "HRTIMER_SOFTIRQ", 8 },

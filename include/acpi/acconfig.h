@@ -1,45 +1,11 @@
+/* SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0 */
 /******************************************************************************
  *
  * Name: acconfig.h - Global configuration constants
  *
+ * Copyright (C) 2000 - 2018, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2012, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #ifndef _ACCONFIG_H
 #define _ACCONFIG_H
@@ -78,12 +44,15 @@
 #define ACPI_MAX_EXTPARSE_CACHE_DEPTH   96	/* Parse tree objects */
 #define ACPI_MAX_OBJECT_CACHE_DEPTH     96	/* Interpreter operand objects */
 #define ACPI_MAX_NAMESPACE_CACHE_DEPTH  96	/* Namespace objects */
+#define ACPI_MAX_COMMENT_CACHE_DEPTH    96	/* Comments for the -ca option */
 
 /*
  * Should the subsystem abort the loading of an ACPI table if the
  * table checksum is incorrect?
  */
+#ifndef ACPI_CHECKSUM_ABORT
 #define ACPI_CHECKSUM_ABORT             FALSE
+#endif
 
 /*
  * Generate a version of ACPICA that only supports "reduced hardware"
@@ -100,7 +69,9 @@
  *      ACPI PM timer
  *      FACS table (Waking vectors and Global Lock)
  */
+#ifndef ACPI_REDUCED_HARDWARE
 #define ACPI_REDUCED_HARDWARE           FALSE
+#endif
 
 /******************************************************************************
  *
@@ -118,7 +89,7 @@
 
 /* Maximum object reference count (detects object deletion issues) */
 
-#define ACPI_MAX_REFERENCE_COUNT        0x1000
+#define ACPI_MAX_REFERENCE_COUNT        0x4000
 
 /* Default page size for use in mapping memory for operation regions */
 
@@ -132,28 +103,23 @@
 
 #define ACPI_ROOT_TABLE_SIZE_INCREMENT  4
 
-/* Maximum number of While() loop iterations before forced abort */
-
-#define ACPI_MAX_LOOP_ITERATIONS        0xFFFF
-
 /* Maximum sleep allowed via Sleep() operator */
 
-#define ACPI_MAX_SLEEP                  2000	/* Two seconds */
+#define ACPI_MAX_SLEEP                  2000	/* 2000 millisec == two seconds */
 
 /* Address Range lists are per-space_id (Memory and I/O only) */
 
 #define ACPI_ADDRESS_RANGE_MAX          2
+
+/* Maximum time (default 30s) of While() loops before abort */
+
+#define ACPI_MAX_LOOP_TIMEOUT           30
 
 /******************************************************************************
  *
  * ACPI Specification constants (Do not change unless the specification changes)
  *
  *****************************************************************************/
-
-/* Number of distinct GPE register blocks and register width */
-
-#define ACPI_MAX_GPE_BLOCKS             2
-#define ACPI_GPE_REGISTER_WIDTH         8
 
 /* Method info (in WALK_STATE), containing local variables and argumetns */
 
@@ -162,12 +128,6 @@
 
 #define ACPI_METHOD_NUM_ARGS            7
 #define ACPI_METHOD_MAX_ARG             6
-
-/* Length of _HID, _UID, _CID, and UUID values */
-
-#define ACPI_DEVICE_ID_LENGTH           0x09
-#define ACPI_MAX_CID_LENGTH             48
-#define ACPI_UUID_LENGTH                16
 
 /*
  * Operand Stack (in WALK_STATE), Must be large enough to contain METHOD_MAX_ARG
@@ -186,17 +146,6 @@
  */
 #define ACPI_RESULTS_OBJ_NUM_MAX        255
 
-/* Names within the namespace are 4 bytes long */
-
-#define ACPI_NAME_SIZE                  4
-#define ACPI_PATH_SEGMENT_LENGTH        5	/* 4 chars for name + 1 char for separator */
-#define ACPI_PATH_SEPARATOR             '.'
-
-/* Sizes for ACPI table headers */
-
-#define ACPI_OEM_ID_SIZE                6
-#define ACPI_OEM_TABLE_ID_SIZE          8
-
 /* Constants used in searching for the RSDP in low memory */
 
 #define ACPI_EBDA_PTR_LOCATION          0x0000040E	/* Physical Address */
@@ -213,6 +162,7 @@
 /* Maximum space_ids for Operation Regions */
 
 #define ACPI_MAX_ADDRESS_SPACE          255
+#define ACPI_NUM_DEFAULT_SPACES         4
 
 /* Array sizes.  Used for range checking also */
 
@@ -223,11 +173,20 @@
 #define ACPI_RSDP_CHECKSUM_LENGTH       20
 #define ACPI_RSDP_XCHECKSUM_LENGTH      36
 
-/* SMBus, GSBus and IPMI bidirectional buffer size */
+/*
+ * SMBus, GSBus and IPMI buffer sizes. All have a 2-byte header,
+ * containing both Status and Length.
+ */
+#define ACPI_SERIAL_HEADER_SIZE         2	/* Common for below. Status and Length fields */
 
-#define ACPI_SMBUS_BUFFER_SIZE          34
-#define ACPI_GSBUS_BUFFER_SIZE          34
-#define ACPI_IPMI_BUFFER_SIZE           66
+#define ACPI_SMBUS_DATA_SIZE            32
+#define ACPI_SMBUS_BUFFER_SIZE          ACPI_SERIAL_HEADER_SIZE + ACPI_SMBUS_DATA_SIZE
+
+#define ACPI_IPMI_DATA_SIZE             64
+#define ACPI_IPMI_BUFFER_SIZE           ACPI_SERIAL_HEADER_SIZE + ACPI_IPMI_DATA_SIZE
+
+#define ACPI_MAX_GSBUS_DATA_SIZE        255
+#define ACPI_MAX_GSBUS_BUFFER_SIZE      ACPI_SERIAL_HEADER_SIZE + ACPI_MAX_GSBUS_DATA_SIZE
 
 /* _sx_d and _sx_w control methods */
 
@@ -236,11 +195,30 @@
 
 /******************************************************************************
  *
+ * Miscellaneous constants
+ *
+ *****************************************************************************/
+
+/* UUID constants */
+
+#define UUID_BUFFER_LENGTH          16	/* Length of UUID in memory */
+#define UUID_STRING_LENGTH          36	/* Total length of a UUID string */
+
+/* Positions for required hyphens (dashes) in UUID strings */
+
+#define UUID_HYPHEN1_OFFSET         8
+#define UUID_HYPHEN2_OFFSET         13
+#define UUID_HYPHEN3_OFFSET         18
+#define UUID_HYPHEN4_OFFSET         23
+
+/******************************************************************************
+ *
  * ACPI AML Debugger
  *
  *****************************************************************************/
 
-#define ACPI_DEBUGGER_MAX_ARGS          8	/* Must be max method args + 1 */
+#define ACPI_DEBUGGER_MAX_ARGS          ACPI_METHOD_NUM_ARGS + 4	/* Max command line arguments */
+#define ACPI_DB_LINE_BUFFER_SIZE        512
 
 #define ACPI_DEBUGGER_COMMAND_PROMPT    '-'
 #define ACPI_DEBUGGER_EXECUTE_PROMPT    '%'

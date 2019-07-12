@@ -611,7 +611,7 @@ static void pm72_tick(void)
 	int i, last_failure;
 
 	if (!started) {
-		started = 1;
+		started = true;
 		printk(KERN_INFO "windfarm: CPUs control loops started.\n");
 		for (i = 0; i < nr_chips; ++i) {
 			if (cpu_setup_pid(i) < 0) {
@@ -776,7 +776,7 @@ static int wf_pm72_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __devexit wf_pm72_remove(struct platform_device *dev)
+static int wf_pm72_remove(struct platform_device *dev)
 {
 	wf_unregister_client(&pm72_events);
 
@@ -789,7 +789,6 @@ static struct platform_driver wf_pm72_driver = {
 	.remove	= wf_pm72_remove,
 	.driver	= {
 		.name = "windfarm",
-		.owner	= THIS_MODULE,
 	},
 };
 
@@ -804,7 +803,7 @@ static int __init wf_pm72_init(void)
 
 	/* Count the number of CPU cores */
 	nr_chips = 0;
-	for (cpu = NULL; (cpu = of_find_node_by_type(cpu, "cpu")) != NULL; )
+	for_each_node_by_type(cpu, "cpu")
 		++nr_chips;
 	if (nr_chips > NR_CHIPS)
 		nr_chips = NR_CHIPS;

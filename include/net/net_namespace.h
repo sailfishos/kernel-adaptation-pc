@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Operations on the network namespace
  */
@@ -5,52 +6,76 @@
 #define __NET_NET_NAMESPACE_H
 
 #include <linux/atomic.h>
+#include <linux/refcount.h>
 #include <linux/workqueue.h>
 #include <linux/list.h>
 #include <linux/sysctl.h>
+#include <linux/uidgid.h>
 
+#include <net/flow.h>
 #include <net/netns/core.h>
 #include <net/netns/mib.h>
 #include <net/netns/unix.h>
 #include <net/netns/packet.h>
 #include <net/netns/ipv4.h>
 #include <net/netns/ipv6.h>
+#include <net/netns/ieee802154_6lowpan.h>
+#include <net/netns/sctp.h>
 #include <net/netns/dccp.h>
+#include <net/netns/netfilter.h>
 #include <net/netns/x_tables.h>
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 #include <net/netns/conntrack.h>
 #endif
+#include <net/netns/nftables.h>
 #include <net/netns/xfrm.h>
+#include <net/netns/mpls.h>
+#include <net/netns/can.h>
+#include <linux/ns_common.h>
+#include <linux/idr.h>
+#include <linux/skbuff.h>
 
+struct user_namespace;
 struct proc_dir_entry;
 struct net_device;
 struct sock;
 struct ctl_table_header;
 struct net_generic;
-struct sock;
+struct uevent_sock;
 struct netns_ipvs;
+struct bpf_prog;
 
 
 #define NETDEV_HASHBITS    8
 #define NETDEV_HASHENTRIES (1 << NETDEV_HASHBITS)
 
 struct net {
-	atomic_t		passive;	/* To decided when the network
+	refcount_t		passive;	/* To decided when the network
 						 * namespace should be freed.
 						 */
-	atomic_t		count;		/* To decided when the network
+	refcount_t		count;		/* To decided when the network
 						 *  namespace should be shut down.
 						 */
-#ifdef NETNS_REFCNT_DEBUG
-	atomic_t		use_count;	/* To track references we
-						 * destroy on demand
-						 */
-#endif
 	spinlock_t		rules_mod_lock;
 
+	u32			hash_mix;
+	atomic64_t		cookie_gen;
+
 	struct list_head	list;		/* list of network namespaces */
-	struct list_head	cleanup_list;	/* namespaces on death row */
-	struct list_head	exit_list;	/* Use only net_mutex */
+	struct list_head	exit_list;	/* To linked to call pernet exit
+						 * methods on dead net (
+						 * pernet_ops_rwsem read locked),
+						 * or to unregister pernet ops
+						 * (pernet_ops_rwsem write locked).
+						 */
+	struct llist_node	cleanup_list;	/* namespaces on death row */
+
+	struct user_namespace   *user_ns;	/* Owning user namespace */
+	struct ucounts		*ucounts;
+	spinlock_t		nsid_lock;
+	struct idr		netns_ids;
+
+	struct ns_common	ns;
 
 	struct proc_dir_entry 	*proc_net;
 	struct proc_dir_entry 	*proc_net_stat;
@@ -62,15 +87,21 @@ struct net {
 	struct sock 		*rtnl;			/* rtnetlink socket */
 	struct sock		*genl_sock;
 
+	struct uevent_sock	*uevent_sock;		/* uevent socket */
+
 	struct list_head 	dev_base_head;
 	struct hlist_head 	*dev_name_head;
 	struct hlist_head	*dev_index_head;
 	unsigned int		dev_base_seq;	/* protected by rtnl_mutex */
+	int			ifindex;
+	unsigned int		dev_unreg_count;
 
 	/* core fib_rules */
 	struct list_head	rules_ops;
 
-
+	struct list_head	fib_notifier_ops;  /* Populated by
+						    * register_pernet_subsys()
+						    */
 	struct net_device       *loopback_dev;          /* The loopback */
 	struct netns_core	core;
 	struct netns_mib	mib;
@@ -80,60 +111,114 @@ struct net {
 #if IS_ENABLED(CONFIG_IPV6)
 	struct netns_ipv6	ipv6;
 #endif
+#if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
+	struct netns_ieee802154_lowpan	ieee802154_lowpan;
+#endif
+#if defined(CONFIG_IP_SCTP) || defined(CONFIG_IP_SCTP_MODULE)
+	struct netns_sctp	sctp;
+#endif
 #if defined(CONFIG_IP_DCCP) || defined(CONFIG_IP_DCCP_MODULE)
 	struct netns_dccp	dccp;
 #endif
 #ifdef CONFIG_NETFILTER
+	struct netns_nf		nf;
 	struct netns_xt		xt;
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 	struct netns_ct		ct;
 #endif
+#if defined(CONFIG_NF_TABLES) || defined(CONFIG_NF_TABLES_MODULE)
+	struct netns_nftables	nft;
+#endif
+#if IS_ENABLED(CONFIG_NF_DEFRAG_IPV6)
+	struct netns_nf_frag	nf_frag;
+	struct ctl_table_header *nf_frag_frags_hdr;
+#endif
 	struct sock		*nfnl;
 	struct sock		*nfnl_stash;
+#if IS_ENABLED(CONFIG_NETFILTER_NETLINK_ACCT)
+	struct list_head        nfnl_acct_list;
+#endif
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK_TIMEOUT)
+	struct list_head	nfct_timeout_list;
+#endif
 #endif
 #ifdef CONFIG_WEXT_CORE
 	struct sk_buff_head	wext_nlevents;
 #endif
 	struct net_generic __rcu	*gen;
 
+	struct bpf_prog __rcu	*flow_dissector_prog;
+
 	/* Note : following structs are cache line aligned */
 #ifdef CONFIG_XFRM
 	struct netns_xfrm	xfrm;
 #endif
+#if IS_ENABLED(CONFIG_IP_VS)
 	struct netns_ipvs	*ipvs;
+#endif
+#if IS_ENABLED(CONFIG_MPLS)
+	struct netns_mpls	mpls;
+#endif
+#if IS_ENABLED(CONFIG_CAN)
+	struct netns_can	can;
+#endif
 	struct sock		*diag_nlsk;
-	atomic_t		rt_genid;
-};
-
+	atomic_t		fnhe_genid;
+} __randomize_layout;
 
 #include <linux/seq_file_net.h>
 
 /* Init's network namespace */
 extern struct net init_net;
 
-#ifdef CONFIG_NET
-extern struct net *copy_net_ns(unsigned long flags, struct net *net_ns);
+#ifdef CONFIG_NET_NS
+struct net *copy_net_ns(unsigned long flags, struct user_namespace *user_ns,
+			struct net *old_net);
 
-#else /* CONFIG_NET */
-static inline struct net *copy_net_ns(unsigned long flags, struct net *net_ns)
+void net_ns_get_ownership(const struct net *net, kuid_t *uid, kgid_t *gid);
+
+void net_ns_barrier(void);
+#else /* CONFIG_NET_NS */
+#include <linux/sched.h>
+#include <linux/nsproxy.h>
+static inline struct net *copy_net_ns(unsigned long flags,
+	struct user_namespace *user_ns, struct net *old_net)
 {
-	/* There is nothing to copy so this is a noop */
-	return net_ns;
+	if (flags & CLONE_NEWNET)
+		return ERR_PTR(-EINVAL);
+	return old_net;
 }
-#endif /* CONFIG_NET */
+
+static inline void net_ns_get_ownership(const struct net *net,
+					kuid_t *uid, kgid_t *gid)
+{
+	*uid = GLOBAL_ROOT_UID;
+	*gid = GLOBAL_ROOT_GID;
+}
+
+static inline void net_ns_barrier(void) {}
+#endif /* CONFIG_NET_NS */
 
 
 extern struct list_head net_namespace_list;
 
-extern struct net *get_net_ns_by_pid(pid_t pid);
-extern struct net *get_net_ns_by_fd(int pid);
+struct net *get_net_ns_by_pid(pid_t pid);
+struct net *get_net_ns_by_fd(int fd);
+
+#ifdef CONFIG_SYSCTL
+void ipx_register_sysctl(void);
+void ipx_unregister_sysctl(void);
+#else
+#define ipx_register_sysctl()
+#define ipx_unregister_sysctl()
+#endif
 
 #ifdef CONFIG_NET_NS
-extern void __put_net(struct net *net);
+void __put_net(struct net *net);
 
 static inline struct net *get_net(struct net *net)
 {
-	atomic_inc(&net->count);
+	refcount_inc(&net->count);
 	return net;
 }
 
@@ -144,14 +229,14 @@ static inline struct net *maybe_get_net(struct net *net)
 	 * exists.  If the reference count is zero this
 	 * function fails and returns NULL.
 	 */
-	if (!atomic_inc_not_zero(&net->count))
+	if (!refcount_inc_not_zero(&net->count))
 		net = NULL;
 	return net;
 }
 
 static inline void put_net(struct net *net)
 {
-	if (atomic_dec_and_test(&net->count))
+	if (refcount_dec_and_test(&net->count))
 		__put_net(net);
 }
 
@@ -161,7 +246,12 @@ int net_eq(const struct net *net1, const struct net *net2)
 	return net1 == net2;
 }
 
-extern void net_drop_ns(void *);
+static inline int check_net(const struct net *net)
+{
+	return refcount_read(&net->count) != 0;
+}
+
+void net_drop_ns(void *);
 
 #else
 
@@ -185,53 +275,38 @@ int net_eq(const struct net *net1, const struct net *net2)
 	return 1;
 }
 
+static inline int check_net(const struct net *net)
+{
+	return 1;
+}
+
 #define net_drop_ns NULL
 #endif
 
 
-#ifdef NETNS_REFCNT_DEBUG
-static inline struct net *hold_net(struct net *net)
-{
-	if (net)
-		atomic_inc(&net->use_count);
-	return net;
-}
-
-static inline void release_net(struct net *net)
-{
-	if (net)
-		atomic_dec(&net->use_count);
-}
-#else
-static inline struct net *hold_net(struct net *net)
-{
-	return net;
-}
-
-static inline void release_net(struct net *net)
-{
-}
-#endif
-
+typedef struct {
 #ifdef CONFIG_NET_NS
-
-static inline void write_pnet(struct net **pnet, struct net *net)
-{
-	*pnet = net;
-}
-
-static inline struct net *read_pnet(struct net * const *pnet)
-{
-	return *pnet;
-}
-
-#else
-
-#define write_pnet(pnet, net)	do { (void)(net);} while (0)
-#define read_pnet(pnet)		(&init_net)
-
+	struct net *net;
 #endif
+} possible_net_t;
 
+static inline void write_pnet(possible_net_t *pnet, struct net *net)
+{
+#ifdef CONFIG_NET_NS
+	pnet->net = net;
+#endif
+}
+
+static inline struct net *read_pnet(const possible_net_t *pnet)
+{
+#ifdef CONFIG_NET_NS
+	return pnet->net;
+#else
+	return &init_net;
+#endif
+}
+
+/* Protected by net_rwsem */
 #define for_each_net(VAR)				\
 	list_for_each_entry(VAR, &net_namespace_list, list)
 
@@ -242,18 +317,43 @@ static inline struct net *read_pnet(struct net * const *pnet)
 #define __net_init
 #define __net_exit
 #define __net_initdata
+#define __net_initconst
 #else
 #define __net_init	__init
-#define __net_exit	__exit_refok
+#define __net_exit	__ref
 #define __net_initdata	__initdata
+#define __net_initconst	__initconst
 #endif
+
+int peernet2id_alloc(struct net *net, struct net *peer);
+int peernet2id(struct net *net, struct net *peer);
+bool peernet_has_id(struct net *net, struct net *peer);
+struct net *get_net_ns_by_id(struct net *net, int id);
 
 struct pernet_operations {
 	struct list_head list;
+	/*
+	 * Below methods are called without any exclusive locks.
+	 * More than one net may be constructed and destructed
+	 * in parallel on several cpus. Every pernet_operations
+	 * have to keep in mind all other pernet_operations and
+	 * to introduce a locking, if they share common resources.
+	 *
+	 * The only time they are called with exclusive lock is
+	 * from register_pernet_subsys(), unregister_pernet_subsys()
+	 * register_pernet_device() and unregister_pernet_device().
+	 *
+	 * Exit methods using blocking RCU primitives, such as
+	 * synchronize_rcu(), should be implemented via exit_batch.
+	 * Then, destruction of a group of net requires single
+	 * synchronize_rcu() related to these pernet_operations,
+	 * instead of separate synchronize_rcu() for every net.
+	 * Please, avoid synchronize_rcu() at all, where it's possible.
+	 */
 	int (*init)(struct net *net);
 	void (*exit)(struct net *net);
 	void (*exit_batch)(struct list_head *net_exit_list);
-	int *id;
+	unsigned int *id;
 	size_t size;
 };
 
@@ -276,19 +376,19 @@ struct pernet_operations {
  * device which caused kernel oops, and panics during network
  * namespace cleanup.   So please don't get this wrong.
  */
-extern int register_pernet_subsys(struct pernet_operations *);
-extern void unregister_pernet_subsys(struct pernet_operations *);
-extern int register_pernet_device(struct pernet_operations *);
-extern void unregister_pernet_device(struct pernet_operations *);
+int register_pernet_subsys(struct pernet_operations *);
+void unregister_pernet_subsys(struct pernet_operations *);
+int register_pernet_device(struct pernet_operations *);
+void unregister_pernet_device(struct pernet_operations *);
 
 struct ctl_table;
 struct ctl_table_header;
 
 #ifdef CONFIG_SYSCTL
-extern int net_sysctl_init(void);
-extern struct ctl_table_header *register_net_sysctl(struct net *net,
-	const char *path, struct ctl_table *table);
-extern void unregister_net_sysctl_table(struct ctl_table_header *header);
+int net_sysctl_init(void);
+struct ctl_table_header *register_net_sysctl(struct net *net, const char *path,
+					     struct ctl_table *table);
+void unregister_net_sysctl_table(struct ctl_table_header *header);
 #else
 static inline int net_sysctl_init(void) { return 0; }
 static inline struct ctl_table_header *register_net_sysctl(struct net *net,
@@ -301,14 +401,46 @@ static inline void unregister_net_sysctl_table(struct ctl_table_header *header)
 }
 #endif
 
-static inline int rt_genid(struct net *net)
+static inline int rt_genid_ipv4(struct net *net)
 {
-	return atomic_read(&net->rt_genid);
+	return atomic_read(&net->ipv4.rt_genid);
 }
 
-static inline void rt_genid_bump(struct net *net)
+static inline void rt_genid_bump_ipv4(struct net *net)
 {
-	atomic_inc(&net->rt_genid);
+	atomic_inc(&net->ipv4.rt_genid);
+}
+
+extern void (*__fib6_flush_trees)(struct net *net);
+static inline void rt_genid_bump_ipv6(struct net *net)
+{
+	if (__fib6_flush_trees)
+		__fib6_flush_trees(net);
+}
+
+#if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
+static inline struct netns_ieee802154_lowpan *
+net_ieee802154_lowpan(struct net *net)
+{
+	return &net->ieee802154_lowpan;
+}
+#endif
+
+/* For callers who don't really care about whether it's IPv4 or IPv6 */
+static inline void rt_genid_bump_all(struct net *net)
+{
+	rt_genid_bump_ipv4(net);
+	rt_genid_bump_ipv6(net);
+}
+
+static inline int fnhe_genid(struct net *net)
+{
+	return atomic_read(&net->fnhe_genid);
+}
+
+static inline void fnhe_genid_bump(struct net *net)
+{
+	atomic_inc(&net->fnhe_genid);
 }
 
 #endif /* __NET_NET_NAMESPACE_H */

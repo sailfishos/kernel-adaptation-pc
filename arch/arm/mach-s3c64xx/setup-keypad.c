@@ -1,18 +1,14 @@
-/* linux/arch/arm/mach-s3c64xx/setup-keypad.c
- *
- * Copyright (c) 2010 Samsung Electronics Co., Ltd.
- *		http://www.samsung.com/
- *
- * GPIO configuration for S3C64XX KeyPad device
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright (c) 2010 Samsung Electronics Co., Ltd.
+//		http://www.samsung.com/
+//
+// GPIO configuration for S3C64XX KeyPad device
 
 #include <linux/gpio.h>
 #include <plat/gpio-cfg.h>
 #include <plat/keypad.h>
+#include <mach/gpio-samsung.h>
 
 void samsung_keypad_cfg_gpio(unsigned int rows, unsigned int cols)
 {

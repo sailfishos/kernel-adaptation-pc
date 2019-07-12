@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /* ePAPR hypervisor byte channel device driver
  *
  * Copyright 2009-2011 Freescale Semiconductor, Inc.
  *
  * Author: Timur Tabi <timur@freescale.com>
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2.  This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  *
  * This driver support three distinct interfaces, all of which are related to
  * ePAPR hypervisor byte channels.
@@ -23,7 +20,6 @@
  * byte channel used for the console is designated as the default tty.
  */
 
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/err.h>
@@ -32,6 +28,7 @@
 #include <linux/poll.h>
 #include <asm/epapr_hcalls.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/cdev.h>
 #include <linux/console.h>
@@ -107,55 +104,22 @@ static void disable_tx_interrupt(struct ehv_bc_data *bc)
  *
  * The byte channel to be used for the console is specified via a "stdout"
  * property in the /chosen node.
- *
- * For compatible with legacy device trees, we also look for a "stdout" alias.
  */
 static int find_console_handle(void)
 {
-	struct device_node *np, *np2;
-	const char *sprop = NULL;
+	struct device_node *np = of_stdout;
 	const uint32_t *iprop;
-
-	np = of_find_node_by_path("/chosen");
-	if (np)
-		sprop = of_get_property(np, "stdout-path", NULL);
-
-	if (!np || !sprop) {
-		of_node_put(np);
-		np = of_find_node_by_name(NULL, "aliases");
-		if (np)
-			sprop = of_get_property(np, "stdout", NULL);
-	}
-
-	if (!sprop) {
-		of_node_put(np);
-		return 0;
-	}
 
 	/* We don't care what the aliased node is actually called.  We only
 	 * care if it's compatible with "epapr,hv-byte-channel", because that
-	 * indicates that it's a byte channel node.  We use a temporary
-	 * variable, 'np2', because we can't release 'np' until we're done with
-	 * 'sprop'.
+	 * indicates that it's a byte channel node.
 	 */
-	np2 = of_find_node_by_path(sprop);
-	of_node_put(np);
-	np = np2;
-	if (!np) {
-		pr_warning("ehv-bc: stdout node '%s' does not exist\n", sprop);
+	if (!np || !of_device_is_compatible(np, "epapr,hv-byte-channel"))
 		return 0;
-	}
-
-	/* Is it a byte channel? */
-	if (!of_device_is_compatible(np, "epapr,hv-byte-channel")) {
-		of_node_put(np);
-		return 0;
-	}
 
 	stdout_irq = irq_of_parse_and_map(np, 0);
 	if (stdout_irq == NO_IRQ) {
-		pr_err("ehv-bc: no 'interrupts' property in %s node\n", sprop);
-		of_node_put(np);
+		pr_err("ehv-bc: no 'interrupts' property in %pOF node\n", np);
 		return 0;
 	}
 
@@ -164,14 +128,11 @@ static int find_console_handle(void)
 	 */
 	iprop = of_get_property(np, "hv-handle", NULL);
 	if (!iprop) {
-		pr_err("ehv-bc: no 'hv-handle' property in %s node\n",
-		       np->name);
-		of_node_put(np);
+		pr_err("ehv-bc: no 'hv-handle' property in %pOFn node\n",
+		       np);
 		return 0;
 	}
 	stdout_bc = be32_to_cpu(*iprop);
-
-	of_node_put(np);
 	return 1;
 }
 
@@ -343,8 +304,8 @@ static int __init ehv_bc_console_init(void)
 	 * handle for udbg.
 	 */
 	if (stdout_bc != CONFIG_PPC_EARLY_DEBUG_EHV_BC_HANDLE)
-		pr_warning("ehv-bc: udbg handle %u is not the stdout handle\n",
-			   CONFIG_PPC_EARLY_DEBUG_EHV_BC_HANDLE);
+		pr_warn("ehv-bc: udbg handle %u is not the stdout handle\n",
+			CONFIG_PPC_EARLY_DEBUG_EHV_BC_HANDLE);
 #endif
 
 	/* add_preferred_console() must be called before register_console(),
@@ -364,29 +325,24 @@ console_initcall(ehv_bc_console_init);
 /******************************** TTY DRIVER ********************************/
 
 /*
- * byte channel receive interupt handler
+ * byte channel receive interrupt handler
  *
  * This ISR is called whenever data is available on a byte channel.
  */
 static irqreturn_t ehv_bc_tty_rx_isr(int irq, void *data)
 {
 	struct ehv_bc_data *bc = data;
-	struct tty_struct *ttys = tty_port_tty_get(&bc->port);
 	unsigned int rx_count, tx_count, len;
 	int count;
 	char buffer[EV_BYTE_CHANNEL_MAX_BYTES];
 	int ret;
-
-	/* ttys could be NULL during a hangup */
-	if (!ttys)
-		return IRQ_HANDLED;
 
 	/* Find out how much data needs to be read, and then ask the TTY layer
 	 * if it can handle that much.  We want to ensure that every byte we
 	 * read from the byte channel will be accepted by the TTY layer.
 	 */
 	ev_byte_channel_poll(bc->handle, &rx_count, &tx_count);
-	count = tty_buffer_request_room(ttys, rx_count);
+	count = tty_buffer_request_room(&bc->port, rx_count);
 
 	/* 'count' is the maximum amount of data the TTY layer can accept at
 	 * this time.  However, during testing, I was never able to get 'count'
@@ -407,7 +363,7 @@ static irqreturn_t ehv_bc_tty_rx_isr(int irq, void *data)
 		 */
 
 		/* Pass the received data to the tty layer. */
-		ret = tty_insert_flip_string(ttys, buffer, len);
+		ret = tty_insert_flip_string(&bc->port, buffer, len);
 
 		/* 'ret' is the number of bytes that the TTY layer accepted.
 		 * If it's not equal to 'len', then it means the buffer is
@@ -422,9 +378,7 @@ static irqreturn_t ehv_bc_tty_rx_isr(int irq, void *data)
 	}
 
 	/* Tell the tty layer that we're done. */
-	tty_flip_buffer_push(ttys);
-
-	tty_kref_put(ttys);
+	tty_flip_buffer_push(&bc->port);
 
 	return IRQ_HANDLED;
 }
@@ -471,7 +425,7 @@ static void ehv_bc_tx_dequeue(struct ehv_bc_data *bc)
 }
 
 /*
- * byte channel transmit interupt handler
+ * byte channel transmit interrupt handler
  *
  * This ISR is called whenever space becomes available for transmitting
  * characters on a byte channel.
@@ -479,13 +433,9 @@ static void ehv_bc_tx_dequeue(struct ehv_bc_data *bc)
 static irqreturn_t ehv_bc_tty_tx_isr(int irq, void *data)
 {
 	struct ehv_bc_data *bc = data;
-	struct tty_struct *ttys = tty_port_tty_get(&bc->port);
 
 	ehv_bc_tx_dequeue(bc);
-	if (ttys) {
-		tty_wakeup(ttys);
-		tty_kref_put(ttys);
-	}
+	tty_port_tty_wakeup(&bc->port);
 
 	return IRQ_HANDLED;
 }
@@ -699,7 +649,7 @@ static const struct tty_port_operations ehv_bc_tty_port_ops = {
 	.shutdown = ehv_bc_tty_port_shutdown,
 };
 
-static int __devinit ehv_bc_tty_probe(struct platform_device *pdev)
+static int ehv_bc_tty_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
 	struct ehv_bc_data *bc;
@@ -711,8 +661,8 @@ static int __devinit ehv_bc_tty_probe(struct platform_device *pdev)
 
 	iprop = of_get_property(np, "hv-handle", NULL);
 	if (!iprop) {
-		dev_err(&pdev->dev, "no 'hv-handle' property in %s node\n",
-			np->name);
+		dev_err(&pdev->dev, "no 'hv-handle' property in %pOFn node\n",
+			np);
 		return -ENODEV;
 	}
 
@@ -732,21 +682,22 @@ static int __devinit ehv_bc_tty_probe(struct platform_device *pdev)
 	bc->rx_irq = irq_of_parse_and_map(np, 0);
 	bc->tx_irq = irq_of_parse_and_map(np, 1);
 	if ((bc->rx_irq == NO_IRQ) || (bc->tx_irq == NO_IRQ)) {
-		dev_err(&pdev->dev, "no 'interrupts' property in %s node\n",
-			np->name);
+		dev_err(&pdev->dev, "no 'interrupts' property in %pOFn node\n",
+			np);
 		ret = -ENODEV;
-		goto error;
-	}
-
-	bc->dev = tty_register_device(ehv_bc_driver, i, &pdev->dev);
-	if (IS_ERR(bc->dev)) {
-		ret = PTR_ERR(bc->dev);
-		dev_err(&pdev->dev, "could not register tty (ret=%i)\n", ret);
 		goto error;
 	}
 
 	tty_port_init(&bc->port);
 	bc->port.ops = &ehv_bc_tty_port_ops;
+
+	bc->dev = tty_port_register_device(&bc->port, ehv_bc_driver, i,
+			&pdev->dev);
+	if (IS_ERR(bc->dev)) {
+		ret = PTR_ERR(bc->dev);
+		dev_err(&pdev->dev, "could not register tty (ret=%i)\n", ret);
+		goto error;
+	}
 
 	dev_set_drvdata(&pdev->dev, bc);
 
@@ -756,23 +707,12 @@ static int __devinit ehv_bc_tty_probe(struct platform_device *pdev)
 	return 0;
 
 error:
+	tty_port_destroy(&bc->port);
 	irq_dispose_mapping(bc->tx_irq);
 	irq_dispose_mapping(bc->rx_irq);
 
 	memset(bc, 0, sizeof(struct ehv_bc_data));
 	return ret;
-}
-
-static int ehv_bc_tty_remove(struct platform_device *pdev)
-{
-	struct ehv_bc_data *bc = dev_get_drvdata(&pdev->dev);
-
-	tty_unregister_device(ehv_bc_driver, bc - bcs);
-
-	irq_dispose_mapping(bc->tx_irq);
-	irq_dispose_mapping(bc->rx_irq);
-
-	return 0;
 }
 
 static const struct of_device_id ehv_bc_tty_of_ids[] = {
@@ -782,18 +722,17 @@ static const struct of_device_id ehv_bc_tty_of_ids[] = {
 
 static struct platform_driver ehv_bc_tty_driver = {
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "ehv-bc",
 		.of_match_table = ehv_bc_tty_of_ids,
+		.suppress_bind_attrs = true,
 	},
 	.probe		= ehv_bc_tty_probe,
-	.remove		= ehv_bc_tty_remove,
 };
 
 /**
  * ehv_bc_init - ePAPR hypervisor byte channel driver initialization
  *
- * This function is called when this module is loaded.
+ * This function is called when this driver is loaded.
  */
 static int __init ehv_bc_init(void)
 {
@@ -815,14 +754,14 @@ static int __init ehv_bc_init(void)
 	 * array, then you can use pointer math (e.g. "bc - bcs") to get its
 	 * tty index.
 	 */
-	bcs = kzalloc(count * sizeof(struct ehv_bc_data), GFP_KERNEL);
+	bcs = kcalloc(count, sizeof(struct ehv_bc_data), GFP_KERNEL);
 	if (!bcs)
 		return -ENOMEM;
 
 	ehv_bc_driver = alloc_tty_driver(count);
 	if (!ehv_bc_driver) {
 		ret = -ENOMEM;
-		goto error;
+		goto err_free_bcs;
 	}
 
 	ehv_bc_driver->driver_name = "ehv-bc";
@@ -836,45 +775,25 @@ static int __init ehv_bc_init(void)
 	ret = tty_register_driver(ehv_bc_driver);
 	if (ret) {
 		pr_err("ehv-bc: could not register tty driver (ret=%i)\n", ret);
-		goto error;
+		goto err_put_tty_driver;
 	}
 
 	ret = platform_driver_register(&ehv_bc_tty_driver);
 	if (ret) {
 		pr_err("ehv-bc: could not register platform driver (ret=%i)\n",
 		       ret);
-		goto error;
+		goto err_deregister_tty_driver;
 	}
 
 	return 0;
 
-error:
-	if (ehv_bc_driver) {
-		tty_unregister_driver(ehv_bc_driver);
-		put_tty_driver(ehv_bc_driver);
-	}
-
+err_deregister_tty_driver:
+	tty_unregister_driver(ehv_bc_driver);
+err_put_tty_driver:
+	put_tty_driver(ehv_bc_driver);
+err_free_bcs:
 	kfree(bcs);
 
 	return ret;
 }
-
-
-/**
- * ehv_bc_exit - ePAPR hypervisor byte channel driver termination
- *
- * This function is called when this driver is unloaded.
- */
-static void __exit ehv_bc_exit(void)
-{
-	tty_unregister_driver(ehv_bc_driver);
-	put_tty_driver(ehv_bc_driver);
-	kfree(bcs);
-}
-
-module_init(ehv_bc_init);
-module_exit(ehv_bc_exit);
-
-MODULE_AUTHOR("Timur Tabi <timur@freescale.com>");
-MODULE_DESCRIPTION("ePAPR hypervisor byte channel driver");
-MODULE_LICENSE("GPL v2");
+device_initcall(ehv_bc_init);

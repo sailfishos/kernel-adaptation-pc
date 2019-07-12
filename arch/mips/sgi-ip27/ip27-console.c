@@ -5,9 +5,9 @@
  *
  * Copyright (C) 2001, 2002 Ralf Baechle
  */
-#include <linux/init.h>
 
 #include <asm/page.h>
+#include <asm/setup.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/sn0/hub.h>
 #include <asm/sn/klconfig.h>
@@ -31,7 +31,7 @@ static inline struct ioc3_uartregs *console_uart(void)
 	return &ioc3->sregs.uarta;
 }
 
-void __init prom_putchar(char c)
+void prom_putchar(char c)
 {
 	struct ioc3_uartregs *uart = console_uart();
 

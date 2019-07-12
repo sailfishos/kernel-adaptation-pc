@@ -22,7 +22,6 @@
 #ifndef _ATL1C_H_
 #define _ATL1C_H_
 
-#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -489,7 +488,7 @@ struct atl1c_tpd_ring {
 	dma_addr_t dma;		/* descriptor ring physical address */
 	u16 size;		/* descriptor ring length in bytes */
 	u16 count;		/* number of descriptors in the ring */
-	u16 next_to_use; 	/* this is protectd by adapter->tx_lock */
+	u16 next_to_use;
 	atomic_t next_to_clean;
 	struct atl1c_buffer *buffer_info;
 };
@@ -520,6 +519,9 @@ struct atl1c_adapter {
 	struct net_device   *netdev;
 	struct pci_dev      *pdev;
 	struct napi_struct  napi;
+	struct page         *rx_page;
+	unsigned int	    rx_page_offset;
+	unsigned int	    rx_frag_size;
 	struct atl1c_hw        hw;
 	struct atl1c_hw_stats  hw_stats;
 	struct mii_if_info  mii;    /* MII interface info */
@@ -540,7 +542,6 @@ struct atl1c_adapter {
 	u16 link_duplex;
 
 	spinlock_t mdio_lock;
-	spinlock_t tx_lock;
 	atomic_t irq_sem;
 
 	struct work_struct common_task;
@@ -597,7 +598,7 @@ struct atl1c_adapter {
 extern char atl1c_driver_name[];
 extern char atl1c_driver_version[];
 
-extern void atl1c_reinit_locked(struct atl1c_adapter *adapter);
-extern s32 atl1c_reset_hw(struct atl1c_hw *hw);
-extern void atl1c_set_ethtool_ops(struct net_device *netdev);
+void atl1c_reinit_locked(struct atl1c_adapter *adapter);
+s32 atl1c_reset_hw(struct atl1c_hw *hw);
+void atl1c_set_ethtool_ops(struct net_device *netdev);
 #endif /* _ATL1C_H_ */

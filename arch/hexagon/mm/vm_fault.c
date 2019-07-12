@@ -1,7 +1,7 @@
 /*
  * Memory fault handling for Hexagon
  *
- * Copyright (c) 2010-2011 Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,10 +26,11 @@
 
 #include <asm/pgtable.h>
 #include <asm/traps.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/mm.h>
+#include <linux/sched/signal.h>
 #include <linux/signal.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/hardirq.h>
 
 /*
@@ -49,12 +50,11 @@ void do_page_fault(unsigned long address, long cause, struct pt_regs *regs)
 {
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
-	siginfo_t info;
+	int si_signo;
 	int si_code = SEGV_MAPERR;
-	int fault;
+	vm_fault_t fault;
 	const struct exception_table_entry *fixup;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE |
-				 (cause > 0 ? FAULT_FLAG_WRITE : 0);
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
 	/*
 	 * If we're in an interrupt or have no user context,
@@ -65,6 +65,8 @@ void do_page_fault(unsigned long address, long cause, struct pt_regs *regs)
 
 	local_irq_enable();
 
+	if (user_mode(regs))
+		flags |= FAULT_FLAG_USER;
 retry:
 	down_read(&mm->mmap_sem);
 	vma = find_vma(mm, address);
@@ -96,10 +98,11 @@ good_area:
 	case FLT_STORE:
 		if (!(vma->vm_flags & VM_WRITE))
 			goto bad_area;
+		flags |= FAULT_FLAG_WRITE;
 		break;
 	}
 
-	fault = handle_mm_fault(mm, vma, address, flags);
+	fault = handle_mm_fault(vma, address, flags);
 
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
 		return;
@@ -113,6 +116,7 @@ good_area:
 				current->min_flt++;
 			if (fault & VM_FAULT_RETRY) {
 				flags &= ~FAULT_FLAG_ALLOW_RETRY;
+				flags |= FAULT_FLAG_TRIED;
 				goto retry;
 			}
 		}
@@ -136,28 +140,22 @@ good_area:
 	 * unable to fix up the page fault.
 	 */
 	if (fault & VM_FAULT_SIGBUS) {
-		info.si_signo = SIGBUS;
-		info.si_code = BUS_ADRERR;
+		si_signo = SIGBUS;
+		si_code = BUS_ADRERR;
 	}
 	/* Address is not in the memory map */
 	else {
-		info.si_signo = SIGSEGV;
-		info.si_code = SEGV_ACCERR;
+		si_signo = SIGSEGV;
+		si_code  = SEGV_ACCERR;
 	}
-	info.si_errno = 0;
-	info.si_addr = (void __user *)address;
-	force_sig_info(info.si_code, &info, current);
+	force_sig_fault(si_signo, si_code, (void __user *)address, current);
 	return;
 
 bad_area:
 	up_read(&mm->mmap_sem);
 
 	if (user_mode(regs)) {
-		info.si_signo = SIGSEGV;
-		info.si_errno = 0;
-		info.si_code = si_code;
-		info.si_addr = (void *)address;
-		force_sig_info(SIGSEGV, &info, current);
+		force_sig_fault(SIGSEGV, si_code, (void __user *)address, current);
 		return;
 	}
 	/* Kernel-mode fault falls through */

@@ -154,7 +154,10 @@ struct dino_device
 };
 
 /* Looks nice and keeps the compiler happy */
-#define DINO_DEV(d) ((struct dino_device *) d)
+#define DINO_DEV(d) ({				\
+	void *__pdata = d;			\
+	BUG_ON(!__pdata);			\
+	(struct dino_device *)__pdata; })
 
 
 /*
@@ -300,7 +303,7 @@ static void dino_mask_irq(struct irq_data *d)
 	struct dino_device *dino_dev = irq_data_get_irq_chip_data(d);
 	int local_irq = gsc_find_local_irq(d->irq, dino_dev->global_irq, DINO_LOCAL_IRQS);
 
-	DBG(KERN_WARNING "%s(0x%p, %d)\n", __func__, dino_dev, d->irq);
+	DBG(KERN_WARNING "%s(0x%px, %d)\n", __func__, dino_dev, d->irq);
 
 	/* Clear the matching bit in the IMR register */
 	dino_dev->imr &= ~(DINO_MASK_IRQ(local_irq));
@@ -313,7 +316,7 @@ static void dino_unmask_irq(struct irq_data *d)
 	int local_irq = gsc_find_local_irq(d->irq, dino_dev->global_irq, DINO_LOCAL_IRQS);
 	u32 tmp;
 
-	DBG(KERN_WARNING "%s(0x%p, %d)\n", __func__, dino_dev, d->irq);
+	DBG(KERN_WARNING "%s(0x%px, %d)\n", __func__, dino_dev, d->irq);
 
 	/*
 	** clear pending IRQ bits
@@ -379,7 +382,7 @@ ilr_again:
 		DBG(KERN_DEBUG "%s(%d, %p) mask 0x%x\n",
 			__func__, irq, intr_dev, mask);
 		generic_handle_irq(irq);
-		mask &= ~(1 << local_irq);
+		mask &= ~DINO_MASK_IRQ(local_irq);
 	} while (mask);
 
 	/* Support for level triggered IRQ lines.
@@ -393,9 +396,8 @@ ilr_again:
 	if (mask) {
 		if (--ilr_loop > 0)
 			goto ilr_again;
-		printk(KERN_ERR "Dino 0x%p: stuck interrupt %d\n", 
+		pr_warn_ratelimited("Dino 0x%px: stuck interrupt %d\n",
 		       dino_dev->hba.base_addr, mask);
-		return IRQ_NONE;
 	}
 	return IRQ_HANDLED;
 }
@@ -430,7 +432,7 @@ static void dino_choose_irq(struct parisc_device *dev, void *ctrl)
  * Cirrus 6832 Cardbus reports wrong irq on RDI Tadpole PARISC Laptop (deller@gmx.de)
  * (the irqs are off-by-one, not sure yet if this is a cirrus, dino-hardware or dino-driver problem...)
  */
-static void __devinit quirk_cirrus_cardbus(struct pci_dev *dev)
+static void quirk_cirrus_cardbus(struct pci_dev *dev)
 {
 	u8 new_irq = dev->irq - 1;
 	printk(KERN_INFO "PCI: Cirrus Cardbus IRQ fixup for %s, from %d to %d\n",
@@ -477,14 +479,12 @@ dino_card_setup(struct pci_bus *bus, void __iomem *base_addr)
 	if (ccio_allocate_resource(dino_dev->hba.dev, res, _8MB,
 				F_EXTEND(0xf0000000UL) | _8MB,
 				F_EXTEND(0xffffffffUL) &~ _8MB, _8MB) < 0) {
-		struct list_head *ln, *tmp_ln;
+		struct pci_dev *dev, *tmp;
 
 		printk(KERN_ERR "Dino: cannot attach bus %s\n",
 		       dev_name(bus->bridge));
 		/* kill the bus, we can't do anything with it */
-		list_for_each_safe(ln, tmp_ln, &bus->devices) {
-			struct pci_dev *dev = pci_dev_b(ln);
-
+		list_for_each_entry_safe(dev, tmp, &bus->devices, bus_list) {
 			list_del(&dev->bus_list);
 		}
 			
@@ -549,11 +549,10 @@ dino_card_fixup(struct pci_dev *dev)
 static void __init
 dino_fixup_bus(struct pci_bus *bus)
 {
-	struct list_head *ln;
         struct pci_dev *dev;
         struct dino_device *dino_dev = DINO_DEV(parisc_walk_tree(bus->bridge));
 
-	DBG(KERN_WARNING "%s(0x%p) bus %d platform_data 0x%p\n",
+	DBG(KERN_WARNING "%s(0x%px) bus %d platform_data 0x%px\n",
 	    __func__, bus, bus->busn_res.start,
 	    bus->bridge->platform_data);
 
@@ -583,21 +582,18 @@ dino_fixup_bus(struct pci_bus *bus)
 				
 			}
 					
-			DBG("DEBUG %s assigning %d [0x%lx,0x%lx]\n",
+			DBG("DEBUG %s assigning %d [%pR]\n",
 			    dev_name(&bus->self->dev), i,
-			    bus->self->resource[i].start,
-			    bus->self->resource[i].end);
+			    &bus->self->resource[i]);
 			WARN_ON(pci_assign_resource(bus->self, i));
-			DBG("DEBUG %s after assign %d [0x%lx,0x%lx]\n",
+			DBG("DEBUG %s after assign %d [%pR]\n",
 			    dev_name(&bus->self->dev), i,
-			    bus->self->resource[i].start,
-			    bus->self->resource[i].end);
+			    &bus->self->resource[i]);
 		}
 	}
 
 
-	list_for_each(ln, &bus->devices) {
-		dev = pci_dev_b(ln);
+	list_for_each_entry(dev, &bus->devices, bus_list) {
 		if (is_card_dino(&dino_dev->hba.dev->id))
 			dino_card_fixup(dev);
 
@@ -605,8 +601,10 @@ dino_fixup_bus(struct pci_bus *bus)
 		** P2PB's only have 2 BARs, no IRQs.
 		** I'd like to just ignore them for now.
 		*/
-		if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)
+		if ((dev->class >> 8) == PCI_CLASS_BRIDGE_PCI)  {
+			pcibios_init_bridge(dev);
 			continue;
+		}
 
 		/* null out the ROM resource if there is one (we don't
 		 * care about an expansion rom on parisc, since it
@@ -776,8 +774,7 @@ dino_bridge_init(struct dino_device *dino_dev, const char *name)
 		result = ccio_request_resource(dino_dev->hba.dev, &res[i]);
 		if (result < 0) {
 			printk(KERN_ERR "%s: failed to claim PCI Bus address "
-			       "space %d (0x%lx-0x%lx)!\n", name, i,
-			       (unsigned long)res[i].start, (unsigned long)res[i].end);
+			       "space %d (%pR)!\n", name, i, &res[i]);
 			return result;
 		}
 	}
@@ -856,7 +853,7 @@ static int __init dino_common_init(struct parisc_device *dev,
 	res->flags = IORESOURCE_IO; /* do not mark it busy ! */
 	if (request_resource(&ioport_resource, res) < 0) {
 		printk(KERN_ERR "%s: request I/O Port region failed "
-		       "0x%lx/%lx (hpa 0x%p)\n",
+		       "0x%lx/%lx (hpa 0x%px)\n",
 		       name, (unsigned long)res->start, (unsigned long)res->end,
 		       dino_dev->hba.base_addr);
 		return 1;
@@ -920,7 +917,7 @@ static int __init dino_probe(struct parisc_device *dev)
 	printk("%s version %s found at 0x%lx\n", name, version, hpa);
 
 	if (!request_mem_region(hpa, PAGE_SIZE, name)) {
-		printk(KERN_ERR "DINO: Hey! Someone took my MMIO space (0x%ld)!\n",
+		printk(KERN_ERR "DINO: Hey! Someone took my MMIO space (0x%lx)!\n",
 			hpa);
 		return 1;
 	}
@@ -958,7 +955,7 @@ static int __init dino_probe(struct parisc_device *dev)
 
 	dino_dev->hba.dev = dev;
 	dino_dev->hba.base_addr = ioremap_nocache(hpa, 4096);
-	dino_dev->hba.lmmio_space_offset = 0;	/* CPU addrs == bus addrs */
+	dino_dev->hba.lmmio_space_offset = PCI_F_EXTEND;
 	spin_lock_init(&dino_dev->dinosaur_pen);
 	dino_dev->hba.iommu = ccio_get_iommu(dev);
 
@@ -1024,7 +1021,7 @@ static int __init dino_probe(struct parisc_device *dev)
  * and 725 firmware misreport it as 0x08080 for no adequately explained
  * reason.
  */
-static struct parisc_device_id dino_tbl[] = {
+static const struct parisc_device_id dino_tbl[] __initconst = {
 	{ HPHW_A_DMA, HVERSION_REV_ANY_ID, 0x004, 0x0009D },/* Card-mode Dino */
 	{ HPHW_A_DMA, HVERSION_REV_ANY_ID, HVERSION_ANY_ID, 0x08080 }, /* XXX */
 	{ HPHW_BRIDGE, HVERSION_REV_ANY_ID, 0x680, 0xa }, /* Bridge-mode Dino */
@@ -1033,7 +1030,7 @@ static struct parisc_device_id dino_tbl[] = {
 	{ 0, }
 };
 
-static struct parisc_driver dino_driver = {
+static struct parisc_driver dino_driver __refdata = {
 	.name =		"dino",
 	.id_table =	dino_tbl,
 	.probe =	dino_probe,

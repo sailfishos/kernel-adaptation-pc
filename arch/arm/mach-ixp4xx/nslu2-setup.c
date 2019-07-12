@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/arm/mach-ixp4xx/nslu2-setup.c
  *
@@ -24,7 +25,7 @@
 #include <linux/leds.h>
 #include <linux/reboot.h>
 #include <linux/i2c.h>
-#include <linux/i2c-gpio.h>
+#include <linux/gpio/machine.h>
 #include <linux/io.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
@@ -68,9 +69,14 @@ static struct platform_device nslu2_flash = {
 	.resource		= &nslu2_flash_resource,
 };
 
-static struct i2c_gpio_platform_data nslu2_i2c_gpio_data = {
-	.sda_pin		= NSLU2_SDA_PIN,
-	.scl_pin		= NSLU2_SCL_PIN,
+static struct gpiod_lookup_table nslu2_i2c_gpiod_table = {
+	.dev_id		= "i2c-gpio.0",
+	.table		= {
+		GPIO_LOOKUP_IDX("IXP4XX_GPIO_CHIP", NSLU2_SDA_PIN,
+				NULL, 0, GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
+		GPIO_LOOKUP_IDX("IXP4XX_GPIO_CHIP", NSLU2_SCL_PIN,
+				NULL, 1, GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN),
+	},
 };
 
 static struct i2c_board_info __initdata nslu2_i2c_board_info [] = {
@@ -115,7 +121,7 @@ static struct platform_device nslu2_i2c_gpio = {
 	.name			= "i2c-gpio",
 	.id			= 0,
 	.dev	 = {
-		.platform_data	= &nslu2_i2c_gpio_data,
+		.platform_data	= NULL,
 	},
 };
 
@@ -197,11 +203,8 @@ static void nslu2_power_off(void)
 {
 	/* This causes the box to drop the power and go dead. */
 
-	/* enable the pwr cntl gpio */
-	gpio_line_config(NSLU2_PO_GPIO, IXP4XX_GPIO_OUT);
-
-	/* do the deed */
-	gpio_line_set(NSLU2_PO_GPIO, IXP4XX_GPIO_HIGH);
+	/* enable the pwr cntl gpio and assert power off */
+	gpio_direction_output(NSLU2_PO_GPIO, 1);
 }
 
 static irqreturn_t nslu2_power_handler(int irq, void *dev_id)
@@ -223,6 +226,16 @@ static irqreturn_t nslu2_reset_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static int __init nslu2_gpio_init(void)
+{
+	if (!machine_is_nslu2())
+		return 0;
+
+	/* Request the power off GPIO */
+	return gpio_request(NSLU2_PO_GPIO, "power off");
+}
+device_initcall(nslu2_gpio_init);
+
 static void __init nslu2_timer_init(void)
 {
     /* The xtal on this machine is non-standard. */
@@ -231,10 +244,6 @@ static void __init nslu2_timer_init(void)
     /* Call standard timer_init function. */
     ixp4xx_timer_init();
 }
-
-static struct sys_timer nslu2_timer = {
-    .init   = nslu2_timer_init,
-};
 
 static void __init nslu2_init(void)
 {
@@ -247,6 +256,7 @@ static void __init nslu2_init(void)
 	nslu2_flash_resource.end =
 		IXP4XX_EXP_BUS_BASE(0) + ixp4xx_exp_bus_size - 1;
 
+	gpiod_add_lookup_table(&nslu2_i2c_gpiod_table);
 	i2c_register_board_info(0, nslu2_i2c_board_info,
 				ARRAY_SIZE(nslu2_i2c_board_info));
 
@@ -262,16 +272,14 @@ static void __init nslu2_init(void)
 	pm_power_off = nslu2_power_off;
 
 	if (request_irq(gpio_to_irq(NSLU2_RB_GPIO), &nslu2_reset_handler,
-		IRQF_DISABLED | IRQF_TRIGGER_LOW,
-		"NSLU2 reset button", NULL) < 0) {
+		IRQF_TRIGGER_LOW, "NSLU2 reset button", NULL) < 0) {
 
 		printk(KERN_DEBUG "Reset Button IRQ %d not available\n",
 			gpio_to_irq(NSLU2_RB_GPIO));
 	}
 
 	if (request_irq(gpio_to_irq(NSLU2_PB_GPIO), &nslu2_power_handler,
-		IRQF_DISABLED | IRQF_TRIGGER_HIGH,
-		"NSLU2 power button", NULL) < 0) {
+		IRQF_TRIGGER_HIGH, "NSLU2 power button", NULL) < 0) {
 
 		printk(KERN_DEBUG "Power Button IRQ %d not available\n",
 			gpio_to_irq(NSLU2_PB_GPIO));
@@ -303,7 +311,7 @@ MACHINE_START(NSLU2, "Linksys NSLU2")
 	.map_io		= ixp4xx_map_io,
 	.init_early	= ixp4xx_init_early,
 	.init_irq	= ixp4xx_init_irq,
-	.timer          = &nslu2_timer,
+	.init_time	= nslu2_timer_init,
 	.init_machine	= nslu2_init,
 #if defined(CONFIG_PCI)
 	.dma_zone_size	= SZ_64M,

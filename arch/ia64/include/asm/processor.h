@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_PROCESSOR_H
 #define _ASM_IA64_PROCESSOR_H
 
@@ -18,9 +19,6 @@
 #include <asm/kregs.h>
 #include <asm/ptrace.h>
 #include <asm/ustack.h>
-
-#define __ARCH_WANT_UNLOCKED_CTXSW
-#define ARCH_HAS_PREFETCH_SWITCH_STACK
 
 #define IA64_NUM_PHYS_STACK_REG	96
 #define IA64_NUM_DBG_REGS	8
@@ -71,6 +69,7 @@
 #include <linux/compiler.h>
 #include <linux/threads.h>
 #include <linux/types.h>
+#include <linux/bitops.h>
 
 #include <asm/fpu.h>
 #include <asm/page.h>
@@ -319,7 +318,7 @@ struct thread_struct {
 	regs->loadrs = 0;									\
 	regs->r8 = get_dumpable(current->mm);	/* set "don't zap registers" flag */		\
 	regs->r12 = new_sp - 16;	/* allocate 16 byte scratch area */			\
-	if (unlikely(!get_dumpable(current->mm))) {							\
+	if (unlikely(get_dumpable(current->mm) != SUID_DUMP_USER)) {	\
 		/*										\
 		 * Zap scratch regs to avoid leaking bits between processes with different	\
 		 * uid/privileges.								\
@@ -339,22 +338,6 @@ struct task_struct;
  * wait().
  */
 #define release_thread(dead_task)
-
-/*
- * This is the mechanism for creating a new kernel thread.
- *
- * NOTE 1: Only a kernel-only process (ie the swapper or direct
- * descendants who haven't done an "execve()") should use this: it
- * will work within a system call from a "real" process, but the
- * process memory space will not be free'd until both the parent and
- * the child have exited.
- *
- * NOTE 2: This MUST NOT be an inlined function.  Otherwise, we get
- * into trouble in init/main.c when the child thread returns to
- * do_basic_setup() and the timing is such that free_initmem() has
- * been called already.
- */
-extern pid_t kernel_thread (int (*fn)(void *), void *arg, unsigned long flags);
 
 /* Get wait channel for task P.  */
 extern unsigned long get_wchan (struct task_struct *p);
@@ -618,29 +601,6 @@ ia64_set_unat (__u64 *unat, void *spill_addr, unsigned long nat)
 
 	*unat = (*unat & ~mask) | (nat << bit);
 }
-
-/*
- * Return saved PC of a blocked thread.
- * Note that the only way T can block is through a call to schedule() -> switch_to().
- */
-static inline unsigned long
-thread_saved_pc (struct task_struct *t)
-{
-	struct unw_frame_info info;
-	unsigned long ip;
-
-	unw_init_from_blocked_task(&info, t);
-	if (unw_unwind(&info) < 0)
-		return 0;
-	unw_get_ip(&info, &ip);
-	return ip;
-}
-
-/*
- * Get the current instruction/program counter value.
- */
-#define current_text_addr() \
-	({ void *_pc; _pc = (void *)ia64_getreg(_IA64_REG_IP); _pc; })
 
 static inline __u64
 ia64_get_ivr (void)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/arch/m68k/mm/kmap.c
  *
@@ -27,9 +28,9 @@
 
 /*
  * For 040/060 we can use the virtual memory area like other architectures,
- * but for 020/030 we want to use early termination page descriptor and we
+ * but for 020/030 we want to use early termination page descriptors and we
  * can't mix this with normal page descriptors, so we have to copy that code
- * (mm/vmalloc.c) and return appriorate aligned addresses.
+ * (mm/vmalloc.c) and return appropriately aligned addresses.
  */
 
 #ifdef CPU_M68040_OR_M68060_ONLY
@@ -88,7 +89,8 @@ static inline void free_io_area(void *addr)
 	for (p = &iolist ; (tmp = *p) ; p = &tmp->next) {
 		if (tmp->addr == addr) {
 			*p = tmp->next;
-			__iounmap(tmp->addr, tmp->size);
+			/* remove gap added in get_io_area() */
+			__iounmap(tmp->addr, tmp->size - IO_SIZE);
 			kfree(tmp);
 			return;
 		}
@@ -123,6 +125,10 @@ void __iomem *__ioremap(unsigned long physaddr, unsigned long size, int cachefla
 		    && (cacheflag == IOMAP_NOCACHE_SER))
 			return (void __iomem *)physaddr;
 	}
+#endif
+#ifdef CONFIG_COLDFIRE
+	if (__cf_internalio(physaddr))
+		return (void __iomem *) physaddr;
 #endif
 
 #ifdef DEBUG
@@ -224,7 +230,7 @@ void __iomem *__ioremap(unsigned long physaddr, unsigned long size, int cachefla
 EXPORT_SYMBOL(__ioremap);
 
 /*
- * Unmap a ioremap()ed region again
+ * Unmap an ioremap()ed region again
  */
 void iounmap(void __iomem *addr)
 {
@@ -234,6 +240,10 @@ void iounmap(void __iomem *addr)
 	     ((unsigned long)addr > 0x60000000)))
 			free_io_area((__force void *)addr);
 #else
+#ifdef CONFIG_COLDFIRE
+	if (cf_internalio(addr))
+		return;
+#endif
 	free_io_area((__force void *)addr);
 #endif
 }
@@ -241,8 +251,8 @@ EXPORT_SYMBOL(iounmap);
 
 /*
  * __iounmap unmaps nearly everything, so be careful
- * it doesn't free currently pointer/page tables anymore but it
- * wans't used anyway and might be added later.
+ * Currently it doesn't free pointer/page tables anymore but this
+ * wasn't used anyway and might be added later.
  */
 void __iounmap(void *addr, unsigned long size)
 {

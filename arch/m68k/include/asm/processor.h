@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * include/asm-m68k/processor.h
  *
@@ -6,12 +7,6 @@
 
 #ifndef __ASM_M68K_PROCESSOR_H
 #define __ASM_M68K_PROCESSOR_H
-
-/*
- * Default implementation of macro that returns current
- * instruction pointer ("program counter").
- */
-#define current_text_addr() ({ __label__ _l; _l: &&_l;})
 
 #include <linux/thread_info.h>
 #include <asm/segment.h>
@@ -100,7 +95,16 @@ struct thread_struct {
 	.fs	= __KERNEL_DS,						\
 }
 
-#ifdef CONFIG_MMU
+/*
+ * ColdFire stack format sbould be 0x4 for an aligned usp (will always be
+ * true on thread creation). We need to set this explicitly.
+ */
+#ifdef CONFIG_COLDFIRE
+#define setframeformat(_regs)	do { (_regs)->format = 0x4; } while(0)
+#else
+#define setframeformat(_regs)	do { } while (0)
+#endif
+
 /*
  * Do necessary setup to start up a newly executed thread.
  */
@@ -109,41 +113,9 @@ static inline void start_thread(struct pt_regs * regs, unsigned long pc,
 {
 	regs->pc = pc;
 	regs->sr &= ~0x2000;
+	setframeformat(regs);
 	wrusp(usp);
 }
-
-extern int handle_kernel_fault(struct pt_regs *regs);
-
-#else
-
-/*
- * Coldfire stacks need to be re-aligned on trap exit, conventional
- * 68k can handle this case cleanly.
- */
-#ifdef CONFIG_COLDFIRE
-#define reformat(_regs)		do { (_regs)->format = 0x4; } while(0)
-#else
-#define reformat(_regs)		do { } while (0)
-#endif
-
-#define start_thread(_regs, _pc, _usp)                  \
-do {                                                    \
-	(_regs)->pc = (_pc);                            \
-	((struct switch_stack *)(_regs))[-1].a6 = 0;    \
-	reformat(_regs);                                \
-	if (current->mm)                                \
-		(_regs)->d5 = current->mm->start_data;  \
-	(_regs)->sr &= ~0x2000;                         \
-	wrusp(_usp);                                    \
-} while(0)
-
-static inline  int handle_kernel_fault(struct pt_regs *regs)
-{
-	/* Any fault in kernel is fatal on non-mmu */
-	return 0;
-}
-
-#endif
 
 /* Forward declaration, a strange C thing */
 struct task_struct;
@@ -152,17 +124,6 @@ struct task_struct;
 static inline void release_thread(struct task_struct *dead_task)
 {
 }
-
-extern int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
-
-/*
- * Free current thread data structures etc..
- */
-static inline void exit_thread(void)
-{
-}
-
-extern unsigned long thread_saved_pc(struct task_struct *tsk);
 
 unsigned long get_wchan(struct task_struct *p);
 

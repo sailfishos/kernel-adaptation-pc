@@ -18,7 +18,7 @@
 #include <linux/genhd.h>
 
 #define REGBASE		0x18000000
-#define IDT434_REG_BASE	((volatile void *) KSEG1ADDR(REGBASE))
+#define IDT434_REG_BASE ((volatile void *) KSEG1ADDR(REGBASE))
 #define UART0BASE	0x58000
 #define RST		(1 << 15)
 #define DEV0BASE	0x010000
@@ -71,19 +71,13 @@ struct korina_device {
 	struct net_device *dev;
 };
 
-struct cf_device {
-	int gpio_pin;
-	void *dev;
-	struct gendisk *gd;
-};
-
 struct mpmc_device {
 	unsigned char	state;
 	spinlock_t	lock;
-	void __iomem 	*base;
+	void __iomem	*base;
 };
 
 extern void set_latch_u5(unsigned char or_mask, unsigned char nand_mask);
 extern unsigned char get_latch_u5(void);
 
-#endif  /* __ASM_RC32434_RB_H */
+#endif	/* __ASM_RC32434_RB_H */

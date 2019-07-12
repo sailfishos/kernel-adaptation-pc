@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * security/tomoyo/util.c
  *
@@ -5,6 +6,8 @@
  */
 
 #include <linux/slab.h>
+#include <linux/rculist.h>
+
 #include "common.h"
 
 /* Lock for protecting policy. */
@@ -84,38 +87,17 @@ const u8 tomoyo_index2category[TOMOYO_MAX_MAC_INDEX] = {
  * @stamp: Pointer to "struct tomoyo_time".
  *
  * Returns nothing.
- *
- * This function does not handle Y2038 problem.
  */
-void tomoyo_convert_time(time_t time, struct tomoyo_time *stamp)
+void tomoyo_convert_time(time64_t time64, struct tomoyo_time *stamp)
 {
-	static const u16 tomoyo_eom[2][12] = {
-		{ 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365 },
-		{ 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366 }
-	};
-	u16 y;
-	u8 m;
-	bool r;
-	stamp->sec = time % 60;
-	time /= 60;
-	stamp->min = time % 60;
-	time /= 60;
-	stamp->hour = time % 24;
-	time /= 24;
-	for (y = 1970; ; y++) {
-		const unsigned short days = (y & 3) ? 365 : 366;
-		if (time < days)
-			break;
-		time -= days;
-	}
-	r = (y & 3) == 0;
-	for (m = 0; m < 11 && time >= tomoyo_eom[r][m]; m++)
-		;
-	if (m)
-		time -= tomoyo_eom[r][m - 1];
-	stamp->year = y;
-	stamp->month = ++m;
-	stamp->day = ++time;
+	struct tm tm;
+	time64_to_tm(time64, 0, &tm);
+	stamp->sec = tm.tm_sec;
+	stamp->min = tm.tm_min;
+	stamp->hour = tm.tm_hour;
+	stamp->day = tm.tm_mday;
+	stamp->month = tm.tm_mon + 1;
+	stamp->year = tm.tm_year + 1900;
 }
 
 /**
@@ -124,7 +106,7 @@ void tomoyo_convert_time(time_t time, struct tomoyo_time *stamp)
  * @string: String representation for permissions in foo/bar/buz format.
  * @keyword: Keyword to find from @string/
  *
- * Returns ture if @keyword was found in @string, false otherwise.
+ * Returns true if @keyword was found in @string, false otherwise.
  *
  * This function assumes that strncmp(w1, w2, strlen(w1)) != 0 if w1 != w2.
  */
@@ -666,7 +648,7 @@ void tomoyo_fill_path_info(struct tomoyo_path_info *ptr)
 	ptr->const_len = tomoyo_const_part_length(name);
 	ptr->is_dir = len && (name[len - 1] == '/');
 	ptr->is_patterned = (ptr->const_len < len);
-	ptr->hash = full_name_hash(name, len);
+	ptr->hash = full_name_hash(NULL, name, len);
 }
 
 /**
@@ -948,20 +930,18 @@ bool tomoyo_path_matches_pattern(const struct tomoyo_path_info *filename,
  */
 const char *tomoyo_get_exe(void)
 {
+	struct file *exe_file;
+	const char *cp;
 	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
-	const char *cp = NULL;
 
 	if (!mm)
 		return NULL;
-	down_read(&mm->mmap_sem);
-	for (vma = mm->mmap; vma; vma = vma->vm_next) {
-		if ((vma->vm_flags & VM_EXECUTABLE) && vma->vm_file) {
-			cp = tomoyo_realpath_from_path(&vma->vm_file->f_path);
-			break;
-		}
-	}
-	up_read(&mm->mmap_sem);
+	exe_file = get_mm_exe_file(mm);
+	if (!exe_file)
+		return NULL;
+
+	cp = tomoyo_realpath_from_path(&exe_file->f_path);
+	fput(exe_file);
 	return cp;
 }
 

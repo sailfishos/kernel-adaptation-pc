@@ -44,6 +44,7 @@
 #define HW_GPIO_BASE(idx)	(idx * 0x20)
 #define HW_GPIO_OUT(idx)	(HW_GPIO_BASE(idx) + 0)
 #define HW_GPIO_DIR(idx)	(HW_GPIO_BASE(idx) + 4)
+#define HW_GPIO_OWNER		(HW_GPIO_BASE(1) + 0x1c)
 
 #define HW_GPIO_SHUTDOWN	(1<<1)
 #define HW_GPIO_SLOT_LED	(1<<5)
@@ -66,34 +67,12 @@ void __init wii_memory_fixups(void)
 {
 	struct memblock_region *p = memblock.memory.regions;
 
-	/*
-	 * This is part of a workaround to allow the use of two
-	 * discontinuous RAM ranges on the Wii, even if this is
-	 * currently unsupported on 32-bit PowerPC Linux.
-	 *
-	 * We coalesce the two memory ranges of the Wii into a
-	 * single range, then create a reservation for the "hole"
-	 * between both ranges.
-	 */
-
 	BUG_ON(memblock.memory.cnt != 2);
 	BUG_ON(!page_aligned(p[0].base) || !page_aligned(p[1].base));
 
-	/* trim unaligned tail */
-	memblock_remove(ALIGN(p[1].base + p[1].size, PAGE_SIZE),
-			(phys_addr_t)ULLONG_MAX);
-
-	/* determine hole, add & reserve them */
+	/* determine hole */
 	wii_hole_start = ALIGN(p[0].base + p[0].size, PAGE_SIZE);
 	wii_hole_size = p[1].base - wii_hole_start;
-	memblock_add(wii_hole_start, wii_hole_size);
-	memblock_reserve(wii_hole_start, wii_hole_size);
-
-	BUG_ON(memblock.memory.cnt != 1);
-	__memblock_dump_all();
-
-	/* allow ioremapping the address space in the hole */
-	__allow_ioremap_reserved = 1;
 }
 
 unsigned long __init wii_mmu_mapin_mem2(unsigned long top)
@@ -104,6 +83,10 @@ unsigned long __init wii_mmu_mapin_mem2(unsigned long top)
 	/* MEM2 64MB@0x10000000 */
 	delta = wii_hole_start + wii_hole_size;
 	size = top - delta;
+
+	if (__map_without_bats)
+		return delta;
+
 	for (bl = 128<<10; bl < max_size; bl <<= 1) {
 		if (bl * 2 > size)
 			break;
@@ -112,7 +95,7 @@ unsigned long __init wii_mmu_mapin_mem2(unsigned long top)
 	return delta + bl;
 }
 
-static void wii_spin(void)
+static void __noreturn wii_spin(void)
 {
 	local_irq_disable();
 	for (;;)
@@ -133,7 +116,7 @@ static void __iomem *wii_ioremap_hw_regs(char *name, char *compatible)
 	}
 	error = of_address_to_resource(np, 0, &res);
 	if (error) {
-		pr_err("no valid reg found for %s\n", np->name);
+		pr_err("no valid reg found for %pOFn\n", np);
 		goto out_put;
 	}
 
@@ -160,7 +143,7 @@ static void __init wii_setup_arch(void)
 	}
 }
 
-static void wii_restart(char *cmd)
+static void __noreturn wii_restart(char *cmd)
 {
 	local_irq_disable();
 
@@ -176,6 +159,12 @@ static void wii_power_off(void)
 	local_irq_disable();
 
 	if (hw_gpio) {
+		/*
+		 * set the owner of the shutdown pin to ARM, because it is
+		 * accessed through the registers for the ARM, below
+		 */
+		clrbits32(hw_gpio + HW_GPIO_OWNER, HW_GPIO_SHUTDOWN);
+
 		/* make sure that the poweroff GPIO is configured as output */
 		setbits32(hw_gpio + HW_GPIO_DIR(1), HW_GPIO_SHUTDOWN);
 
@@ -185,16 +174,11 @@ static void wii_power_off(void)
 	wii_spin();
 }
 
-static void wii_halt(void)
+static void __noreturn wii_halt(void)
 {
 	if (ppc_md.restart)
 		ppc_md.restart(NULL);
 	wii_spin();
-}
-
-static void __init wii_init_early(void)
-{
-	ug_udbg_init();
 }
 
 static void __init wii_pic_probe(void)
@@ -205,11 +189,12 @@ static void __init wii_pic_probe(void)
 
 static int __init wii_probe(void)
 {
-	unsigned long dt_root;
-
-	dt_root = of_get_flat_dt_root();
-	if (!of_flat_dt_is_compatible(dt_root, "nintendo,wii"))
+	if (!of_machine_is_compatible("nintendo,wii"))
 		return 0;
+
+	pm_power_off = wii_power_off;
+
+	ug_udbg_init();
 
 	return 1;
 }
@@ -223,10 +208,8 @@ static void wii_shutdown(void)
 define_machine(wii) {
 	.name			= "wii",
 	.probe			= wii_probe,
-	.init_early		= wii_init_early,
 	.setup_arch		= wii_setup_arch,
 	.restart		= wii_restart,
-	.power_off		= wii_power_off,
 	.halt			= wii_halt,
 	.init_IRQ		= wii_pic_probe,
 	.get_irq		= flipper_pic_get_irq,
@@ -235,7 +218,7 @@ define_machine(wii) {
 	.machine_shutdown	= wii_shutdown,
 };
 
-static struct of_device_id wii_of_bus[] = {
+static const struct of_device_id wii_of_bus[] = {
 	{ .compatible = "nintendo,hollywood", },
 	{ },
 };
@@ -245,7 +228,7 @@ static int __init wii_device_probe(void)
 	if (!machine_is(wii))
 		return 0;
 
-	of_platform_bus_probe(NULL, wii_of_bus, NULL);
+	of_platform_populate(NULL, wii_of_bus, NULL, NULL);
 	return 0;
 }
 device_initcall(wii_device_probe);

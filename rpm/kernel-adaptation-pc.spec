@@ -6,13 +6,16 @@ Name:       kernel-adaptation-pc
 %define kernel_arch x86
 
 Summary:    Kernel Adaptation PC
-Version:    3.6.11
-Release:    8
+Version:    5.0.21
+Release:    1
 Group:      Kernel/Linux Kernel
 License:    GPLv2
 Source0:    %{name}-%{version}.tar.bz2
 Requires(pre): kmod
 Requires(pre): mkinitrd >= 6.0.39-1
+BuildRequires:  bison
+BuildRequires:  flex
+BuildRequires:  pkgconfig(libssl)
 BuildRequires:  pkgconfig(ncurses)
 Provides:   kernel = %{kernel_version}
 
@@ -106,7 +109,6 @@ cp -a $(find include -mindepth 1 -maxdepth 1 -type d) %{buildroot}/%{kernel_deve
 
 # Make sure the Makefile and version.h have a matching timestamp so that
 # external modules can be built. Also .conf
-touch -r %{buildroot}/%{kernel_devel_dir}/Makefile %{buildroot}/%{kernel_devel_dir}/include/linux/version.h
 touch -r %{buildroot}/%{kernel_devel_dir}/.config %{buildroot}/%{kernel_devel_dir}/include/linux/autoconf.h
 
 # Copy .config to include/config/auto.conf so "make prepare" is unnecessary.
@@ -124,7 +126,6 @@ depmod -a %{kernel_version_build} || :
 # do we need this? should it be versioned only for x86
 /boot/System.map
 /boot/vmlinuz-%{kernel_version_build}
-/lib/firmware/*
 
 %files devel
 %defattr(-,root,root,-)

@@ -1,7 +1,7 @@
 /*
  * Linker script for Hexagon kernel
  *
- * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,12 +18,12 @@
  * 02110-1301, USA.
  */
 
-#define LOAD_OFFSET PAGE_OFFSET
-
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/asm-offsets.h>	/*  Most of the kernel defines are here  */
 #include <asm/mem-layout.h>	/*  except for page_offset  */
 #include <asm/cache.h>		/*  and now we're pulling cache line size  */
+#include <asm/thread_info.h>	/*  and we need THREAD_SIZE too */
+
 OUTPUT_ARCH(hexagon)
 ENTRY(stext)
 
@@ -36,13 +36,9 @@ See asm-generic/sections.h for seemingly required labels.
 
 #define PAGE_SIZE _PAGE_SIZE
 
-/*  This LOAD_OFFSET is temporary for debugging on the simulator; it may change
-    for hypervisor pseudo-physical memory.  */
-
-
 SECTIONS
 {
-	. = PAGE_OFFSET + LOAD_ADDRESS;
+	. = PAGE_OFFSET;
 
 	__init_begin = .;
 	HEAD_TEXT_SECTION
@@ -52,10 +48,11 @@ SECTIONS
 
         . = ALIGN(_PAGE_SIZE);
 	_stext = .;
-	.text : AT(ADDR(.text) - LOAD_OFFSET) {
+	.text : AT(ADDR(.text)) {
 		_text = .;
 		TEXT_TEXT
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
 		*(.fixup)
@@ -65,7 +62,7 @@ SECTIONS
 	INIT_DATA_SECTION(PAGE_SIZE)
 
 	_sdata = .;
-		RW_DATA_SECTION(32,PAGE_SIZE,PAGE_SIZE)
+		RW_DATA_SECTION(32,PAGE_SIZE,_THREAD_SIZE)
 		RO_DATA_SECTION(PAGE_SIZE)
 	_edata = .;
 

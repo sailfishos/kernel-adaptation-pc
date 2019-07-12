@@ -160,15 +160,11 @@ static int options_show(struct seq_file *s, void *p)
 static ssize_t options_write(struct file *file, const char __user *userbuf,
 			     size_t count, loff_t *data)
 {
-	char buf[20];
+	int ret;
 
-	if (count >= sizeof(buf))
-		return -EINVAL;
-	if (copy_from_user(buf, userbuf, count))
-		return -EFAULT;
-	buf[count] = '\0';
-	if (strict_strtoul(buf, 0, &gru_options))
-		return -EINVAL;
+	ret = kstrtoul_from_user(userbuf, count, 0, &gru_options);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -274,16 +270,6 @@ static int options_open(struct inode *inode, struct file *file)
 	return single_open(file, options_show, NULL);
 }
 
-static int cch_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &cch_seq_ops);
-}
-
-static int gru_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &gru_seq_ops);
-}
-
 /* *INDENT-OFF* */
 static const struct file_operations statistics_fops = {
 	.open 		= statistics_open,
@@ -309,73 +295,30 @@ static const struct file_operations options_fops = {
 	.release 	= single_release,
 };
 
-static const struct file_operations cch_fops = {
-	.open 		= cch_open,
-	.read 		= seq_read,
-	.llseek 	= seq_lseek,
-	.release 	= seq_release,
-};
-static const struct file_operations gru_fops = {
-	.open 		= gru_open,
-	.read 		= seq_read,
-	.llseek 	= seq_lseek,
-	.release 	= seq_release,
-};
-
-static struct proc_entry {
-	char *name;
-	umode_t mode;
-	const struct file_operations *fops;
-	struct proc_dir_entry *entry;
-} proc_files[] = {
-	{"statistics", 0644, &statistics_fops},
-	{"mcs_statistics", 0644, &mcs_statistics_fops},
-	{"debug_options", 0644, &options_fops},
-	{"cch_status", 0444, &cch_fops},
-	{"gru_status", 0444, &gru_fops},
-	{NULL}
-};
-/* *INDENT-ON* */
-
 static struct proc_dir_entry *proc_gru __read_mostly;
-
-static int create_proc_file(struct proc_entry *p)
-{
-	p->entry = proc_create(p->name, p->mode, proc_gru, p->fops);
-	if (!p->entry)
-		return -1;
-	return 0;
-}
-
-static void delete_proc_files(void)
-{
-	struct proc_entry *p;
-
-	if (proc_gru) {
-		for (p = proc_files; p->name; p++)
-			if (p->entry)
-				remove_proc_entry(p->name, proc_gru);
-		remove_proc_entry("gru", proc_gru->parent);
-	}
-}
 
 int gru_proc_init(void)
 {
-	struct proc_entry *p;
-
 	proc_gru = proc_mkdir("sgi_uv/gru", NULL);
-
-	for (p = proc_files; p->name; p++)
-		if (create_proc_file(p))
-			goto err;
+	if (!proc_gru)
+		return -1;
+	if (!proc_create("statistics", 0644, proc_gru, &statistics_fops))
+		goto err;
+	if (!proc_create("mcs_statistics", 0644, proc_gru, &mcs_statistics_fops))
+		goto err;
+	if (!proc_create("debug_options", 0644, proc_gru, &options_fops))
+		goto err;
+	if (!proc_create_seq("cch_status", 0444, proc_gru, &cch_seq_ops))
+		goto err;
+	if (!proc_create_seq("gru_status", 0444, proc_gru, &gru_seq_ops))
+		goto err;
 	return 0;
-
 err:
-	delete_proc_files();
+	remove_proc_subtree("sgi_uv/gru", NULL);
 	return -1;
 }
 
 void gru_proc_exit(void)
 {
-	delete_proc_files();
+	remove_proc_subtree("sgi_uv/gru", NULL);
 }

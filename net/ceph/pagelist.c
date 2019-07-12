@@ -1,9 +1,30 @@
-
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/module.h>
 #include <linux/gfp.h>
+#include <linux/slab.h>
 #include <linux/pagemap.h>
 #include <linux/highmem.h>
 #include <linux/ceph/pagelist.h>
+
+struct ceph_pagelist *ceph_pagelist_alloc(gfp_t gfp_flags)
+{
+	struct ceph_pagelist *pl;
+
+	pl = kmalloc(sizeof(*pl), gfp_flags);
+	if (!pl)
+		return NULL;
+
+	INIT_LIST_HEAD(&pl->head);
+	pl->mapped_tail = NULL;
+	pl->length = 0;
+	pl->room = 0;
+	INIT_LIST_HEAD(&pl->free_list);
+	pl->num_pages_free = 0;
+	refcount_set(&pl->refcnt, 1);
+
+	return pl;
+}
+EXPORT_SYMBOL(ceph_pagelist_alloc);
 
 static void ceph_pagelist_unmap_tail(struct ceph_pagelist *pl)
 {
@@ -14,8 +35,10 @@ static void ceph_pagelist_unmap_tail(struct ceph_pagelist *pl)
 	}
 }
 
-int ceph_pagelist_release(struct ceph_pagelist *pl)
+void ceph_pagelist_release(struct ceph_pagelist *pl)
 {
+	if (!refcount_dec_and_test(&pl->refcnt))
+		return;
 	ceph_pagelist_unmap_tail(pl);
 	while (!list_empty(&pl->head)) {
 		struct page *page = list_first_entry(&pl->head, struct page,
@@ -24,7 +47,7 @@ int ceph_pagelist_release(struct ceph_pagelist *pl)
 		__free_page(page);
 	}
 	ceph_pagelist_free_reserve(pl);
-	return 0;
+	kfree(pl);
 }
 EXPORT_SYMBOL(ceph_pagelist_release);
 
@@ -54,7 +77,7 @@ int ceph_pagelist_append(struct ceph_pagelist *pl, const void *buf, size_t len)
 		size_t bit = pl->room;
 		int ret;
 
-		memcpy(pl->mapped_tail + (pl->length & ~PAGE_CACHE_MASK),
+		memcpy(pl->mapped_tail + (pl->length & ~PAGE_MASK),
 		       buf, bit);
 		pl->length += bit;
 		pl->room -= bit;
@@ -65,7 +88,7 @@ int ceph_pagelist_append(struct ceph_pagelist *pl, const void *buf, size_t len)
 			return ret;
 	}
 
-	memcpy(pl->mapped_tail + (pl->length & ~PAGE_CACHE_MASK), buf, len);
+	memcpy(pl->mapped_tail + (pl->length & ~PAGE_MASK), buf, len);
 	pl->length += len;
 	pl->room -= len;
 	return 0;
@@ -134,8 +157,8 @@ int ceph_pagelist_truncate(struct ceph_pagelist *pl,
 	ceph_pagelist_unmap_tail(pl);
 	while (pl->head.prev != c->page_lru) {
 		page = list_entry(pl->head.prev, struct page, lru);
-		list_del(&page->lru);                /* remove from pagelist */
-		list_add_tail(&page->lru, &pl->free_list); /* add to reserve */
+		/* move from pagelist to reserve */
+		list_move_tail(&page->lru, &pl->free_list);
 		++pl->num_pages_free;
 	}
 	pl->room = c->room;

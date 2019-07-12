@@ -84,12 +84,6 @@ static int page_is_used(struct mtdoops_context *cxt, int page)
 	return test_bit(page, cxt->oops_page_used);
 }
 
-static void mtdoops_erase_callback(struct erase_info *done)
-{
-	wait_queue_head_t *wait_q = (wait_queue_head_t *)done->priv;
-	wake_up(wait_q);
-}
-
 static int mtdoops_erase_block(struct mtdoops_context *cxt, int offset)
 {
 	struct mtd_info *mtd = cxt->mtd;
@@ -97,33 +91,19 @@ static int mtdoops_erase_block(struct mtdoops_context *cxt, int offset)
 	u32 start_page = start_page_offset / record_size;
 	u32 erase_pages = mtd->erasesize / record_size;
 	struct erase_info erase;
-	DECLARE_WAITQUEUE(wait, current);
-	wait_queue_head_t wait_q;
 	int ret;
 	int page;
 
-	init_waitqueue_head(&wait_q);
-	erase.mtd = mtd;
-	erase.callback = mtdoops_erase_callback;
 	erase.addr = offset;
 	erase.len = mtd->erasesize;
-	erase.priv = (u_long)&wait_q;
-
-	set_current_state(TASK_INTERRUPTIBLE);
-	add_wait_queue(&wait_q, &wait);
 
 	ret = mtd_erase(mtd, &erase);
 	if (ret) {
-		set_current_state(TASK_RUNNING);
-		remove_wait_queue(&wait_q, &wait);
 		printk(KERN_WARNING "mtdoops: erase of region [0x%llx, 0x%llx] on \"%s\" failed\n",
 		       (unsigned long long)erase.addr,
 		       (unsigned long long)erase.len, mtddev);
 		return ret;
 	}
-
-	schedule();  /* Wait for erase to finish. */
-	remove_wait_queue(&wait_q, &wait);
 
 	/* Mark pages as unused */
 	for (page = start_page; page < start_page + erase_pages; page++)
@@ -169,14 +149,7 @@ static void mtdoops_workfunc_erase(struct work_struct *work)
 			cxt->nextpage = 0;
 	}
 
-	while (1) {
-		ret = mtd_block_isbad(mtd, cxt->nextpage * record_size);
-		if (!ret)
-			break;
-		if (ret < 0) {
-			printk(KERN_ERR "mtdoops: block_isbad failed, aborting\n");
-			return;
-		}
+	while ((ret = mtd_block_isbad(mtd, cxt->nextpage * record_size)) > 0) {
 badblock:
 		printk(KERN_WARNING "mtdoops: bad block at %08lx\n",
 		       cxt->nextpage * record_size);
@@ -188,6 +161,11 @@ badblock:
 			printk(KERN_ERR "mtdoops: all blocks bad!\n");
 			return;
 		}
+	}
+
+	if (ret < 0) {
+		printk(KERN_ERR "mtdoops: mtd_block_isbad failed, aborting\n");
+		return;
 	}
 
 	for (j = 0, ret = -1; (j < 3) && (ret < 0); j++)
@@ -273,7 +251,7 @@ static void find_next_position(struct mtdoops_context *cxt)
 
 		if (count[0] == 0xffffffff && count[1] == 0xffffffff)
 			mark_page_unused(cxt, page);
-		if (count[0] == 0xffffffff)
+		if (count[0] == 0xffffffff || count[1] != MTDOOPS_KERNMSG_MAGIC)
 			continue;
 		if (maxcount == 0xffffffff) {
 			maxcount = count[0];
@@ -291,14 +269,13 @@ static void find_next_position(struct mtdoops_context *cxt)
 		}
 	}
 	if (maxcount == 0xffffffff) {
-		cxt->nextpage = 0;
-		cxt->nextcount = 1;
-		schedule_work(&cxt->work_erase);
-		return;
+		cxt->nextpage = cxt->oops_pages - 1;
+		cxt->nextcount = 0;
 	}
-
-	cxt->nextpage = maxpos;
-	cxt->nextcount = maxcount;
+	else {
+		cxt->nextpage = maxpos;
+		cxt->nextcount = maxcount;
+	}
 
 	mtdoops_inc_counter(cxt);
 }
@@ -353,8 +330,10 @@ static void mtdoops_notify_add(struct mtd_info *mtd)
 	}
 
 	/* oops_page_used is a bit field */
-	cxt->oops_page_used = vmalloc(DIV_ROUND_UP(mtdoops_pages,
-			BITS_PER_LONG) * sizeof(unsigned long));
+	cxt->oops_page_used =
+		vmalloc(array_size(sizeof(unsigned long),
+				   DIV_ROUND_UP(mtdoops_pages,
+						BITS_PER_LONG)));
 	if (!cxt->oops_page_used) {
 		printk(KERN_ERR "mtdoops: could not allocate page array\n");
 		return;
@@ -387,8 +366,8 @@ static void mtdoops_notify_remove(struct mtd_info *mtd)
 		printk(KERN_WARNING "mtdoops: could not unregister kmsg_dumper\n");
 
 	cxt->mtd = NULL;
-	flush_work_sync(&cxt->work_erase);
-	flush_work_sync(&cxt->work_write);
+	flush_work(&cxt->work_erase);
+	flush_work(&cxt->work_write);
 }
 
 

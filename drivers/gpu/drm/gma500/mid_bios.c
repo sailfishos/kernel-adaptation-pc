@@ -25,20 +25,21 @@
 
 #include <drm/drmP.h>
 #include <drm/drm.h>
-#include "gma_drm.h"
+#include <drm/gma_drm.h>
 #include "psb_drv.h"
 #include "mid_bios.h"
 
 static void mid_get_fuse_settings(struct drm_device *dev)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
-	struct pci_dev *pci_root = pci_get_bus_and_slot(0, 0);
+	struct pci_dev *pci_root =
+		pci_get_domain_bus_and_slot(pci_domain_nr(dev->pdev->bus),
+					    0, 0);
 	uint32_t fuse_value = 0;
 	uint32_t fuse_value_tmp = 0;
 
 #define FB_REG06 0xD0810600
 #define FB_MIPI_DISABLE  (1 << 11)
-#define FB_REG09 0xD0810900
 #define FB_REG09 0xD0810900
 #define FB_SKU_MASK  0x7000
 #define FB_SKU_SHIFT 12
@@ -105,7 +106,9 @@ static void mid_get_fuse_settings(struct drm_device *dev)
 static void mid_get_pci_revID(struct drm_psb_private *dev_priv)
 {
 	uint32_t platform_rev_id = 0;
-	struct pci_dev *pci_gfx_root = pci_get_bus_and_slot(0, PCI_DEVFN(2, 0));
+	int domain = pci_domain_nr(dev_priv->dev->pdev->bus);
+	struct pci_dev *pci_gfx_root =
+		pci_get_domain_bus_and_slot(domain, 0, PCI_DEVFN(2, 0));
 
 	if (pci_gfx_root == NULL) {
 		WARN_ON(1);
@@ -118,20 +121,20 @@ static void mid_get_pci_revID(struct drm_psb_private *dev_priv)
 					dev_priv->platform_rev_id);
 }
 
-struct vbt_header {
+struct mid_vbt_header {
 	u32 signature;
 	u8 revision;
 } __packed;
 
 /* The same for r0 and r1 */
 struct vbt_r0 {
-	struct vbt_header vbt_header;
+	struct mid_vbt_header vbt_header;
 	u8 size;
 	u8 checksum;
 } __packed;
 
 struct vbt_r10 {
-	struct vbt_header vbt_header;
+	struct mid_vbt_header vbt_header;
 	u8 checksum;
 	u16 size;
 	u8 panel_count;
@@ -236,9 +239,9 @@ static int mid_get_vbt_data_r10(struct drm_psb_private *dev_priv, u32 addr)
 	if (read_vbt_r10(addr, &vbt))
 		return -1;
 
-	gct = kmalloc(sizeof(*gct) * vbt.panel_count, GFP_KERNEL);
+	gct = kmalloc_array(vbt.panel_count, sizeof(*gct), GFP_KERNEL);
 	if (!gct)
-		return -1;
+		return -ENOMEM;
 
 	gct_virtual = ioremap(addr + sizeof(vbt),
 			sizeof(*gct) * vbt.panel_count);
@@ -281,8 +284,10 @@ static void mid_get_vbt_data(struct drm_psb_private *dev_priv)
 	struct drm_device *dev = dev_priv->dev;
 	u32 addr;
 	u8 __iomem *vbt_virtual;
-	struct vbt_header vbt_header;
-	struct pci_dev *pci_gfx_root = pci_get_bus_and_slot(0, PCI_DEVFN(2, 0));
+	struct mid_vbt_header vbt_header;
+	struct pci_dev *pci_gfx_root =
+		pci_get_domain_bus_and_slot(pci_domain_nr(dev->pdev->bus),
+					    0, PCI_DEVFN(2, 0));
 	int ret = -1;
 
 	/* Get the address of the platform config vbt */

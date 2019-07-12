@@ -75,7 +75,9 @@ static struct wf_control *fan_slots;
 static struct wf_control *cpufreq_clamp;
 
 /* Set to kick the control loop into life */
-static int wf_smu_all_controls_ok, wf_smu_all_sensors_ok, wf_smu_started;
+static int wf_smu_all_controls_ok, wf_smu_all_sensors_ok;
+static bool wf_smu_started;
+static bool wf_smu_overtemp;
 
 /* Failure handling.. could be nicer */
 #define FAILURE_FAN		0x01
@@ -198,7 +200,7 @@ static void wf_smu_create_cpu_fans(void)
 	wf_cpu_pid_init(&wf_smu_cpu_fans->pid, &pid_param);
 
 	DBG("wf: CPU Fan control initialized.\n");
-	DBG("    ttarged=%d.%03d, tmax=%d.%03d, min=%d RPM, max=%d RPM\n",
+	DBG("    ttarget=%d.%03d, tmax=%d.%03d, min=%d RPM, max=%d RPM\n",
 	    FIX32TOPRINT(pid_param.ttarget), FIX32TOPRINT(pid_param.tmax),
 	    pid_param.min, pid_param.max);
 
@@ -466,7 +468,7 @@ static void wf_smu_tick(void)
 		wf_smu_create_drive_fans();
 		wf_smu_create_slots_fans();
 		wf_smu_create_cpu_fans();
-		wf_smu_started = 1;
+		wf_smu_started = true;
 	}
 
 	/* Skipping ticks */
@@ -517,6 +519,7 @@ static void wf_smu_tick(void)
 	if (new_failure & FAILURE_OVERTEMP) {
 		wf_set_overtemp();
 		wf_smu_skipping = 2;
+		wf_smu_overtemp = true;
 	}
 
 	/* We only clear the overtemp condition if overtemp is cleared
@@ -525,8 +528,10 @@ static void wf_smu_tick(void)
 	 * the control loop levels, but we don't want to keep it clear
 	 * here in this case
 	 */
-	if (new_failure == 0 && last_failure & FAILURE_OVERTEMP)
+	if (!wf_smu_failure_state && wf_smu_overtemp) {
 		wf_clear_overtemp();
+		wf_smu_overtemp = false;
+	}
 }
 
 
@@ -642,7 +647,7 @@ static int wf_smu_probe(struct platform_device *ddev)
 	return 0;
 }
 
-static int __devexit wf_smu_remove(struct platform_device *ddev)
+static int wf_smu_remove(struct platform_device *ddev)
 {
 	wf_unregister_client(&wf_smu_events);
 
@@ -692,10 +697,9 @@ static int __devexit wf_smu_remove(struct platform_device *ddev)
 
 static struct platform_driver wf_smu_driver = {
         .probe = wf_smu_probe,
-        .remove = __devexit_p(wf_smu_remove),
+        .remove = wf_smu_remove,
 	.driver = {
 		.name = "windfarm",
-		.owner	= THIS_MODULE,
 	},
 };
 

@@ -6,7 +6,7 @@
  * Copyright (C) 2006 Silicon Graphics, Inc. All rights reserved.
  */
 
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <asm/sn/types.h>
@@ -132,7 +132,7 @@ static s64 sn_device_fixup_war(u64 nasid, u64 widget, int device,
 	printk_once(KERN_WARNING
 		"PROM version < 4.50 -- implementing old PROM flush WAR\n");
 
-	war_list = kzalloc(DEV_PER_WIDGET * sizeof(*war_list), GFP_KERNEL);
+	war_list = kcalloc(DEV_PER_WIDGET, sizeof(*war_list), GFP_KERNEL);
 	BUG_ON(!war_list);
 
 	SAL_CALL_NOLOCK(isrv, SN_SAL_IOIF_GET_WIDGET_DMAFLUSH_LIST,
@@ -229,7 +229,6 @@ void sn_pci_fixup_slot(struct pci_dev *dev, struct pcidev_info *pcidev_info,
 {
 	int segment = pci_domain_nr(dev->bus);
 	struct pcibus_bussoft *bs;
-	struct pci_bus *host_pci_bus;
 	struct pci_dev *host_pci_dev;
 	unsigned int bus_no, devfn;
 
@@ -245,8 +244,7 @@ void sn_pci_fixup_slot(struct pci_dev *dev, struct pcidev_info *pcidev_info,
 
 	bus_no = (pcidev_info->pdi_slot_host_handle >> 32) & 0xff;
 	devfn = pcidev_info->pdi_slot_host_handle & 0xffffffff;
- 	host_pci_bus = pci_find_bus(segment, bus_no);
- 	host_pci_dev = pci_get_slot(host_pci_bus, devfn);
+	host_pci_dev = pci_get_domain_bus_and_slot(segment, bus_no, devfn);
 
 	pcidev_info->host_pci_dev = host_pci_dev;
 	pcidev_info->pdi_linux_pcidev = dev;
@@ -387,16 +385,15 @@ void __init hubdev_init_node(nodepda_t * npda, cnodeid_t node)
 {
 	struct hubdev_info *hubdev_info;
 	int size;
-	pg_data_t *pg;
 
 	size = sizeof(struct hubdev_info);
 
 	if (node >= num_online_nodes())	/* Headless/memless IO nodes */
-		pg = NODE_DATA(0);
-	else
-		pg = NODE_DATA(node);
+		node = 0;
 
-	hubdev_info = (struct hubdev_info *)alloc_bootmem_node(pg, size);
+	hubdev_info = (struct hubdev_info *)memblock_alloc_node(size,
+								SMP_CACHE_BYTES,
+								node);
 
 	npda->pdinfo = (void *)hubdev_info;
 }
@@ -437,8 +434,7 @@ void sn_generate_path(struct pci_bus *pci_bus, char *address)
 						geo_slot(geoid));
 }
 
-void __devinit
-sn_pci_fixup_bus(struct pci_bus *bus)
+void sn_pci_fixup_bus(struct pci_bus *bus)
 {
 
 	if (SN_ACPI_BASE_SUPPORT())
@@ -482,11 +478,6 @@ sn_io_early_init(void)
 	pcibr_init_provider();
 	tioca_init_provider();
 	tioce_init_provider();
-
-	/*
-	 * This is needed to avoid bounce limit checks in the blk layer
-	 */
-	ia64_max_iommu_merge_mask = ~PAGE_MASK;
 
 	sn_irq_lh_init();
 	INIT_LIST_HEAD(&sn_sysdata_list);

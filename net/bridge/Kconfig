@@ -17,7 +17,7 @@ config BRIDGE
 	  other third party bridge products.
 
 	  In order to use the Ethernet bridge, you'll need the bridge
-	  configuration tools; see <file:Documentation/networking/bridge.txt>
+	  configuration tools; see <file:Documentation/networking/bridge.rst>
 	  for location. Please read the Bridge mini-HOWTO for more
 	  information.
 
@@ -42,6 +42,20 @@ config BRIDGE_IGMP_SNOOPING
 	  If you say Y here, then the Ethernet bridge will be able selectively
 	  forward multicast traffic based on IGMP/MLD traffic received from
 	  each port.
+
+	  Say N to exclude this support and reduce the binary size.
+
+	  If unsure, say Y.
+
+config BRIDGE_VLAN_FILTERING
+	bool "VLAN filtering"
+	depends on BRIDGE
+	depends on VLAN_8021Q
+	default n
+	---help---
+	  If you say Y here, then the Ethernet bridge will be able selectively
+	  receive and forward traffic based on VLAN information in the packet
+	  any VLAN information configured on the bridge port or bridge device.
 
 	  Say N to exclude this support and reduce the binary size.
 

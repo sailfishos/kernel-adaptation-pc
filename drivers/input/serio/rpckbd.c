@@ -21,15 +21,10 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * Should you need to contact me, the author, you can do so either by
- * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
- * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/module.h>
 #include <linux/interrupt.h>
-#include <linux/init.h>
 #include <linux/serio.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
@@ -114,7 +109,7 @@ static void rpckbd_close(struct serio *port)
  * Allocate and initialize serio structure for subsequent registration
  * with serio core.
  */
-static int __devinit rpckbd_probe(struct platform_device *dev)
+static int rpckbd_probe(struct platform_device *dev)
 {
 	struct rpckbd_data *rpckbd;
 	struct serio *serio;
@@ -153,7 +148,7 @@ static int __devinit rpckbd_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __devexit rpckbd_remove(struct platform_device *dev)
+static int rpckbd_remove(struct platform_device *dev)
 {
 	struct serio *serio = platform_get_drvdata(dev);
 	struct rpckbd_data *rpckbd = serio->port_data;
@@ -166,10 +161,9 @@ static int __devexit rpckbd_remove(struct platform_device *dev)
 
 static struct platform_driver rpckbd_driver = {
 	.probe		= rpckbd_probe,
-	.remove		= __devexit_p(rpckbd_remove),
+	.remove		= rpckbd_remove,
 	.driver		= {
 		.name	= "kart",
-		.owner	= THIS_MODULE,
 	},
 };
 module_platform_driver(rpckbd_driver);

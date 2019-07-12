@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SCLP line mode console driver
  *
@@ -124,9 +125,34 @@ static void sclp_console_sync_queue(void)
  * temporary write buffer without further waiting on a final new line.
  */
 static void
-sclp_console_timeout(unsigned long data)
+sclp_console_timeout(struct timer_list *unused)
 {
 	sclp_conbuf_emit();
+}
+
+/*
+ * Drop oldest console buffer if sclp_con_drop is set
+ */
+static int
+sclp_console_drop_buffer(void)
+{
+	struct list_head *list;
+	struct sclp_buffer *buffer;
+	void *page;
+
+	if (!sclp_console_drop)
+		return 0;
+	list = sclp_con_outqueue.next;
+	if (sclp_con_queue_running)
+		/* The first element is in I/O */
+		list = list->next;
+	if (list == &sclp_con_outqueue)
+		return 0;
+	list_del(list);
+	buffer = list_entry(list, struct sclp_buffer, list);
+	page = sclp_unmake_buffer(buffer);
+	list_add_tail((struct list_head *) page, &sclp_con_pages);
+	return 1;
 }
 
 /*
@@ -150,9 +176,13 @@ sclp_console_write(struct console *console, const char *message,
 	do {
 		/* make sure we have a console output buffer */
 		if (sclp_conbuf == NULL) {
+			if (list_empty(&sclp_con_pages))
+				sclp_console_full++;
 			while (list_empty(&sclp_con_pages)) {
 				if (sclp_con_suspended)
 					goto out;
+				if (sclp_console_drop_buffer())
+					break;
 				spin_unlock_irqrestore(&sclp_con_lock, flags);
 				sclp_sync_wait();
 				spin_lock_irqsave(&sclp_con_lock, flags);
@@ -181,11 +211,7 @@ sclp_console_write(struct console *console, const char *message,
 	/* Setup timer to output current console buffer after 1/10 second */
 	if (sclp_conbuf != NULL && sclp_chars_in_buffer(sclp_conbuf) != 0 &&
 	    !timer_pending(&sclp_con_timer)) {
-		init_timer(&sclp_con_timer);
-		sclp_con_timer.function = sclp_console_timeout;
-		sclp_con_timer.data = 0UL;
-		sclp_con_timer.expires = jiffies + HZ/10;
-		add_timer(&sclp_con_timer);
+		mod_timer(&sclp_con_timer, jiffies + HZ / 10);
 	}
 out:
 	spin_unlock_irqrestore(&sclp_con_lock, flags);
@@ -290,21 +316,22 @@ sclp_console_init(void)
 	int i;
 	int rc;
 
-	if (!CONSOLE_IS_SCLP)
+	/* SCLP consoles are handled together */
+	if (!(CONSOLE_IS_SCLP || CONSOLE_IS_VT220))
 		return 0;
 	rc = sclp_rw_init();
 	if (rc)
 		return rc;
 	/* Allocate pages for output buffering */
 	INIT_LIST_HEAD(&sclp_con_pages);
-	for (i = 0; i < MAX_CONSOLE_PAGES; i++) {
+	for (i = 0; i < sclp_console_pages; i++) {
 		page = (void *) get_zeroed_page(GFP_KERNEL | GFP_DMA);
 		list_add_tail(page, &sclp_con_pages);
 	}
 	INIT_LIST_HEAD(&sclp_con_outqueue);
 	spin_lock_init(&sclp_con_lock);
 	sclp_conbuf = NULL;
-	init_timer(&sclp_con_timer);
+	timer_setup(&sclp_con_timer, sclp_console_timeout, 0);
 
 	/* Set output format */
 	if (MACHINE_IS_VM)

@@ -15,7 +15,8 @@ than x86.  Check the v86d documentation for a list of currently supported
 arches.
 
 v86d source code can be downloaded from the following website:
-  http://dev.gentoo.org/~spock/projects/uvesafb
+
+  https://github.com/mjanusz/v86d
 
 Please refer to the v86d documentation for detailed configuration and
 installation instructions.
@@ -81,17 +82,11 @@ pmipal  Use the protected mode interface for palette changes.
 
 mtrr:n  Setup memory type range registers for the framebuffer
         where n:
-              0 - disabled (equivalent to nomtrr) (default)
-              1 - uncachable
-              2 - write-back
-              3 - write-combining
-              4 - write-through
+              0 - disabled (equivalent to nomtrr)
+              3 - write-combining (default)
 
-        If you see the following in dmesg, choose the type that matches
-        the old one.  In this example, use "mtrr:2".
-...
-mtrr: type mismatch for e0000000,8000000 old: write-back new: write-combining
-...
+	Values other than 0 and 3 will result in a warning and will be
+	treated just like 3.
 
 nomtrr  Do not use memory type range registers.
 
@@ -183,7 +178,7 @@ from the Video BIOS if you set pixclock to 0 in fb_var_screeninfo.
 
 --
  Michal Januszewski <spock@gentoo.org>
- Last updated: 2009-03-30
+ Last updated: 2017-10-10
 
  Documentation of the uvesafb options is loosely based on vesafb.txt.
 

@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  Driver for NEC VR4100 series Serial Interface Unit.
  *
  *  Copyright (C) 2004-2008  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  Based on drivers/serial/8250.c, by Russell King.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #if defined(CONFIG_SERIAL_VR41XX_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
@@ -313,12 +300,10 @@ static void siu_break_ctl(struct uart_port *port, int ctl)
 
 static inline void receive_chars(struct uart_port *port, uint8_t *status)
 {
-	struct tty_struct *tty;
 	uint8_t lsr, ch;
 	char flag;
 	int max_count = RX_MAX_COUNT;
 
-	tty = port->state->port.tty;
 	lsr = *status;
 
 	do {
@@ -365,7 +350,7 @@ static inline void receive_chars(struct uart_port *port, uint8_t *status)
 		lsr = siu_read(port, UART_LSR);
 	} while ((lsr & UART_LSR_DR) && (max_count-- > 0));
 
-	tty_flip_buffer_push(tty);
+	tty_flip_buffer_push(&port->state->port);
 
 	*status = lsr;
 }
@@ -561,7 +546,7 @@ static void siu_set_termios(struct uart_port *port, struct ktermios *new,
 	port->read_status_mask = UART_LSR_THRE | UART_LSR_OE | UART_LSR_DR;
 	if (c_iflag & INPCK)
 		port->read_status_mask |= UART_LSR_FE | UART_LSR_PE;
-	if (c_iflag & (BRKINT | PARMRK))
+	if (c_iflag & (IGNBRK | BRKINT | PARMRK))
 		port->read_status_mask |= UART_LSR_BI;
 
 	port->ignore_status_mask = 0;
@@ -683,7 +668,7 @@ static int siu_verify_port(struct uart_port *port, struct serial_struct *serial)
 	return 0;
 }
 
-static struct uart_ops siu_uart_ops = {
+static const struct uart_ops siu_uart_ops = {
 	.tx_empty	= siu_tx_empty,
 	.set_mctrl	= siu_set_mctrl,
 	.get_mctrl	= siu_get_mctrl,
@@ -707,7 +692,7 @@ static int siu_init_ports(struct platform_device *pdev)
 {
 	struct uart_port *port;
 	struct resource *res;
-	int *type = pdev->dev.platform_data;
+	int *type = dev_get_platdata(&pdev->dev);
 	int i;
 
 	if (!type)
@@ -823,7 +808,7 @@ static struct console siu_console = {
 	.data	= &siu_uart_driver,
 };
 
-static int __devinit siu_console_init(void)
+static int siu_console_init(void)
 {
 	struct uart_port *port;
 	int i;
@@ -849,7 +834,6 @@ void __init vr41xx_siu_early_setup(struct uart_port *port)
 	siu_uart_ports[port->line].type = port->type;
 	siu_uart_ports[port->line].uartclk = SIU_BAUD_BASE * 16;
 	siu_uart_ports[port->line].mapbase = port->mapbase;
-	siu_uart_ports[port->line].mapbase = port->mapbase;
 	siu_uart_ports[port->line].ops = &siu_uart_ops;
 }
 
@@ -867,7 +851,7 @@ static struct uart_driver siu_uart_driver = {
 	.cons		= SERIAL_VR41XX_CONSOLE,
 };
 
-static int __devinit siu_probe(struct platform_device *dev)
+static int siu_probe(struct platform_device *dev)
 {
 	struct uart_port *port;
 	int num, i, retval;
@@ -901,7 +885,7 @@ static int __devinit siu_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __devexit siu_remove(struct platform_device *dev)
+static int siu_remove(struct platform_device *dev)
 {
 	struct uart_port *port;
 	int i;
@@ -952,12 +936,11 @@ static int siu_resume(struct platform_device *dev)
 
 static struct platform_driver siu_device_driver = {
 	.probe		= siu_probe,
-	.remove		= __devexit_p(siu_remove),
+	.remove		= siu_remove,
 	.suspend	= siu_suspend,
 	.resume		= siu_resume,
 	.driver		= {
 		.name	= "SIU",
-		.owner	= THIS_MODULE,
 	},
 };
 

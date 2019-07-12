@@ -39,6 +39,8 @@
 #include <asm/asm-offsets.h>
 #include <asm/ptrace.h>
 #include <asm/synch.h>
+#include <asm/export.h>
+#include <asm/code-patching-asm.h>
 #include "head_booke.h"
 
 
@@ -381,10 +383,9 @@ interrupt_base:
 	/* Increment, rollover, and store TLB index */
 	addi	r13,r13,1
 
+	patch_site 0f, patch__tlb_44x_hwater_D
 	/* Compare with watermark (instruction gets patched) */
-	.globl tlb_44x_patch_hwater_D
-tlb_44x_patch_hwater_D:
-	cmpwi	0,r13,1			/* reserve entries */
+0:	cmpwi	0,r13,1			/* reserve entries */
 	ble	5f
 	li	r13,0
 5:
@@ -477,10 +478,9 @@ tlb_44x_patch_hwater_D:
 	/* Increment, rollover, and store TLB index */
 	addi	r13,r13,1
 
+	patch_site 0f, patch__tlb_44x_hwater_I
 	/* Compare with watermark (instruction gets patched) */
-	.globl tlb_44x_patch_hwater_I
-tlb_44x_patch_hwater_I:
-	cmpwi	0,r13,1			/* reserve entries */
+0:	cmpwi	0,r13,1			/* reserve entries */
 	ble	5f
 	li	r13,0
 5:
@@ -769,6 +769,8 @@ finish_tlb_load_47x:
 	 */
 	DEBUG_CRIT_EXCEPTION
 
+interrupt_end:
+
 /*
  * Global functions
  */
@@ -781,16 +783,6 @@ _GLOBAL(__fixup_440A_mcheck)
 	mtspr	SPRN_IVOR1,r3
 	sync
 	blr
-
-/*
- * extern void giveup_fpu(struct task_struct *prev)
- *
- * The 44x core does not have an FPU.
- */
-#ifndef CONFIG_PPC_FPU
-_GLOBAL(giveup_fpu)
-	blr
-#endif
 
 _GLOBAL(set_context)
 
@@ -814,7 +806,7 @@ _GLOBAL(set_context)
 _GLOBAL(init_cpu_state)
 	mflr	r22
 #ifdef CONFIG_PPC_47x
-	/* We use the PVR to differenciate 44x cores from 476 */
+	/* We use the PVR to differentiate 44x cores from 476 */
 	mfspr	r3,SPRN_PVR
 	srwi	r3,r3,16
 	cmplwi	cr0,r3,PVR_476FPE@h
@@ -1218,10 +1210,12 @@ clear_utlb_entry:
 
 	/* We configure icbi to invalidate 128 bytes at a time since the
 	 * current 32-bit kernel code isn't too happy with icache != dcache
-	 * block size
+	 * block size. We also disable the BTAC as this can cause errors
+	 * in some circumstances (see IBM Erratum 47).
 	 */
 	mfspr	r3,SPRN_CCR0
 	oris	r3,r3,0x0020
+	ori	r3,r3,0x0040
 	mtspr	SPRN_CCR0,r3
 	isync
 
@@ -1260,6 +1254,7 @@ sdata:
 	.globl	empty_zero_page
 empty_zero_page:
 	.space	PAGE_SIZE
+EXPORT_SYMBOL(empty_zero_page)
 
 /*
  * To support >32-bit physical addresses, we use an 8KB pgdir.

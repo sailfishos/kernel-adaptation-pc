@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    SCLP line mode terminal driver.
  *
@@ -7,7 +8,6 @@
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
-#include <linux/module.h>
 #include <linux/kmod.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
@@ -16,7 +16,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/gfp.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "ctrlchar.h"
 #include "sclp.h"
@@ -65,7 +65,7 @@ sclp_tty_open(struct tty_struct *tty, struct file *filp)
 {
 	tty_port_tty_set(&sclp_port, tty);
 	tty->driver_data = NULL;
-	tty->low_latency = 0;
+	sclp_port.low_latency = 0;
 	return 0;
 }
 
@@ -84,8 +84,8 @@ sclp_tty_close(struct tty_struct *tty, struct file *filp)
  * to change as output buffers get emptied, or if the output flow
  * control is acted. This is not an exact number because not every
  * character needs the same space in the sccb. The worst case is
- * a string of newlines. Every newlines creates a new mto which
- * needs 8 bytes.
+ * a string of newlines. Every newline creates a new message which
+ * needs 82 bytes.
  */
 static int
 sclp_tty_write_room (struct tty_struct *tty)
@@ -97,9 +97,9 @@ sclp_tty_write_room (struct tty_struct *tty)
 	spin_lock_irqsave(&sclp_tty_lock, flags);
 	count = 0;
 	if (sclp_ttybuf != NULL)
-		count = sclp_buffer_space(sclp_ttybuf) / sizeof(struct mto);
+		count = sclp_buffer_space(sclp_ttybuf) / sizeof(struct msg_buf);
 	list_for_each(l, &sclp_tty_pages)
-		count += NR_EMPTY_MTO_PER_SCCB;
+		count += NR_EMPTY_MSG_PER_SCCB;
 	spin_unlock_irqrestore(&sclp_tty_lock, flags);
 	return count;
 }
@@ -107,7 +107,6 @@ sclp_tty_write_room (struct tty_struct *tty)
 static void
 sclp_ttybuf_callback(struct sclp_buffer *buffer, int rc)
 {
-	struct tty_struct *tty;
 	unsigned long flags;
 	void *page;
 
@@ -125,12 +124,8 @@ sclp_ttybuf_callback(struct sclp_buffer *buffer, int rc)
 					    struct sclp_buffer, list);
 		spin_unlock_irqrestore(&sclp_tty_lock, flags);
 	} while (buffer && sclp_emit_buffer(buffer, sclp_ttybuf_callback));
-	/* check if the tty needs a wake up call */
-	tty = tty_port_tty_get(&sclp_port);
-	if (tty != NULL) {
-		tty_wakeup(tty);
-		tty_kref_put(tty);
-	}
+
+	tty_port_tty_wakeup(&sclp_port);
 }
 
 static inline void
@@ -156,7 +151,7 @@ __sclp_ttybuf_emit(struct sclp_buffer *buffer)
  * temporary write buffer.
  */
 static void
-sclp_tty_timeout(unsigned long data)
+sclp_tty_timeout(struct timer_list *unused)
 {
 	unsigned long flags;
 	struct sclp_buffer *buf;
@@ -223,11 +218,7 @@ static int sclp_tty_write_string(const unsigned char *str, int count, int may_fa
 	/* Setup timer to output current console buffer after 1/10 second */
 	if (sclp_ttybuf && sclp_chars_in_buffer(sclp_ttybuf) &&
 	    !timer_pending(&sclp_tty_timer)) {
-		init_timer(&sclp_tty_timer);
-		sclp_tty_timer.function = sclp_tty_timeout;
-		sclp_tty_timer.data = 0UL;
-		sclp_tty_timer.expires = jiffies + HZ/10;
-		add_timer(&sclp_tty_timer);
+		mod_timer(&sclp_tty_timer, jiffies + HZ / 10);
 	}
 	spin_unlock_irqrestore(&sclp_tty_lock, flags);
 out:
@@ -342,8 +333,8 @@ sclp_tty_input(unsigned char* buf, unsigned int count)
 	case CTRLCHAR_SYSRQ:
 		break;
 	case CTRLCHAR_CTRL:
-		tty_insert_flip_char(tty, cchar, TTY_NORMAL);
-		tty_flip_buffer_push(tty);
+		tty_insert_flip_char(&sclp_port, cchar, TTY_NORMAL);
+		tty_flip_buffer_push(&sclp_port);
 		break;
 	case CTRLCHAR_NONE:
 		/* send (normal) input to line discipline */
@@ -351,11 +342,11 @@ sclp_tty_input(unsigned char* buf, unsigned int count)
 		    (strncmp((const char *) buf + count - 2, "^n", 2) &&
 		     strncmp((const char *) buf + count - 2, "\252n", 2))) {
 			/* add the auto \n */
-			tty_insert_flip_string(tty, buf, count);
-			tty_insert_flip_char(tty, '\n', TTY_NORMAL);
+			tty_insert_flip_string(&sclp_port, buf, count);
+			tty_insert_flip_char(&sclp_port, '\n', TTY_NORMAL);
 		} else
-			tty_insert_flip_string(tty, buf, count - 2);
-		tty_flip_buffer_push(tty);
+			tty_insert_flip_string(&sclp_port, buf, count - 2);
+		tty_flip_buffer_push(&sclp_port);
 		break;
 	}
 	tty_kref_put(tty);
@@ -511,7 +502,10 @@ sclp_tty_init(void)
 	int i;
 	int rc;
 
-	if (!CONSOLE_IS_SCLP)
+	/* z/VM multiplexes the line mode output on the 32xx screen */
+	if (MACHINE_IS_VM && !CONSOLE_IS_SCLP)
+		return 0;
+	if (!sclp.has_linemode)
 		return 0;
 	driver = alloc_tty_driver(1);
 	if (!driver)
@@ -534,7 +528,7 @@ sclp_tty_init(void)
 	}
 	INIT_LIST_HEAD(&sclp_tty_outqueue);
 	spin_lock_init(&sclp_tty_lock);
-	init_timer(&sclp_tty_timer);
+	timer_setup(&sclp_tty_timer, sclp_tty_timeout, 0);
 	sclp_ttybuf = NULL;
 	sclp_tty_buffer_count = 0;
 	if (MACHINE_IS_VM) {
@@ -547,13 +541,14 @@ sclp_tty_init(void)
 		sclp_tty_tolower = 1;
 	}
 	sclp_tty_chars_count = 0;
-	tty_port_init(&sclp_port);
 
 	rc = sclp_register(&sclp_input_event);
 	if (rc) {
 		put_tty_driver(driver);
 		return rc;
 	}
+
+	tty_port_init(&sclp_port);
 
 	driver->driver_name = "sclp_line";
 	driver->name = "sclp_line";
@@ -563,16 +558,18 @@ sclp_tty_init(void)
 	driver->subtype = SYSTEM_TYPE_TTY;
 	driver->init_termios = tty_std_termios;
 	driver->init_termios.c_iflag = IGNBRK | IGNPAR;
-	driver->init_termios.c_oflag = ONLCR | XTABS;
+	driver->init_termios.c_oflag = ONLCR;
 	driver->init_termios.c_lflag = ISIG | ECHO;
 	driver->flags = TTY_DRIVER_REAL_RAW;
 	tty_set_operations(driver, &sclp_ops);
+	tty_port_link_device(&sclp_port, driver, 0);
 	rc = tty_register_driver(driver);
 	if (rc) {
 		put_tty_driver(driver);
+		tty_port_destroy(&sclp_port);
 		return rc;
 	}
 	sclp_tty_driver = driver;
 	return 0;
 }
-module_init(sclp_tty_init);
+device_initcall(sclp_tty_init);

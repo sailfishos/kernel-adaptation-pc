@@ -148,36 +148,35 @@ struct ubifs_global_debug_info {
 	unsigned int tst_rcvry:1;
 };
 
-#define ubifs_assert(expr) do {                                                \
+void ubifs_assert_failed(struct ubifs_info *c, const char *expr,
+	const char *file, int line);
+
+#define ubifs_assert(c, expr) do {                                             \
 	if (unlikely(!(expr))) {                                               \
-		printk(KERN_CRIT "UBIFS assert failed in %s at %u (pid %d)\n", \
-		       __func__, __LINE__, current->pid);                      \
-		dump_stack();                                                  \
+		ubifs_assert_failed((struct ubifs_info *)c, #expr, __FILE__,   \
+		 __LINE__);                                                    \
 	}                                                                      \
 } while (0)
 
 #define ubifs_assert_cmt_locked(c) do {                                        \
 	if (unlikely(down_write_trylock(&(c)->commit_sem))) {                  \
 		up_write(&(c)->commit_sem);                                    \
-		printk(KERN_CRIT "commit lock is not locked!\n");              \
-		ubifs_assert(0);                                               \
+		ubifs_err(c, "commit lock is not locked!\n");                  \
+		ubifs_assert(c, 0);                                            \
 	}                                                                      \
 } while (0)
 
 #define ubifs_dbg_msg(type, fmt, ...) \
-	pr_debug("UBIFS DBG " type ": " fmt "\n", ##__VA_ARGS__)
+	pr_debug("UBIFS DBG " type " (pid %d): " fmt "\n", current->pid,       \
+		 ##__VA_ARGS__)
 
 #define DBG_KEY_BUF_LEN 48
 #define ubifs_dbg_msg_key(type, key, fmt, ...) do {                            \
 	char __tmp_key_buf[DBG_KEY_BUF_LEN];                                   \
-	pr_debug("UBIFS DBG " type ": " fmt "%s\n", ##__VA_ARGS__,             \
+	pr_debug("UBIFS DBG " type " (pid %d): " fmt "%s\n", current->pid,     \
+		 ##__VA_ARGS__,                                                \
 		 dbg_snprintf_key(c, key, __tmp_key_buf, DBG_KEY_BUF_LEN));    \
 } while (0)
-
-/* Just a debugging messages not related to any specific UBIFS subsystem */
-#define dbg_msg(fmt, ...)                                                      \
-	printk(KERN_DEBUG "UBIFS DBG (pid %d): %s: " fmt "\n", current->pid,   \
-	       __func__, ##__VA_ARGS__)
 
 /* General messages */
 #define dbg_gen(fmt, ...)   ubifs_dbg_msg("gen", fmt, ##__VA_ARGS__)

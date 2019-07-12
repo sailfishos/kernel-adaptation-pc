@@ -1,15 +1,10 @@
-/* linux/arch/arm/plat-s3c64xx/setup-sdhci-gpio.c
- *
- * Copyright 2008 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *	http://armlinux.simtec.co.uk/
- *
- * S3C64XX - Helper functions for setting up SDHCI device(s) GPIO (HSMMC)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright 2008 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//	http://armlinux.simtec.co.uk/
+//
+// S3C64XX - Helper functions for setting up SDHCI device(s) GPIO (HSMMC)
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -20,6 +15,7 @@
 
 #include <plat/gpio-cfg.h>
 #include <plat/sdhci.h>
+#include <mach/gpio-samsung.h>
 
 void s3c64xx_setup_sdhci0_cfg_gpio(struct platform_device *dev, int width)
 {

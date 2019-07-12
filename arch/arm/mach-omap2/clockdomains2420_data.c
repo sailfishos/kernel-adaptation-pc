@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * OMAP2420 clockdomains
  *
@@ -35,6 +36,7 @@
 #include <linux/kernel.h>
 #include <linux/io.h>
 
+#include "soc.h"
 #include "clockdomain.h"
 #include "prm2xxx_3xxx.h"
 #include "cm2xxx_3xxx.h"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ATMEL_TDES_REGS_H__
 #define __ATMEL_TDES_REGS_H__
 
@@ -68,6 +69,8 @@
 #define	TDES_XTEARNDR	0x70
 #define	TDES_XTEARNDR_XTEA_RNDS_MASK	(0x3F << 0)
 #define	TDES_XTEARNDR_XTEA_RNDS_OFFSET	0
+
+#define	TDES_HW_VERSION	0xFC
 
 #define TDES_RPR		0x100
 #define TDES_RCR		0x104

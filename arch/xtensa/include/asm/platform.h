@@ -30,11 +30,6 @@ extern void platform_init(bp_tag_t*);
 extern void platform_setup (char **);
 
 /*
- * platform_init_irq is called from init_IRQ.
- */
-extern void platform_init_irq (void);
-
-/*
  * platform_restart is called to restart the system.
  */
 extern void platform_restart (void);
@@ -74,5 +69,37 @@ extern int platform_pcibios_fixup (void);
  */
 extern void platform_calibrate_ccount (void);
 
-#endif	/* _XTENSA_PLATFORM_H */
+/*
+ * Flush and reset the mmu, simulate a processor reset, and
+ * jump to the reset vector.
+ */
+void cpu_reset(void) __attribute__((noreturn));
 
+/*
+ * Memory caching is platform-dependent in noMMU xtensa configurations.
+ * The following set of functions should be implemented in platform code
+ * in order to enable coherent DMA memory operations when CONFIG_MMU is not
+ * enabled. Default implementations do nothing and issue a warning.
+ */
+
+/*
+ * Check whether p points to a cached memory.
+ */
+bool platform_vaddr_cached(const void *p);
+
+/*
+ * Check whether p points to an uncached memory.
+ */
+bool platform_vaddr_uncached(const void *p);
+
+/*
+ * Return pointer to an uncached view of the cached sddress p.
+ */
+void *platform_vaddr_to_uncached(void *p);
+
+/*
+ * Return pointer to a cached view of the uncached sddress p.
+ */
+void *platform_vaddr_to_cached(void *p);
+
+#endif	/* _XTENSA_PLATFORM_H */

@@ -23,173 +23,274 @@
  * Authors:
  *	Dave Airlie <airlied@redhat.com>
  */
-#include "drmP.h"
-#include "i915_drv.h"
+
 #include <linux/dma-buf.h>
+#include <linux/reservation.h>
+
+#include <drm/drmP.h>
+
+#include "i915_drv.h"
+
+static struct drm_i915_gem_object *dma_buf_to_obj(struct dma_buf *buf)
+{
+	return to_intel_bo(buf->priv);
+}
 
 static struct sg_table *i915_gem_map_dma_buf(struct dma_buf_attachment *attachment,
-				      enum dma_data_direction dir)
+					     enum dma_data_direction dir)
 {
-	struct drm_i915_gem_object *obj = attachment->dmabuf->priv;
-	struct drm_device *dev = obj->base.dev;
-	int npages = obj->base.size / PAGE_SIZE;
-	struct sg_table *sg = NULL;
-	int ret;
-	int nents;
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(attachment->dmabuf);
+	struct sg_table *st;
+	struct scatterlist *src, *dst;
+	int ret, i;
 
-	ret = i915_mutex_lock_interruptible(dev);
+	ret = i915_gem_object_pin_pages(obj);
 	if (ret)
-		return ERR_PTR(ret);
+		goto err;
 
-	if (!obj->pages) {
-		ret = i915_gem_object_get_pages_gtt(obj, __GFP_NORETRY | __GFP_NOWARN);
-		if (ret)
-			goto out;
+	/* Copy sg so that we make an independent mapping */
+	st = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
+	if (st == NULL) {
+		ret = -ENOMEM;
+		goto err_unpin_pages;
 	}
 
-	/* link the pages into an SG then map the sg */
-	sg = drm_prime_pages_to_sg(obj->pages, npages);
-	nents = dma_map_sg(attachment->dev, sg->sgl, sg->nents, dir);
-out:
-	mutex_unlock(&dev->struct_mutex);
-	return sg;
+	ret = sg_alloc_table(st, obj->mm.pages->nents, GFP_KERNEL);
+	if (ret)
+		goto err_free;
+
+	src = obj->mm.pages->sgl;
+	dst = st->sgl;
+	for (i = 0; i < obj->mm.pages->nents; i++) {
+		sg_set_page(dst, sg_page(src), src->length, 0);
+		dst = sg_next(dst);
+		src = sg_next(src);
+	}
+
+	if (!dma_map_sg(attachment->dev, st->sgl, st->nents, dir)) {
+		ret = -ENOMEM;
+		goto err_free_sg;
+	}
+
+	return st;
+
+err_free_sg:
+	sg_free_table(st);
+err_free:
+	kfree(st);
+err_unpin_pages:
+	i915_gem_object_unpin_pages(obj);
+err:
+	return ERR_PTR(ret);
 }
 
 static void i915_gem_unmap_dma_buf(struct dma_buf_attachment *attachment,
-			    struct sg_table *sg, enum dma_data_direction dir)
+				   struct sg_table *sg,
+				   enum dma_data_direction dir)
 {
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(attachment->dmabuf);
+
 	dma_unmap_sg(attachment->dev, sg->sgl, sg->nents, dir);
 	sg_free_table(sg);
 	kfree(sg);
-}
 
-static void i915_gem_dmabuf_release(struct dma_buf *dma_buf)
-{
-	struct drm_i915_gem_object *obj = dma_buf->priv;
-
-	if (obj->base.export_dma_buf == dma_buf) {
-		/* drop the reference on the export fd holds */
-		obj->base.export_dma_buf = NULL;
-		drm_gem_object_unreference_unlocked(&obj->base);
-	}
+	i915_gem_object_unpin_pages(obj);
 }
 
 static void *i915_gem_dmabuf_vmap(struct dma_buf *dma_buf)
 {
-	struct drm_i915_gem_object *obj = dma_buf->priv;
-	struct drm_device *dev = obj->base.dev;
-	int ret;
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
 
-	ret = i915_mutex_lock_interruptible(dev);
-	if (ret)
-		return ERR_PTR(ret);
-
-	if (obj->dma_buf_vmapping) {
-		obj->vmapping_count++;
-		goto out_unlock;
-	}
-
-	if (!obj->pages) {
-		ret = i915_gem_object_get_pages_gtt(obj, __GFP_NORETRY | __GFP_NOWARN);
-		if (ret) {
-			mutex_unlock(&dev->struct_mutex);
-			return ERR_PTR(ret);
-		}
-	}
-
-	obj->dma_buf_vmapping = vmap(obj->pages, obj->base.size / PAGE_SIZE, 0, PAGE_KERNEL);
-	if (!obj->dma_buf_vmapping) {
-		DRM_ERROR("failed to vmap object\n");
-		goto out_unlock;
-	}
-
-	obj->vmapping_count = 1;
-out_unlock:
-	mutex_unlock(&dev->struct_mutex);
-	return obj->dma_buf_vmapping;
+	return i915_gem_object_pin_map(obj, I915_MAP_WB);
 }
 
 static void i915_gem_dmabuf_vunmap(struct dma_buf *dma_buf, void *vaddr)
 {
-	struct drm_i915_gem_object *obj = dma_buf->priv;
-	struct drm_device *dev = obj->base.dev;
-	int ret;
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
 
-	ret = i915_mutex_lock_interruptible(dev);
-	if (ret)
-		return;
-
-	--obj->vmapping_count;
-	if (obj->vmapping_count == 0) {
-		vunmap(obj->dma_buf_vmapping);
-		obj->dma_buf_vmapping = NULL;
-	}
-	mutex_unlock(&dev->struct_mutex);
+	i915_gem_object_unpin_map(obj);
 }
 
-static void *i915_gem_dmabuf_kmap_atomic(struct dma_buf *dma_buf, unsigned long page_num)
-{
-	return NULL;
-}
-
-static void i915_gem_dmabuf_kunmap_atomic(struct dma_buf *dma_buf, unsigned long page_num, void *addr)
-{
-
-}
 static void *i915_gem_dmabuf_kmap(struct dma_buf *dma_buf, unsigned long page_num)
 {
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
+	struct page *page;
+
+	if (page_num >= obj->base.size >> PAGE_SHIFT)
+		return NULL;
+
+	if (!i915_gem_object_has_struct_page(obj))
+		return NULL;
+
+	if (i915_gem_object_pin_pages(obj))
+		return NULL;
+
+	/* Synchronisation is left to the caller (via .begin_cpu_access()) */
+	page = i915_gem_object_get_page(obj, page_num);
+	if (IS_ERR(page))
+		goto err_unpin;
+
+	return kmap(page);
+
+err_unpin:
+	i915_gem_object_unpin_pages(obj);
 	return NULL;
 }
 
 static void i915_gem_dmabuf_kunmap(struct dma_buf *dma_buf, unsigned long page_num, void *addr)
 {
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
 
+	kunmap(virt_to_page(addr));
+	i915_gem_object_unpin_pages(obj);
 }
 
 static int i915_gem_dmabuf_mmap(struct dma_buf *dma_buf, struct vm_area_struct *vma)
 {
-	return -EINVAL;
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
+	int ret;
+
+	if (obj->base.size < vma->vm_end - vma->vm_start)
+		return -EINVAL;
+
+	if (!obj->base.filp)
+		return -ENODEV;
+
+	ret = call_mmap(obj->base.filp, vma);
+	if (ret)
+		return ret;
+
+	fput(vma->vm_file);
+	vma->vm_file = get_file(obj->base.filp);
+
+	return 0;
+}
+
+static int i915_gem_begin_cpu_access(struct dma_buf *dma_buf, enum dma_data_direction direction)
+{
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
+	struct drm_device *dev = obj->base.dev;
+	bool write = (direction == DMA_BIDIRECTIONAL || direction == DMA_TO_DEVICE);
+	int err;
+
+	err = i915_gem_object_pin_pages(obj);
+	if (err)
+		return err;
+
+	err = i915_mutex_lock_interruptible(dev);
+	if (err)
+		goto out;
+
+	err = i915_gem_object_set_to_cpu_domain(obj, write);
+	mutex_unlock(&dev->struct_mutex);
+
+out:
+	i915_gem_object_unpin_pages(obj);
+	return err;
+}
+
+static int i915_gem_end_cpu_access(struct dma_buf *dma_buf, enum dma_data_direction direction)
+{
+	struct drm_i915_gem_object *obj = dma_buf_to_obj(dma_buf);
+	struct drm_device *dev = obj->base.dev;
+	int err;
+
+	err = i915_gem_object_pin_pages(obj);
+	if (err)
+		return err;
+
+	err = i915_mutex_lock_interruptible(dev);
+	if (err)
+		goto out;
+
+	err = i915_gem_object_set_to_gtt_domain(obj, false);
+	mutex_unlock(&dev->struct_mutex);
+
+out:
+	i915_gem_object_unpin_pages(obj);
+	return err;
 }
 
 static const struct dma_buf_ops i915_dmabuf_ops =  {
 	.map_dma_buf = i915_gem_map_dma_buf,
 	.unmap_dma_buf = i915_gem_unmap_dma_buf,
-	.release = i915_gem_dmabuf_release,
-	.kmap = i915_gem_dmabuf_kmap,
-	.kmap_atomic = i915_gem_dmabuf_kmap_atomic,
-	.kunmap = i915_gem_dmabuf_kunmap,
-	.kunmap_atomic = i915_gem_dmabuf_kunmap_atomic,
+	.release = drm_gem_dmabuf_release,
+	.map = i915_gem_dmabuf_kmap,
+	.unmap = i915_gem_dmabuf_kunmap,
 	.mmap = i915_gem_dmabuf_mmap,
 	.vmap = i915_gem_dmabuf_vmap,
 	.vunmap = i915_gem_dmabuf_vunmap,
+	.begin_cpu_access = i915_gem_begin_cpu_access,
+	.end_cpu_access = i915_gem_end_cpu_access,
 };
 
 struct dma_buf *i915_gem_prime_export(struct drm_device *dev,
-				struct drm_gem_object *gem_obj, int flags)
+				      struct drm_gem_object *gem_obj, int flags)
 {
 	struct drm_i915_gem_object *obj = to_intel_bo(gem_obj);
+	DEFINE_DMA_BUF_EXPORT_INFO(exp_info);
 
-	return dma_buf_export(obj, &i915_dmabuf_ops,
-						  obj->base.size, 0600);
+	exp_info.ops = &i915_dmabuf_ops;
+	exp_info.size = gem_obj->size;
+	exp_info.flags = flags;
+	exp_info.priv = gem_obj;
+	exp_info.resv = obj->resv;
+
+	if (obj->ops->dmabuf_export) {
+		int ret = obj->ops->dmabuf_export(obj);
+		if (ret)
+			return ERR_PTR(ret);
+	}
+
+	return drm_gem_dmabuf_export(dev, &exp_info);
 }
 
+static int i915_gem_object_get_pages_dmabuf(struct drm_i915_gem_object *obj)
+{
+	struct sg_table *pages;
+	unsigned int sg_page_sizes;
+
+	pages = dma_buf_map_attachment(obj->base.import_attach,
+				       DMA_BIDIRECTIONAL);
+	if (IS_ERR(pages))
+		return PTR_ERR(pages);
+
+	sg_page_sizes = i915_sg_page_sizes(pages->sgl);
+
+	__i915_gem_object_set_pages(obj, pages, sg_page_sizes);
+
+	return 0;
+}
+
+static void i915_gem_object_put_pages_dmabuf(struct drm_i915_gem_object *obj,
+					     struct sg_table *pages)
+{
+	dma_buf_unmap_attachment(obj->base.import_attach, pages,
+				 DMA_BIDIRECTIONAL);
+}
+
+static const struct drm_i915_gem_object_ops i915_gem_object_dmabuf_ops = {
+	.get_pages = i915_gem_object_get_pages_dmabuf,
+	.put_pages = i915_gem_object_put_pages_dmabuf,
+};
+
 struct drm_gem_object *i915_gem_prime_import(struct drm_device *dev,
-				struct dma_buf *dma_buf)
+					     struct dma_buf *dma_buf)
 {
 	struct dma_buf_attachment *attach;
-	struct sg_table *sg;
 	struct drm_i915_gem_object *obj;
-	int npages;
-	int size;
 	int ret;
 
 	/* is this one of own objects? */
 	if (dma_buf->ops == &i915_dmabuf_ops) {
-		obj = dma_buf->priv;
+		obj = dma_buf_to_obj(dma_buf);
 		/* is it from our device? */
 		if (obj->base.dev == dev) {
-			drm_gem_object_reference(&obj->base);
-			return &obj->base;
+			/*
+			 * Importing dmabuf exported from out own gem increases
+			 * refcount on gem itself instead of f_count of dmabuf.
+			 */
+			return &i915_gem_object_get(obj)->base;
 		}
 	}
 
@@ -198,35 +299,39 @@ struct drm_gem_object *i915_gem_prime_import(struct drm_device *dev,
 	if (IS_ERR(attach))
 		return ERR_CAST(attach);
 
-	sg = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
-	if (IS_ERR(sg)) {
-		ret = PTR_ERR(sg);
+	get_dma_buf(dma_buf);
+
+	obj = i915_gem_object_alloc(to_i915(dev));
+	if (obj == NULL) {
+		ret = -ENOMEM;
 		goto fail_detach;
 	}
 
-	size = dma_buf->size;
-	npages = size / PAGE_SIZE;
-
-	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
-	if (obj == NULL) {
-		ret = -ENOMEM;
-		goto fail_unmap;
-	}
-
-	ret = drm_gem_private_object_init(dev, &obj->base, size);
-	if (ret) {
-		kfree(obj);
-		goto fail_unmap;
-	}
-
-	obj->sg_table = sg;
+	drm_gem_private_object_init(dev, &obj->base, dma_buf->size);
+	i915_gem_object_init(obj, &i915_gem_object_dmabuf_ops);
 	obj->base.import_attach = attach;
+	obj->resv = dma_buf->resv;
+
+	/* We use GTT as shorthand for a coherent domain, one that is
+	 * neither in the GPU cache nor in the CPU cache, where all
+	 * writes are immediately visible in memory. (That's not strictly
+	 * true, but it's close! There are internal buffers such as the
+	 * write-combined buffer or a delay through the chipset for GTT
+	 * writes that do require us to treat GTT as a separate cache domain.)
+	 */
+	obj->read_domains = I915_GEM_DOMAIN_GTT;
+	obj->write_domain = 0;
 
 	return &obj->base;
 
-fail_unmap:
-	dma_buf_unmap_attachment(attach, sg, DMA_BIDIRECTIONAL);
 fail_detach:
 	dma_buf_detach(dma_buf, attach);
+	dma_buf_put(dma_buf);
+
 	return ERR_PTR(ret);
 }
+
+#if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)
+#include "selftests/mock_dmabuf.c"
+#include "selftests/i915_gem_dmabuf.c"
+#endif

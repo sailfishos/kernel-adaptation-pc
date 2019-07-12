@@ -427,7 +427,7 @@ Memhscx_empty_fifo(struct BCState *bcs, int count)
 		t += sprintf(t, "hscx_empty_fifo %c cnt %d",
 			     bcs->hw.hscx.hscx ? 'B' : 'A', count);
 		QuickHex(t, ptr, count);
-		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -469,7 +469,7 @@ Memhscx_fill_fifo(struct BCState *bcs)
 		t += sprintf(t, "hscx_fill_fifo %c cnt %d",
 			     bcs->hw.hscx.hscx ? 'B' : 'A', count);
 		QuickHex(t, ptr, count);
-		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -511,7 +511,8 @@ Memhscx_interrupt(struct IsdnCardState *cs, u_char val, u_char hscx)
 				if (!(skb = dev_alloc_skb(count)))
 					printk(KERN_WARNING "HSCX: receive out of memory\n");
 				else {
-					memcpy(skb_put(skb, count), bcs->hw.hscx.rcvbuf, count);
+					skb_put_data(skb, bcs->hw.hscx.rcvbuf,
+						     count);
 					skb_queue_tail(&bcs->rqueue, skb);
 				}
 			}
@@ -526,7 +527,8 @@ Memhscx_interrupt(struct IsdnCardState *cs, u_char val, u_char hscx)
 			if (!(skb = dev_alloc_skb(fifo_size)))
 				printk(KERN_WARNING "HiSax: receive out of memory\n");
 			else {
-				memcpy(skb_put(skb, fifo_size), bcs->hw.hscx.rcvbuf, fifo_size);
+				skb_put_data(skb, bcs->hw.hscx.rcvbuf,
+					     fifo_size);
 				skb_queue_tail(&bcs->rqueue, skb);
 			}
 			bcs->hw.hscx.rcvidx = 0;
@@ -796,8 +798,9 @@ reset_diva(struct IsdnCardState *cs)
 #define DIVA_ASSIGN 1
 
 static void
-diva_led_handler(struct IsdnCardState *cs)
+diva_led_handler(struct timer_list *t)
 {
+	struct IsdnCardState *cs = from_timer(cs, t, hw.diva.tl);
 	int blink = 0;
 
 	if ((cs->subtyp == DIVA_IPAC_ISA) ||
@@ -826,7 +829,6 @@ diva_led_handler(struct IsdnCardState *cs)
 
 	byteout(cs->hw.diva.ctrl, cs->hw.diva.ctrl_reg);
 	if (blink) {
-		init_timer(&cs->hw.diva.tl);
 		cs->hw.diva.tl.expires = jiffies + ((blink * HZ) / 1000);
 		add_timer(&cs->hw.diva.tl);
 	}
@@ -898,13 +900,13 @@ Diva_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 	    (cs->subtyp != DIVA_IPAC_PCI) &&
 	    (cs->subtyp != DIVA_IPACX_PCI)) {
 		spin_lock_irqsave(&cs->lock, flags);
-		diva_led_handler(cs);
+		diva_led_handler(&cs->hw.diva.tl);
 		spin_unlock_irqrestore(&cs->lock, flags);
 	}
 	return (0);
 }
 
-static int __devinit setup_diva_common(struct IsdnCardState *cs)
+static int setup_diva_common(struct IsdnCardState *cs)
 {
 	int bytecnt;
 	u_char val;
@@ -976,9 +978,7 @@ static int __devinit setup_diva_common(struct IsdnCardState *cs)
 		printk(KERN_INFO "Diva: IPACX Design Id: %x\n",
 		       MemReadISAC_IPACX(cs, IPACX_ID) & 0x3F);
 	} else { /* DIVA 2.0 */
-		cs->hw.diva.tl.function = (void *) diva_led_handler;
-		cs->hw.diva.tl.data = (long) cs;
-		init_timer(&cs->hw.diva.tl);
+		timer_setup(&cs->hw.diva.tl, diva_led_handler, 0);
 		cs->readisac  = &ReadISAC;
 		cs->writeisac = &WriteISAC;
 		cs->readisacfifo  = &ReadISACfifo;
@@ -997,7 +997,7 @@ static int __devinit setup_diva_common(struct IsdnCardState *cs)
 
 #ifdef CONFIG_ISA
 
-static int __devinit setup_diva_isa(struct IsdnCard *card)
+static int setup_diva_isa(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	u_char val;
@@ -1033,7 +1033,7 @@ static int __devinit setup_diva_isa(struct IsdnCard *card)
 
 #else	/* if !CONFIG_ISA */
 
-static int __devinit setup_diva_isa(struct IsdnCard *card)
+static int setup_diva_isa(struct IsdnCard *card)
 {
 	return (-1);	/* card not found; continue search */
 }
@@ -1041,7 +1041,7 @@ static int __devinit setup_diva_isa(struct IsdnCard *card)
 #endif	/* CONFIG_ISA */
 
 #ifdef __ISAPNP__
-static struct isapnp_device_id diva_ids[] __devinitdata = {
+static struct isapnp_device_id diva_ids[] = {
 	{ ISAPNP_VENDOR('G', 'D', 'I'), ISAPNP_FUNCTION(0x51),
 	  ISAPNP_VENDOR('G', 'D', 'I'), ISAPNP_FUNCTION(0x51),
 	  (unsigned long) "Diva picola" },
@@ -1063,10 +1063,10 @@ static struct isapnp_device_id diva_ids[] __devinitdata = {
 	{ 0, }
 };
 
-static struct isapnp_device_id *ipid __devinitdata = &diva_ids[0];
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct isapnp_device_id *ipid = &diva_ids[0];
+static struct pnp_card *pnp_c = NULL;
 
-static int __devinit setup_diva_isapnp(struct IsdnCard *card)
+static int setup_diva_isapnp(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	struct pnp_dev *pnp_d;
@@ -1093,7 +1093,7 @@ static int __devinit setup_diva_isapnp(struct IsdnCard *card)
 				}
 				card->para[1] = pnp_port_start(pnp_d, 0);
 				card->para[0] = pnp_irq(pnp_d, 0);
-				if (!card->para[0] || !card->para[1]) {
+				if (card->para[0] == -1 || !card->para[1]) {
 					printk(KERN_ERR "Diva PnP:some resources are missing %ld/%lx\n",
 					       card->para[0], card->para[1]);
 					pnp_disable_dev(pnp_d);
@@ -1141,7 +1141,7 @@ static int __devinit setup_diva_isapnp(struct IsdnCard *card)
 
 #else	/* if !ISAPNP */
 
-static int __devinit setup_diva_isapnp(struct IsdnCard *card)
+static int setup_diva_isapnp(struct IsdnCard *card)
 {
 	return (-1);	/* card not found; continue search */
 }
@@ -1149,12 +1149,12 @@ static int __devinit setup_diva_isapnp(struct IsdnCard *card)
 #endif	/* ISAPNP */
 
 #ifdef CONFIG_PCI
-static struct pci_dev *dev_diva __devinitdata = NULL;
-static struct pci_dev *dev_diva_u __devinitdata = NULL;
-static struct pci_dev *dev_diva201 __devinitdata = NULL;
-static struct pci_dev *dev_diva202 __devinitdata = NULL;
+static struct pci_dev *dev_diva = NULL;
+static struct pci_dev *dev_diva_u = NULL;
+static struct pci_dev *dev_diva201 = NULL;
+static struct pci_dev *dev_diva202 = NULL;
 
-static int __devinit setup_diva_pci(struct IsdnCard *card)
+static int setup_diva_pci(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 
@@ -1231,15 +1231,14 @@ static int __devinit setup_diva_pci(struct IsdnCard *card)
 
 #else	/* if !CONFIG_PCI */
 
-static int __devinit setup_diva_pci(struct IsdnCard *card)
+static int setup_diva_pci(struct IsdnCard *card)
 {
 	return (-1);	/* card not found; continue search */
 }
 
 #endif	/* CONFIG_PCI */
 
-int __devinit
-setup_diva(struct IsdnCard *card)
+int setup_diva(struct IsdnCard *card)
 {
 	int rc, have_card = 0;
 	struct IsdnCardState *cs = card->cs;

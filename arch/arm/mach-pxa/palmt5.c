@@ -33,16 +33,16 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
-#include <mach/pxa27x.h>
+#include "pxa27x.h"
 #include <mach/audio.h>
-#include <mach/palmt5.h>
-#include <mach/mmc.h>
-#include <mach/pxafb.h>
-#include <mach/irda.h>
-#include <plat/pxa27x_keypad.h>
-#include <mach/udc.h>
-#include <mach/palmasoc.h>
-#include <mach/palm27x.h>
+#include "palmt5.h"
+#include <linux/platform_data/mmc-pxamci.h>
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/irda-pxaficp.h>
+#include <linux/platform_data/keypad-pxa27x.h>
+#include "udc.h"
+#include <linux/platform_data/asoc-palm27x.h>
+#include "palm27x.h"
 
 #include "generic.h"
 #include "devices.h"
@@ -108,7 +108,7 @@ static unsigned long palmt5_pin_config[] __initdata = {
  * GPIO keyboard
  ******************************************************************************/
 #if defined(CONFIG_KEYBOARD_PXA27x) || defined(CONFIG_KEYBOARD_PXA27x_MODULE)
-static unsigned int palmt5_matrix_keys[] = {
+static const unsigned int palmt5_matrix_keys[] = {
 	KEY(0, 0, KEY_POWER),
 	KEY(0, 1, KEY_F1),
 	KEY(0, 2, KEY_ENTER),
@@ -124,11 +124,15 @@ static unsigned int palmt5_matrix_keys[] = {
 	KEY(3, 2, KEY_LEFT),
 };
 
+static struct matrix_keymap_data palmt5_matrix_keymap_data = {
+	.keymap			= palmt5_matrix_keys,
+	.keymap_size		= ARRAY_SIZE(palmt5_matrix_keys),
+};
+
 static struct pxa27x_keypad_platform_data palmt5_keypad_platform_data = {
 	.matrix_key_rows	= 4,
 	.matrix_key_cols	= 3,
-	.matrix_key_map		= palmt5_matrix_keys,
-	.matrix_key_map_size	= ARRAY_SIZE(palmt5_matrix_keys),
+	.matrix_keymap_data	= &palmt5_matrix_keymap_data,
 
 	.debounce_interval	= 30,
 };
@@ -178,6 +182,19 @@ static void __init palmt5_reserve(void)
 	memblock_reserve(0xa0200000, 0x1000);
 }
 
+static struct gpiod_lookup_table palmt5_mci_gpio_table = {
+	.dev_id = "pxa2xx-mci.0",
+	.table = {
+		GPIO_LOOKUP("gpio-pxa", GPIO_NR_PALMT5_SD_DETECT_N,
+			    "cd", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("gpio-pxa", GPIO_NR_PALMT5_SD_READONLY,
+			    "wp", GPIO_ACTIVE_LOW),
+		GPIO_LOOKUP("gpio-pxa", GPIO_NR_PALMT5_SD_POWER,
+			    "power", GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
+
 static void __init palmt5_init(void)
 {
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(palmt5_pin_config));
@@ -185,8 +202,7 @@ static void __init palmt5_init(void)
 	pxa_set_btuart_info(NULL);
 	pxa_set_stuart_info(NULL);
 
-	palm27x_mmc_init(GPIO_NR_PALMT5_SD_DETECT_N, GPIO_NR_PALMT5_SD_READONLY,
-			GPIO_NR_PALMT5_SD_POWER, 0);
+	palm27x_mmc_init(&palmt5_mci_gpio_table);
 	palm27x_pm_init(PALMT5_STR_BASE);
 	palm27x_lcd_init(-1, &palm_320x480_lcd_mode);
 	palm27x_udc_init(GPIO_NR_PALMT5_USB_DETECT_N,
@@ -208,7 +224,7 @@ MACHINE_START(PALMT5, "Palm Tungsten|T5")
 	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
 	.handle_irq	= pxa27x_handle_irq,
-	.timer		= &pxa_timer,
+	.init_time	= pxa_timer_init,
 	.init_machine	= palmt5_init,
 	.restart	= pxa_restart,
 MACHINE_END

@@ -223,10 +223,10 @@ static int niccy_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 }
 
 #ifdef __ISAPNP__
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct pnp_card *pnp_c = NULL;
 #endif
 
-int __devinit setup_niccy(struct IsdnCard *card)
+int setup_niccy(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];
@@ -261,7 +261,7 @@ int __devinit setup_niccy(struct IsdnCard *card)
 			card->para[1] = pnp_port_start(pnp_d, 0);
 			card->para[2] = pnp_port_start(pnp_d, 1);
 			card->para[0] = pnp_irq(pnp_d, 0);
-			if (!card->para[0] || !card->para[1] ||
+			if (card->para[0] == -1 || !card->para[1] ||
 			    !card->para[2]) {
 				printk(KERN_ERR "NiccyPnP:some resources are "
 				       "missing %ld/%lx/%lx\n",
@@ -298,7 +298,7 @@ int __devinit setup_niccy(struct IsdnCard *card)
 		}
 	} else {
 #ifdef CONFIG_PCI
-		static struct pci_dev *niccy_dev __devinitdata;
+		static struct pci_dev *niccy_dev;
 
 		u_int pci_ioaddr;
 		cs->subtyp = 0;

@@ -43,8 +43,9 @@ struct mtd_blktrans_dev {
 	struct kref ref;
 	struct gendisk *disk;
 	struct attribute_group *disk_attributes;
-	struct task_struct *thread;
 	struct request_queue *rq;
+	struct list_head rq_list;
+	struct blk_mq_tag_set *tag_set;
 	spinlock_t queue_lock;
 	void *priv;
 	fmode_t file_mode;
@@ -72,7 +73,7 @@ struct mtd_blktrans_ops {
 
 	/* Called with mtd_table_mutex held; no race with add/remove */
 	int (*open)(struct mtd_blktrans_dev *dev);
-	int (*release)(struct mtd_blktrans_dev *dev);
+	void (*release)(struct mtd_blktrans_dev *dev);
 
 	/* Called on {de,}registration and on subsequent addition/removal
 	   of devices, with mtd_table_mutex held. */

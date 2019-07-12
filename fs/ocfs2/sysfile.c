@@ -69,10 +69,11 @@ static struct inode **get_local_system_inode(struct ocfs2_super *osb,
 	spin_unlock(&osb->osb_lock);
 
 	if (unlikely(!local_system_inodes)) {
-		local_system_inodes = kzalloc(sizeof(struct inode *) *
-					      NUM_LOCAL_SYSTEM_INODES *
-					      osb->max_slots,
-					      GFP_NOFS);
+		local_system_inodes =
+			kzalloc(array3_size(sizeof(struct inode *),
+					    NUM_LOCAL_SYSTEM_INODES,
+					    osb->max_slots),
+				GFP_NOFS);
 		if (!local_system_inodes) {
 			mlog_errno(-ENOMEM);
 			/*
@@ -91,8 +92,7 @@ static struct inode **get_local_system_inode(struct ocfs2_super *osb,
 		} else
 			osb->local_system_inodes = local_system_inodes;
 		spin_unlock(&osb->osb_lock);
-		if (unlikely(free))
-			kfree(free);
+		kfree(free);
 	}
 
 	index = (slot * NUM_LOCAL_SYSTEM_INODES) +
@@ -114,9 +114,11 @@ struct inode *ocfs2_get_system_file_inode(struct ocfs2_super *osb,
 	} else
 		arr = get_local_system_inode(osb, type, slot);
 
+	mutex_lock(&osb->system_file_mutex);
 	if (arr && ((inode = *arr) != NULL)) {
 		/* get a ref in addition to the array ref */
 		inode = igrab(inode);
+		mutex_unlock(&osb->system_file_mutex);
 		BUG_ON(!inode);
 
 		return inode;
@@ -130,6 +132,7 @@ struct inode *ocfs2_get_system_file_inode(struct ocfs2_super *osb,
 		*arr = igrab(inode);
 		BUG_ON(!*arr);
 	}
+	mutex_unlock(&osb->system_file_mutex);
 	return inode;
 }
 

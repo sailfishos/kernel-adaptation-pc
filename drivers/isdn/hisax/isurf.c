@@ -194,11 +194,10 @@ isurf_auxcmd(struct IsdnCardState *cs, isdn_ctrl *ic) {
 }
 
 #ifdef __ISAPNP__
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct pnp_card *pnp_c = NULL;
 #endif
 
-int __devinit
-setup_isurf(struct IsdnCard *card)
+int setup_isurf(struct IsdnCard *card)
 {
 	int ver;
 	struct IsdnCardState *cs = card->cs;
@@ -239,7 +238,7 @@ setup_isurf(struct IsdnCard *card)
 				cs->hw.isurf.reset = pnp_port_start(pnp_d, 0);
 				cs->hw.isurf.phymem = pnp_mem_start(pnp_d, 1);
 				cs->irq = pnp_irq(pnp_d, 0);
-				if (!cs->irq || !cs->hw.isurf.reset || !cs->hw.isurf.phymem) {
+				if (cs->irq == -1 || !cs->hw.isurf.reset || !cs->hw.isurf.phymem) {
 					printk(KERN_ERR "ISurfPnP:some resources are missing %d/%x/%lx\n",
 					       cs->irq, cs->hw.isurf.reset, cs->hw.isurf.phymem);
 					pnp_disable_dev(pnp_d);

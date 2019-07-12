@@ -10,7 +10,8 @@
  * published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
 #include <linux/elf.h>
 #include <linux/smp.h>
@@ -29,6 +30,9 @@
 
 #include <asm/pgtable.h>
 #include <asm/traps.h>
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/syscalls.h>
 
 #define REG_PC	15
 #define REG_PSR	16
@@ -199,14 +203,8 @@ void ptrace_disable(struct task_struct *child)
  */
 void ptrace_break(struct task_struct *tsk, struct pt_regs *regs)
 {
-	siginfo_t info;
-
-	info.si_signo = SIGTRAP;
-	info.si_errno = 0;
-	info.si_code  = TRAP_BRKPT;
-	info.si_addr  = (void __user *)instruction_pointer(regs);
-
-	force_sig_info(SIGTRAP, &info, tsk);
+	force_sig_fault(SIGTRAP, TRAP_BRKPT,
+			(void __user *)instruction_pointer(regs), tsk);
 }
 
 static int break_trap(struct pt_regs *regs, unsigned int instr)
@@ -386,7 +384,6 @@ static void ptrace_hbptriggered(struct perf_event *bp,
 	struct arch_hw_breakpoint *bkpt = counter_arch_bp(bp);
 	long num;
 	int i;
-	siginfo_t info;
 
 	for (i = 0; i < ARM_MAX_HBP_SLOTS; ++i)
 		if (current->thread.debug.hbp[i] == bp)
@@ -394,12 +391,7 @@ static void ptrace_hbptriggered(struct perf_event *bp,
 
 	num = (i == ARM_MAX_HBP_SLOTS) ? 0 : ptrace_hbp_idx_to_num(i);
 
-	info.si_signo	= SIGTRAP;
-	info.si_errno	= (int)num;
-	info.si_code	= TRAP_HWBKPT;
-	info.si_addr	= (void __user *)(bkpt->trigger);
-
-	force_sig_info(SIGTRAP, &info, current);
+	force_sig_ptrace_errno_trap((int)num, (void __user *)(bkpt->trigger));
 }
 
 /*
@@ -597,7 +589,7 @@ static int gpr_set(struct task_struct *target,
 		   const void *kbuf, const void __user *ubuf)
 {
 	int ret;
-	struct pt_regs newregs;
+	struct pt_regs newregs = *task_pt_regs(target);
 
 	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 				 &newregs,
@@ -730,8 +722,8 @@ static int vfp_set(struct task_struct *target,
 	if (ret)
 		return ret;
 
-	vfp_flush_hwstate(thread);
 	thread->vfpstate.hard = new_vfp;
+	vfp_flush_hwstate(thread);
 
 	return 0;
 }
@@ -846,7 +838,7 @@ long arch_ptrace(struct task_struct *child, long request,
 #endif
 
 		case PTRACE_GET_THREAD_AREA:
-			ret = put_user(task_thread_info(child)->tp_value,
+			ret = put_user(task_thread_info(child)->tp_value[0],
 				       datap);
 			break;
 
@@ -883,20 +875,12 @@ long arch_ptrace(struct task_struct *child, long request,
 
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 		case PTRACE_GETHBPREGS:
-			if (ptrace_get_breakpoints(child) < 0)
-				return -ESRCH;
-
 			ret = ptrace_gethbpregs(child, addr,
 						(unsigned long __user *)data);
-			ptrace_put_breakpoints(child);
 			break;
 		case PTRACE_SETHBPREGS:
-			if (ptrace_get_breakpoints(child) < 0)
-				return -ESRCH;
-
 			ret = ptrace_sethbpregs(child, addr,
 						(unsigned long __user *)data);
-			ptrace_put_breakpoints(child);
 			break;
 #endif
 
@@ -913,15 +897,10 @@ enum ptrace_syscall_dir {
 	PTRACE_SYSCALL_EXIT,
 };
 
-static int ptrace_syscall_trace(struct pt_regs *regs, int scno,
-				enum ptrace_syscall_dir dir)
+static void tracehook_report_syscall(struct pt_regs *regs,
+				    enum ptrace_syscall_dir dir)
 {
 	unsigned long ip;
-
-	if (!test_thread_flag(TIF_SYSCALL_TRACE))
-		return scno;
-
-	current_thread_info()->syscall = scno;
 
 	/*
 	 * IP is used to denote syscall entry/exit:
@@ -936,20 +915,53 @@ static int ptrace_syscall_trace(struct pt_regs *regs, int scno,
 		current_thread_info()->syscall = -1;
 
 	regs->ARM_ip = ip;
-	return current_thread_info()->syscall;
 }
 
 asmlinkage int syscall_trace_enter(struct pt_regs *regs, int scno)
 {
-	int ret = ptrace_syscall_trace(regs, scno, PTRACE_SYSCALL_ENTER);
-	audit_syscall_entry(AUDIT_ARCH_ARM, scno, regs->ARM_r0, regs->ARM_r1,
-			    regs->ARM_r2, regs->ARM_r3);
-	return ret;
+	current_thread_info()->syscall = scno;
+
+	if (test_thread_flag(TIF_SYSCALL_TRACE))
+		tracehook_report_syscall(regs, PTRACE_SYSCALL_ENTER);
+
+	/* Do seccomp after ptrace; syscall may have changed. */
+#ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
+	if (secure_computing(NULL) == -1)
+		return -1;
+#else
+	/* XXX: remove this once OABI gets fixed */
+	secure_computing_strict(current_thread_info()->syscall);
+#endif
+
+	/* Tracer or seccomp may have changed syscall. */
+	scno = current_thread_info()->syscall;
+
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_enter(regs, scno);
+
+	audit_syscall_entry(scno, regs->ARM_r0, regs->ARM_r1, regs->ARM_r2,
+			    regs->ARM_r3);
+
+	return scno;
 }
 
-asmlinkage int syscall_trace_exit(struct pt_regs *regs, int scno)
+asmlinkage void syscall_trace_exit(struct pt_regs *regs)
 {
-	int ret = ptrace_syscall_trace(regs, scno, PTRACE_SYSCALL_EXIT);
+	/*
+	 * Audit the syscall before anything else, as a debugger may
+	 * come in and change the current registers.
+	 */
 	audit_syscall_exit(regs);
-	return ret;
+
+	/*
+	 * Note that we haven't updated the ->syscall field for the
+	 * current thread. This isn't a problem because it will have
+	 * been set on syscall entry and there hasn't been an opportunity
+	 * for a PTRACE_SET_SYSCALL since then.
+	 */
+	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
+		trace_sys_exit(regs, regs_return_value(regs));
+
+	if (test_thread_flag(TIF_SYSCALL_TRACE))
+		tracehook_report_syscall(regs, PTRACE_SYSCALL_EXIT);
 }

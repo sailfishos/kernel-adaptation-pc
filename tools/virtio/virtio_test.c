@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #define _GNU_SOURCE
 #include <getopt.h>
 #include <string.h>
@@ -10,10 +11,15 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
+#include <stdbool.h>
+#include <linux/virtio_types.h>
 #include <linux/vhost.h>
 #include <linux/virtio.h>
 #include <linux/virtio_ring.h>
 #include "../../drivers/vhost/test.h"
+
+/* Unused */
+void *__kmalloc_fake, *__kfree_ignore_start, *__kfree_ignore_end;
 
 struct vq_info {
 	int kick;
@@ -37,13 +43,14 @@ struct vdev_info {
 	struct vhost_memory *mem;
 };
 
-void vq_notify(struct virtqueue *vq)
+bool vq_notify(struct virtqueue *vq)
 {
 	struct vq_info *info = vq->priv;
 	unsigned long long v = 1;
 	int r;
 	r = write(info->kick, &v, sizeof v);
 	assert(r == sizeof v);
+	return true;
 }
 
 void vq_callback(struct virtqueue *vq)
@@ -55,7 +62,7 @@ void vhost_vq_setup(struct vdev_info *dev, struct vq_info *info)
 {
 	struct vhost_vring_state state = { .index = info->idx };
 	struct vhost_vring_file file = { .index = info->idx };
-	unsigned long long features = dev->vdev.features[0];
+	unsigned long long features = dev->vdev.features;
 	struct vhost_vring_addr addr = {
 		.index = info->idx,
 		.desc_user_addr = (uint64_t)(unsigned long)info->vring.desc,
@@ -92,8 +99,9 @@ static void vq_info_add(struct vdev_info *dev, int num)
 	assert(r >= 0);
 	memset(info->ring, 0, vring_size(num, 4096));
 	vring_init(&info->vring, num, info->ring, 4096);
-	info->vq = vring_new_virtqueue(info->vring.num, 4096, &dev->vdev,
-				       true, info->ring,
+	info->vq = vring_new_virtqueue(info->idx,
+				       info->vring.num, 4096, &dev->vdev,
+				       true, false, info->ring,
 				       vq_notify, vq_callback, "test");
 	assert(info->vq);
 	info->vq->priv = info;
@@ -107,8 +115,7 @@ static void vdev_info_init(struct vdev_info* dev, unsigned long long features)
 {
 	int r;
 	memset(dev, 0, sizeof *dev);
-	dev->vdev.features[0] = features;
-	dev->vdev.features[1] = features >> 32;
+	dev->vdev.features = features;
 	dev->buf_size = 1024;
 	dev->buf = malloc(dev->buf_size);
 	assert(dev->buf);
@@ -161,12 +168,13 @@ static void run_test(struct vdev_info *dev, struct vq_info *vq,
 		do {
 			if (started < bufs) {
 				sg_init_one(&sl, dev->buf, dev->buf_size);
-				r = virtqueue_add_buf(vq->vq, &sl, 1, 0,
-						      dev->buf + started,
-						      GFP_ATOMIC);
-				if (likely(r >= 0)) {
+				r = virtqueue_add_outbuf(vq->vq, &sl, 1,
+							 dev->buf + started,
+							 GFP_ATOMIC);
+				if (likely(r == 0)) {
 					++started;
-					virtqueue_kick(vq->vq);
+					if (unlikely(!virtqueue_kick(vq->vq)))
+						r = -1;
 				}
 			} else
 				r = -1;
@@ -177,7 +185,7 @@ static void run_test(struct vdev_info *dev, struct vq_info *vq,
 				r = 0;
 			}
 
-		} while (r >= 0);
+		} while (r == 0);
 		if (completed == completed_before)
 			++spurious;
 		assert(completed <= bufs);
@@ -195,7 +203,7 @@ static void run_test(struct vdev_info *dev, struct vq_info *vq,
 	test = 0;
 	r = ioctl(dev->control, VHOST_TEST_RUN, &test);
 	assert(r >= 0);
-	fprintf(stderr, "spurious wakeus: 0x%llx\n", spurious);
+	fprintf(stderr, "spurious wakeups: 0x%llx\n", spurious);
 }
 
 const char optstring[] = "h";
@@ -221,6 +229,14 @@ const struct option longopts[] = {
 		.val = 'i',
 	},
 	{
+		.name = "virtio-1",
+		.val = '1',
+	},
+	{
+		.name = "no-virtio-1",
+		.val = '0',
+	},
+	{
 		.name = "delayed-interrupt",
 		.val = 'D',
 	},
@@ -232,11 +248,12 @@ const struct option longopts[] = {
 	}
 };
 
-static void help()
+static void help(void)
 {
 	fprintf(stderr, "Usage: virtio_test [--help]"
 		" [--no-indirect]"
 		" [--no-event-idx]"
+		" [--no-virtio-1]"
 		" [--delayed-interrupt]"
 		"\n");
 }
@@ -245,7 +262,7 @@ int main(int argc, char **argv)
 {
 	struct vdev_info dev;
 	unsigned long long features = (1ULL << VIRTIO_RING_F_INDIRECT_DESC) |
-		(1ULL << VIRTIO_RING_F_EVENT_IDX);
+		(1ULL << VIRTIO_RING_F_EVENT_IDX) | (1ULL << VIRTIO_F_VERSION_1);
 	int o;
 	bool delayed = false;
 
@@ -265,6 +282,9 @@ int main(int argc, char **argv)
 			goto done;
 		case 'i':
 			features &= ~(1ULL << VIRTIO_RING_F_INDIRECT_DESC);
+			break;
+		case '0':
+			features &= ~(1ULL << VIRTIO_F_VERSION_1);
 			break;
 		case 'D':
 			delayed = true;

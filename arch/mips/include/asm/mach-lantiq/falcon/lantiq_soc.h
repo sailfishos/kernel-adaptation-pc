@@ -3,7 +3,7 @@
  * under the terms of the GNU General Public License version 2 as published
  * by the Free Software Foundation.
  *
- * Copyright (C) 2010 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2010 John Crispin <john@phrozen.org>
  */
 
 #ifndef _LTQ_FALCON_H__
@@ -22,7 +22,7 @@
 
 /*
  * during early_printk no ioremap possible at this early stage
- * lets use KSEG1 instead
+ * let's use KSEG1 instead
  */
 #define LTQ_ASC0_BASE_ADDR	0x1E100C00
 #define LTQ_EARLY_ASC		KSEG1ADDR(LTQ_ASC0_BASE_ADDR)
@@ -44,7 +44,7 @@
 
 /* BOOT_SEL - find what boot media we have */
 #define BS_FLASH		0x1
-#define BS_SPI                  0x4
+#define BS_SPI			0x4
 
 /* global register ranges */
 extern __iomem void *ltq_ebu_membase;
@@ -56,6 +56,10 @@ extern __iomem void *ltq_sys1_membase;
 #define ltq_sys1_r32(x)		ltq_r32(ltq_sys1_membase + (x))
 #define ltq_sys1_w32_mask(clear, set, reg)   \
 	ltq_sys1_w32((ltq_sys1_r32(reg) & ~(clear)) | (set), reg)
+
+/* allow the gpio and pinctrl drivers to talk to eachother */
+extern int pinctrl_falcon_get_range_size(int id);
+extern void pinctrl_falcon_add_gpio_range(struct pinctrl_gpio_range *range);
 
 /*
  * to keep the irq code generic we need to define this to 0 as falcon

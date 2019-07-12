@@ -22,9 +22,8 @@
 #include <linux/gpio.h>
 #include <linux/mfd/tps65910.h>
 
-#define COMP					0
-#define COMP1					1
-#define COMP2					2
+#define COMP1					0
+#define COMP2					1
 
 /* Comparator 1 voltage selection table in millivolts */
 static const u16 COMP_VSEL_TABLE[] = {
@@ -63,9 +62,6 @@ static int comp_threshold_set(struct tps65910 *tps65910, int id, int voltage)
 	int ret;
 	u8 index = 0, val;
 
-	if (id == COMP)
-		return 0;
-
 	while (curr_voltage < tps_comp.uV_max) {
 		curr_voltage = tps_comp.vsel_table[index];
 		if (curr_voltage >= voltage)
@@ -78,7 +74,7 @@ static int comp_threshold_set(struct tps65910 *tps65910, int id, int voltage)
 		return -EINVAL;
 
 	val = index << 1;
-	ret = tps65910->write(tps65910, tps_comp.reg, 1, &val);
+	ret = tps65910_reg_write(tps65910, tps_comp.reg, val);
 
 	return ret;
 }
@@ -86,13 +82,10 @@ static int comp_threshold_set(struct tps65910 *tps65910, int id, int voltage)
 static int comp_threshold_get(struct tps65910 *tps65910, int id)
 {
 	struct comparator tps_comp = tps_comparators[id];
+	unsigned int val;
 	int ret;
-	u8 val;
 
-	if (id == COMP)
-		return 0;
-
-	ret = tps65910->read(tps65910, tps_comp.reg, 1, &val);
+	ret = tps65910_reg_read(tps65910, tps_comp.reg, &val);
 	if (ret < 0)
 		return ret;
 
@@ -122,7 +115,7 @@ static ssize_t comp_threshold_show(struct device *dev,
 static DEVICE_ATTR(comp1_threshold, S_IRUGO, comp_threshold_show, NULL);
 static DEVICE_ATTR(comp2_threshold, S_IRUGO, comp_threshold_show, NULL);
 
-static __devinit int tps65911_comparator_probe(struct platform_device *pdev)
+static int tps65911_comparator_probe(struct platform_device *pdev)
 {
 	struct tps65910 *tps65910 = dev_get_drvdata(pdev->dev.parent);
 	struct tps65910_board *pdata = dev_get_platdata(tps65910->dev);
@@ -136,7 +129,7 @@ static __devinit int tps65911_comparator_probe(struct platform_device *pdev)
 
 	ret = comp_threshold_set(tps65910, COMP2, pdata->vmbch2_threshold);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "cannot set COMP2 theshold\n");
+		dev_err(&pdev->dev, "cannot set COMP2 threshold\n");
 		return ret;
 	}
 
@@ -152,7 +145,7 @@ static __devinit int tps65911_comparator_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static __devexit int tps65911_comparator_remove(struct platform_device *pdev)
+static int tps65911_comparator_remove(struct platform_device *pdev)
 {
 	struct tps65910 *tps65910;
 
@@ -166,10 +159,9 @@ static __devexit int tps65911_comparator_remove(struct platform_device *pdev)
 static struct platform_driver tps65911_comparator_driver = {
 	.driver = {
 		.name = "tps65911-comparator",
-		.owner = THIS_MODULE,
 	},
 	.probe = tps65911_comparator_probe,
-	.remove = __devexit_p(tps65911_comparator_remove),
+	.remove = tps65911_comparator_remove,
 };
 
 static int __init tps65911_comparator_init(void)

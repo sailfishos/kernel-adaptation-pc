@@ -125,7 +125,7 @@ struct inf_hw {
 #define PCI_SUBVENDOR_SEDLBAUER_PCI     0x53
 #define PCI_SUB_ID_SEDLBAUER            0x01
 
-static struct pci_device_id infineon_ids[] __devinitdata = {
+static struct pci_device_id infineon_ids[] = {
 	{ PCI_VDEVICE(EICON, PCI_DEVICE_ID_EICON_DIVA20), INF_DIVA20 },
 	{ PCI_VDEVICE(EICON, PCI_DEVICE_ID_EICON_DIVA20_U), INF_DIVA20U },
 	{ PCI_VDEVICE(EICON, PCI_DEVICE_ID_EICON_DIVA201), INF_DIVA201 },
@@ -244,7 +244,7 @@ _set_debug(struct inf_hw *card)
 }
 
 static int
-set_debug(const char *val, struct kernel_param *kp)
+set_debug(const char *val, const struct kernel_param *kp)
 {
 	int ret;
 	struct inf_hw *card;
@@ -603,7 +603,7 @@ inf_ctrl(struct inf_hw *hw, u32 cmd, u_long arg)
 	return ret;
 }
 
-static int __devinit
+static int
 init_irq(struct inf_hw *hw)
 {
 	int	ret, cnt = 3;
@@ -662,7 +662,7 @@ release_io(struct inf_hw *hw)
 	}
 }
 
-static int __devinit
+static int
 setup_io(struct inf_hw *hw)
 {
 	int err = 0;
@@ -887,6 +887,7 @@ release_card(struct inf_hw *card) {
 				release_card(card->sc[i]);
 			card->sc[i] = NULL;
 		}
+		/* fall through */
 	default:
 		pci_disable_device(card->pdev);
 		pci_set_drvdata(card->pdev, NULL);
@@ -896,7 +897,7 @@ release_card(struct inf_hw *card) {
 	inf_cnt--;
 }
 
-static int __devinit
+static int
 setup_instance(struct inf_hw *card)
 {
 	int err;
@@ -1060,7 +1061,7 @@ static const struct inf_cinfo inf_card_info[] = {
 	}
 };
 
-static const struct inf_cinfo * __devinit
+static const struct inf_cinfo *
 get_card_info(enum inf_types typ)
 {
 	const struct inf_cinfo *ci = inf_card_info;
@@ -1073,7 +1074,7 @@ get_card_info(enum inf_types typ)
 	return NULL;
 }
 
-static int __devinit
+static int
 inf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	int err = -ENOMEM;
@@ -1092,7 +1093,7 @@ inf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 	card->ci = get_card_info(ent->driver_data);
 	if (!card->ci) {
-		pr_info("mISDN: do not have informations about adapter at %s\n",
+		pr_info("mISDN: do not have information about adapter at %s\n",
 			pci_name(pdev));
 		kfree(card);
 		pci_disable_device(pdev);
@@ -1135,7 +1136,7 @@ inf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	return err;
 }
 
-static void __devexit
+static void
 inf_remove(struct pci_dev *pdev)
 {
 	struct inf_hw	*card = pci_get_drvdata(pdev);
@@ -1149,7 +1150,7 @@ inf_remove(struct pci_dev *pdev)
 static struct pci_driver infineon_driver = {
 	.name = "ISDN Infineon pci",
 	.probe = inf_probe,
-	.remove = __devexit_p(inf_remove),
+	.remove = inf_remove,
 	.id_table = infineon_ids,
 };
 

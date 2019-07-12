@@ -336,7 +336,8 @@ static unsigned int tifm_sd_op_flags(struct mmc_command *cmd)
 		rc |= TIFM_MMCSD_RSP_R0;
 		break;
 	case MMC_RSP_R1B:
-		rc |= TIFM_MMCSD_RSP_BUSY; // deliberate fall-through
+		rc |= TIFM_MMCSD_RSP_BUSY;
+		/* fall-through */
 	case MMC_RSP_R1:
 		rc |= TIFM_MMCSD_RSP_R1;
 		break;
@@ -783,9 +784,9 @@ static void tifm_sd_end_cmd(unsigned long data)
 	mmc_request_done(mmc, mrq);
 }
 
-static void tifm_sd_abort(unsigned long data)
+static void tifm_sd_abort(struct timer_list *t)
 {
-	struct tifm_sd *host = (struct tifm_sd*)data;
+	struct tifm_sd *host = from_timer(host, t, timer);
 
 	pr_err("%s : card failed to respond for a long period of time "
 	       "(%x, %x)\n",
@@ -952,8 +953,8 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 
 	if (!(TIFM_SOCK_STATE_OCCUPIED
 	      & readl(sock->addr + SOCK_PRESENT_STATE))) {
-		pr_warning("%s : card gone, unexpectedly\n",
-		       dev_name(&sock->dev));
+		pr_warn("%s : card gone, unexpectedly\n",
+			dev_name(&sock->dev));
 		return rc;
 	}
 
@@ -968,7 +969,7 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 
 	tasklet_init(&host->finish_tasklet, tifm_sd_end_cmd,
 		     (unsigned long)host);
-	setup_timer(&host->timer, tifm_sd_abort, (unsigned long)host);
+	timer_setup(&host->timer, tifm_sd_abort, 0);
 
 	mmc->ops = &tifm_sd_ops;
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
@@ -1030,7 +1031,7 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 
 static int tifm_sd_suspend(struct tifm_dev *sock, pm_message_t state)
 {
-	return mmc_suspend_host(tifm_get_drvdata(sock));
+	return 0;
 }
 
 static int tifm_sd_resume(struct tifm_dev *sock)
@@ -1044,8 +1045,6 @@ static int tifm_sd_resume(struct tifm_dev *sock)
 
 	if (rc)
 		host->eject = 1;
-	else
-		rc = mmc_resume_host(mmc);
 
 	return rc;
 }

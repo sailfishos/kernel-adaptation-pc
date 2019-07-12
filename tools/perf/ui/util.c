@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include "util.h"
 #include "../debug.h"
 
@@ -51,7 +52,6 @@ int ui__warning(const char *format, ...)
 
 	return ret;
 }
-
 
 /**
  * perf_error__register - Register error logging functions

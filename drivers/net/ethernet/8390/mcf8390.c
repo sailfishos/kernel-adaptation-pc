@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
-#include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -153,9 +152,9 @@ static void mcf8390_reset_8390(struct net_device *dev)
 {
 	unsigned long reset_start_time = jiffies;
 	u32 addr = dev->base_addr;
+	struct ei_device *ei_local = netdev_priv(dev);
 
-	if (ei_debug > 1)
-		netdev_dbg(dev, "resetting the 8390 t=%ld...\n", jiffies);
+	netif_dbg(ei_local, hw, dev, "resetting the 8390 t=%ld...\n", jiffies);
 
 	ei_outb(ei_inb(addr + NE_RESET), addr + NE_RESET);
 
@@ -288,7 +287,7 @@ static void mcf8390_block_output(struct net_device *dev, int count,
 	dma_start = jiffies;
 	while ((ei_inb(addr + NE_EN0_ISR) & ENISR_RDC) == 0) {
 		if (time_after(jiffies, dma_start + 2 * HZ / 100)) { /* 20ms */
-			netdev_err(dev, "timeout waiting for Tx RDC\n");
+			netdev_warn(dev, "timeout waiting for Tx RDC\n");
 			mcf8390_reset_8390(dev);
 			__NS8390_init(dev, 1);
 			break;
@@ -308,7 +307,6 @@ static const struct net_device_ops mcf8390_netdev_ops = {
 	.ndo_set_rx_mode	= __ei_set_multicast_list,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= eth_mac_addr,
-	.ndo_change_mtu		= eth_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= __ei_poll,
 #endif
@@ -408,7 +406,6 @@ static int mcf8390_init(struct net_device *dev)
 static int mcf8390_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
-	struct ei_device *ei_local;
 	struct resource *mem, *irq;
 	resource_size_t msize;
 	int ret;
@@ -436,7 +433,6 @@ static int mcf8390_probe(struct platform_device *pdev)
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	platform_set_drvdata(pdev, dev);
-	ei_local = netdev_priv(dev);
 
 	dev->irq = irq->start;
 	dev->base_addr = mem->start;
@@ -466,7 +462,6 @@ static int mcf8390_remove(struct platform_device *pdev)
 static struct platform_driver mcf8390_drv = {
 	.driver = {
 		.name	= "mcf8390",
-		.owner	= THIS_MODULE,
 	},
 	.probe		= mcf8390_probe,
 	.remove		= mcf8390_remove,

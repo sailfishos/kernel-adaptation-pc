@@ -41,8 +41,9 @@ hfcs_interrupt(int intno, void *dev_id)
 }
 
 static void
-hfcs_Timer(struct IsdnCardState *cs)
+hfcs_Timer(struct timer_list *t)
 {
+	struct IsdnCardState *cs = from_timer(cs, t, hw.hfcD.timer);
 	cs->hw.hfcD.timer.expires = jiffies + 75;
 	/* WD RESET */
 /*	WriteReg(cs, HFCD_DATA, HFCD_CTMT, cs->hw.hfcD.ctmt | 0x80);
@@ -136,7 +137,7 @@ hfcs_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 }
 
 #ifdef __ISAPNP__
-static struct isapnp_device_id hfc_ids[] __devinitdata = {
+static struct isapnp_device_id hfc_ids[] = {
 	{ ISAPNP_VENDOR('A', 'N', 'X'), ISAPNP_FUNCTION(0x1114),
 	  ISAPNP_VENDOR('A', 'N', 'X'), ISAPNP_FUNCTION(0x1114),
 	  (unsigned long) "Acer P10" },
@@ -161,12 +162,11 @@ static struct isapnp_device_id hfc_ids[] __devinitdata = {
 	{ 0, }
 };
 
-static struct isapnp_device_id *ipid __devinitdata = &hfc_ids[0];
-static struct pnp_card *pnp_c __devinitdata = NULL;
+static struct isapnp_device_id *ipid = &hfc_ids[0];
+static struct pnp_card *pnp_c = NULL;
 #endif
 
-int __devinit
-setup_hfcs(struct IsdnCard *card)
+int setup_hfcs(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];
@@ -196,7 +196,7 @@ setup_hfcs(struct IsdnCard *card)
 					}
 					card->para[1] = pnp_port_start(pnp_d, 0);
 					card->para[0] = pnp_irq(pnp_d, 0);
-					if (!card->para[0] || !card->para[1]) {
+					if (card->para[0] == -1 || !card->para[1]) {
 						printk(KERN_ERR "HFC PnP:some resources are missing %ld/%lx\n",
 						       card->para[0], card->para[1]);
 						pnp_disable_dev(pnp_d);
@@ -254,9 +254,7 @@ setup_hfcs(struct IsdnCard *card)
 		outb(0x57, cs->hw.hfcD.addr | 1);
 	}
 	set_cs_func(cs);
-	cs->hw.hfcD.timer.function = (void *) hfcs_Timer;
-	cs->hw.hfcD.timer.data = (long) cs;
-	init_timer(&cs->hw.hfcD.timer);
+	timer_setup(&cs->hw.hfcD.timer, hfcs_Timer, 0);
 	cs->cardmsg = &hfcs_card_msg;
 	cs->irq_func = &hfcs_interrupt;
 	return (1);

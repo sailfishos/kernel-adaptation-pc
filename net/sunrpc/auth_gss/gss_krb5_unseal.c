@@ -62,7 +62,7 @@
 #include <linux/sunrpc/gss_krb5.h>
 #include <linux/crypto.h>
 
-#ifdef RPC_DEBUG
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 # define RPCDBG_FACILITY        RPCDBG_AUTH
 #endif
 
@@ -150,16 +150,17 @@ gss_verify_mic_v2(struct krb5_ctx *ctx,
 	struct xdr_netobj cksumobj = {.len = sizeof(cksumdata),
 				      .data = cksumdata};
 	s32 now;
-	u64 seqnum;
 	u8 *ptr = read_token->data;
 	u8 *cksumkey;
 	u8 flags;
 	int i;
 	unsigned int cksum_usage;
+	__be16 be16_ptr;
 
 	dprintk("RPC:       %s\n", __func__);
 
-	if (be16_to_cpu(*((__be16 *)ptr)) != KG2_TOK_MIC)
+	memcpy(&be16_ptr, (char *) ptr, 2);
+	if (be16_to_cpu(be16_ptr) != KG2_TOK_MIC)
 		return GSS_S_DEFECTIVE_TOKEN;
 
 	flags = ptr[2];
@@ -197,9 +198,10 @@ gss_verify_mic_v2(struct krb5_ctx *ctx,
 	if (now > ctx->endtime)
 		return GSS_S_CONTEXT_EXPIRED;
 
-	/* do sequencing checks */
-
-	seqnum = be64_to_cpup((__be64 *)ptr + 8);
+	/*
+	 * NOTE: the sequence number at ptr + 8 is skipped, rpcsec_gss
+	 * doesn't want it checked; see page 6 of rfc 2203.
+	 */
 
 	return GSS_S_COMPLETE;
 }
@@ -223,4 +225,3 @@ gss_verify_mic_kerberos(struct gss_ctx *gss_ctx,
 		return gss_verify_mic_v2(ctx, message_buffer, read_token);
 	}
 }
-

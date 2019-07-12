@@ -18,7 +18,7 @@
  * GNU General Public License for more details.
  */
 
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/blkdev.h>
 #include <linux/ctype.h>
 #include <linux/device.h>
@@ -99,7 +99,7 @@ unsigned long __init find_ibft_region(unsigned long *sizep)
 	/* iBFT 1.03 section 1.4.3.1 mandates that UEFI machines will
 	 * only use ACPI for this */
 
-	if (!efi_enabled)
+	if (!efi_enabled(EFI_BOOT))
 		find_ibft_in_mem();
 
 	if (ibft_addr) {

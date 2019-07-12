@@ -22,7 +22,7 @@
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
-#include "asequencer.h"
+#include <sound/asequencer.h>
 
 #define MAX_MIDI_EVENT_BUF	256
 
@@ -43,10 +43,8 @@ void snd_midi_event_free(struct snd_midi_event *dev);
 void snd_midi_event_reset_encode(struct snd_midi_event *dev);
 void snd_midi_event_reset_decode(struct snd_midi_event *dev);
 void snd_midi_event_no_status(struct snd_midi_event *dev, int on);
-/* encode from byte stream - return number of written bytes if success */
-long snd_midi_event_encode(struct snd_midi_event *dev, unsigned char *buf, long count,
-			   struct snd_seq_event *ev);
-int snd_midi_event_encode_byte(struct snd_midi_event *dev, int c, struct snd_seq_event *ev);
+bool snd_midi_event_encode_byte(struct snd_midi_event *dev, unsigned char c,
+				struct snd_seq_event *ev);
 /* decode from event to bytes - return number of written bytes if success */
 long snd_midi_event_decode(struct snd_midi_event *dev, unsigned char *buf, long count,
 			   struct snd_seq_event *ev);

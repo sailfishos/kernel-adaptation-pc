@@ -36,6 +36,7 @@
 
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
+#include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
@@ -51,13 +52,15 @@
 #include <rdma/ib_pack.h>
 #include <rdma/rdma_cm.h>
 #include <rdma/iw_cm.h>
+#include <rdma/rdma_netlink.h>
+#include <rdma/iw_portmap.h>
 
 #define NES_SEND_FIRST_WRITE
 
 #define QUEUE_DISCONNECTS
 
 #define DRV_NAME    "iw_nes"
-#define DRV_VERSION "1.5.0.0"
+#define DRV_VERSION "1.5.0.1"
 #define PFX         DRV_NAME ": "
 
 /*
@@ -80,6 +83,8 @@
 #define NES_TX_TIMEOUT          (6*HZ)
 #define NES_FIRST_QPN           64
 #define NES_SW_CONTEXT_ALIGN    1024
+
+#define NES_MAX_MTU		9000
 
 #define NES_NIC_MAX_NICS        16
 #define NES_MAX_ARP_TABLE_SIZE  4096
@@ -130,6 +135,7 @@
 #define NES_DBG_IW_TX       0x00040000
 #define NES_DBG_SHUTDOWN    0x00080000
 #define NES_DBG_PAU         0x00100000
+#define NES_DBG_NLMSG       0x00200000
 #define NES_DBG_RSVD1       0x10000000
 #define NES_DBG_RSVD2       0x20000000
 #define NES_DBG_RSVD3       0x40000000
@@ -143,18 +149,9 @@ do { \
 		printk(KERN_ERR PFX "%s[%u]: " fmt, __func__, __LINE__, ##args); \
 } while (0)
 
-#define assert(expr) \
-do { \
-	if (!(expr)) { \
-		printk(KERN_ERR PFX "Assertion failed! %s, %s, %s, line %d\n", \
-			   #expr, __FILE__, __func__, __LINE__); \
-	} \
-} while (0)
-
 #define NES_EVENT_TIMEOUT   1200000
 #else
-#define nes_debug(level, fmt, args...)
-#define assert(expr)          do {} while (0)
+#define nes_debug(level, fmt, args...) no_printk(fmt, ##args)
 
 #define NES_EVENT_TIMEOUT   100000
 #endif
@@ -162,17 +159,14 @@ do { \
 #include "nes_hw.h"
 #include "nes_verbs.h"
 #include "nes_context.h"
-#include "nes_user.h"
+#include <rdma/nes-abi.h>
 #include "nes_cm.h"
 #include "nes_mgt.h"
 
-extern int max_mtu;
-#define max_frame_len (max_mtu+ETH_HLEN)
 extern int interrupt_mod_interval;
 extern int nes_if_count;
 extern int mpa_version;
 extern int disable_mpa_crc;
-extern unsigned int send_first;
 extern unsigned int nes_drv_opt;
 extern unsigned int nes_debug_level;
 extern unsigned int wqm_quanta;
@@ -399,11 +393,20 @@ static inline void nes_write8(void __iomem *addr, u8 val)
 	writeb(val, addr);
 }
 
-
+enum nes_resource {
+	NES_RESOURCE_MW = 1,
+	NES_RESOURCE_FAST_MR,
+	NES_RESOURCE_PHYS_MR,
+	NES_RESOURCE_USER_MR,
+	NES_RESOURCE_PD,
+	NES_RESOURCE_QP,
+	NES_RESOURCE_CQ,
+	NES_RESOURCE_ARP
+};
 
 static inline int nes_alloc_resource(struct nes_adapter *nesadapter,
 		unsigned long *resource_array, u32 max_resources,
-		u32 *req_resource_num, u32 *next)
+		u32 *req_resource_num, u32 *next, enum nes_resource resource_type)
 {
 	unsigned long flags;
 	u32 resource_num;
@@ -414,7 +417,7 @@ static inline int nes_alloc_resource(struct nes_adapter *nesadapter,
 	if (resource_num >= max_resources) {
 		resource_num = find_first_zero_bit(resource_array, max_resources);
 		if (resource_num >= max_resources) {
-			printk(KERN_ERR PFX "%s: No available resourcess.\n", __func__);
+			printk(KERN_ERR PFX "%s: No available resources [type=%u].\n", __func__, resource_type);
 			spin_unlock_irqrestore(&nesadapter->resource_lock, flags);
 			return -EMFILE;
 		}
@@ -524,6 +527,7 @@ void nes_iwarp_ce_handler(struct nes_device *, struct nes_hw_cq *);
 int nes_destroy_cqp(struct nes_device *);
 int nes_nic_cm_xmit(struct sk_buff *, struct net_device *);
 void nes_recheck_link_status(struct work_struct *work);
+void nes_terminate_timeout(struct timer_list *t);
 
 /* nes_nic.c */
 struct net_device *nes_netdev_init(struct nes_device *, void __iomem *);
@@ -562,8 +566,8 @@ void nes_put_cqp_request(struct nes_device *nesdev,
 			 struct nes_cqp_request *cqp_request);
 void nes_post_cqp_request(struct nes_device *, struct nes_cqp_request *);
 int nes_arp_table(struct nes_device *, u32, u8 *, u32);
-void nes_mh_fix(unsigned long);
-void nes_clc(unsigned long);
+void nes_mh_fix(struct timer_list *t);
+void nes_clc(struct timer_list *t);
 void nes_dump_mem(unsigned int, void *, int);
 u32 nes_crc32(u32, u32, u32, u32, u8 *, u32, u32, u32);
 

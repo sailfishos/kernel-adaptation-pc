@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * core function to access sclp interface
  *
@@ -50,22 +51,49 @@ static char sclp_init_sccb[PAGE_SIZE] __attribute__((__aligned__(PAGE_SIZE)));
 /* Suspend request */
 static DECLARE_COMPLETION(sclp_request_queue_flushed);
 
+/* Number of console pages to allocate, used by sclp_con.c and sclp_vt220.c */
+int sclp_console_pages = SCLP_CONSOLE_PAGES;
+/* Flag to indicate if buffer pages are dropped on buffer full condition */
+int sclp_console_drop = 1;
+/* Number of times the console dropped buffer pages */
+unsigned long sclp_console_full;
+
 static void sclp_suspend_req_cb(struct sclp_req *req, void *data)
 {
 	complete(&sclp_request_queue_flushed);
 }
+
+static int __init sclp_setup_console_pages(char *str)
+{
+	int pages, rc;
+
+	rc = kstrtoint(str, 0, &pages);
+	if (!rc && pages >= SCLP_CONSOLE_PAGES)
+		sclp_console_pages = pages;
+	return 1;
+}
+
+__setup("sclp_con_pages=", sclp_setup_console_pages);
+
+static int __init sclp_setup_console_drop(char *str)
+{
+	int drop, rc;
+
+	rc = kstrtoint(str, 0, &drop);
+	if (!rc)
+		sclp_console_drop = drop;
+	return 1;
+}
+
+__setup("sclp_con_drop=", sclp_setup_console_drop);
 
 static struct sclp_req sclp_suspend_req;
 
 /* Timer for request retries. */
 static struct timer_list sclp_request_timer;
 
-/* Internal state: is the driver initialized? */
-static volatile enum sclp_init_state_t {
-	sclp_init_state_uninitialized,
-	sclp_init_state_initializing,
-	sclp_init_state_initialized
-} sclp_init_state = sclp_init_state_uninitialized;
+/* Timer for queued requests. */
+static struct timer_list sclp_queue_timer;
 
 /* Internal state: is a request active at the sclp? */
 static volatile enum sclp_running_state_t {
@@ -108,30 +136,11 @@ static enum sclp_suspend_state_t {
 #define SCLP_BUSY_INTERVAL	10
 #define SCLP_RETRY_INTERVAL	30
 
+static void sclp_request_timeout(bool force_restart);
 static void sclp_process_queue(void);
 static void __sclp_make_read_req(void);
 static int sclp_init_mask(int calculate);
 static int sclp_init(void);
-
-/* Perform service call. Return 0 on success, non-zero otherwise. */
-int
-sclp_service_call(sclp_cmdw_t command, void *sccb)
-{
-	int cc;
-
-	asm volatile(
-		"	.insn	rre,0xb2200000,%1,%2\n"  /* servc %1,%2 */
-		"	ipm	%0\n"
-		"	srl	%0,28"
-		: "=&d" (cc) : "d" (command), "a" (__pa(sccb))
-		: "cc", "memory");
-	if (cc == 3)
-		return -EIO;
-	if (cc == 2)
-		return -EBUSY;
-	return 0;
-}
-
 
 static void
 __sclp_queue_read_req(void)
@@ -146,25 +155,32 @@ __sclp_queue_read_req(void)
 
 /* Set up request retry timer. Called while sclp_lock is locked. */
 static inline void
-__sclp_set_request_timer(unsigned long time, void (*function)(unsigned long),
-			 unsigned long data)
+__sclp_set_request_timer(unsigned long time, void (*cb)(struct timer_list *))
 {
 	del_timer(&sclp_request_timer);
-	sclp_request_timer.function = function;
-	sclp_request_timer.data = data;
+	sclp_request_timer.function = cb;
 	sclp_request_timer.expires = jiffies + time;
 	add_timer(&sclp_request_timer);
 }
 
-/* Request timeout handler. Restart the request queue. If DATA is non-zero,
+static void sclp_request_timeout_restart(struct timer_list *unused)
+{
+	sclp_request_timeout(true);
+}
+
+static void sclp_request_timeout_normal(struct timer_list *unused)
+{
+	sclp_request_timeout(false);
+}
+
+/* Request timeout handler. Restart the request queue. If force_restart,
  * force restart of running request. */
-static void
-sclp_request_timeout(unsigned long data)
+static void sclp_request_timeout(bool force_restart)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&sclp_lock, flags);
-	if (data) {
+	if (force_restart) {
 		if (sclp_running_state == sclp_running_state_running) {
 			/* Break running state and queue NOP read event request
 			 * to get a defined interface state. */
@@ -173,10 +189,80 @@ sclp_request_timeout(unsigned long data)
 		}
 	} else {
 		__sclp_set_request_timer(SCLP_BUSY_INTERVAL * HZ,
-					 sclp_request_timeout, 0);
+					 sclp_request_timeout_normal);
 	}
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	sclp_process_queue();
+}
+
+/*
+ * Returns the expire value in jiffies of the next pending request timeout,
+ * if any. Needs to be called with sclp_lock.
+ */
+static unsigned long __sclp_req_queue_find_next_timeout(void)
+{
+	unsigned long expires_next = 0;
+	struct sclp_req *req;
+
+	list_for_each_entry(req, &sclp_req_queue, list) {
+		if (!req->queue_expires)
+			continue;
+		if (!expires_next ||
+		   (time_before(req->queue_expires, expires_next)))
+				expires_next = req->queue_expires;
+	}
+	return expires_next;
+}
+
+/*
+ * Returns expired request, if any, and removes it from the list.
+ */
+static struct sclp_req *__sclp_req_queue_remove_expired_req(void)
+{
+	unsigned long flags, now;
+	struct sclp_req *req;
+
+	spin_lock_irqsave(&sclp_lock, flags);
+	now = jiffies;
+	/* Don't need list_for_each_safe because we break out after list_del */
+	list_for_each_entry(req, &sclp_req_queue, list) {
+		if (!req->queue_expires)
+			continue;
+		if (time_before_eq(req->queue_expires, now)) {
+			if (req->status == SCLP_REQ_QUEUED) {
+				req->status = SCLP_REQ_QUEUED_TIMEOUT;
+				list_del(&req->list);
+				goto out;
+			}
+		}
+	}
+	req = NULL;
+out:
+	spin_unlock_irqrestore(&sclp_lock, flags);
+	return req;
+}
+
+/*
+ * Timeout handler for queued requests. Removes request from list and
+ * invokes callback. This timer can be set per request in situations where
+ * waiting too long would be harmful to the system, e.g. during SE reboot.
+ */
+static void sclp_req_queue_timeout(struct timer_list *unused)
+{
+	unsigned long flags, expires_next;
+	struct sclp_req *req;
+
+	do {
+		req = __sclp_req_queue_remove_expired_req();
+		if (req && req->callback)
+			req->callback(req, req->callback_data);
+	} while (req);
+
+	spin_lock_irqsave(&sclp_lock, flags);
+	expires_next = __sclp_req_queue_find_next_timeout();
+	if (expires_next)
+		mod_timer(&sclp_queue_timer, expires_next);
+	spin_unlock_irqrestore(&sclp_lock, flags);
 }
 
 /* Try to start a request. Return zero if the request was successfully
@@ -198,12 +284,12 @@ __sclp_start_request(struct sclp_req *req)
 		req->status = SCLP_REQ_RUNNING;
 		sclp_running_state = sclp_running_state_running;
 		__sclp_set_request_timer(SCLP_RETRY_INTERVAL * HZ,
-					 sclp_request_timeout, 1);
+					 sclp_request_timeout_restart);
 		return 0;
 	} else if (rc == -EBUSY) {
 		/* Try again later */
 		__sclp_set_request_timer(SCLP_BUSY_INTERVAL * HZ,
-					 sclp_request_timeout, 0);
+					 sclp_request_timeout_normal);
 		return 0;
 	}
 	/* Request failed */
@@ -237,7 +323,7 @@ sclp_process_queue(void)
 			/* Cannot abort already submitted request - could still
 			 * be active at the SCLP */
 			__sclp_set_request_timer(SCLP_BUSY_INTERVAL * HZ,
-						 sclp_request_timeout, 0);
+						 sclp_request_timeout_normal);
 			break;
 		}
 do_post:
@@ -281,6 +367,13 @@ sclp_add_request(struct sclp_req *req)
 	req->start_count = 0;
 	list_add_tail(&req->list, &sclp_req_queue);
 	rc = 0;
+	if (req->queue_timeout) {
+		req->queue_expires = jiffies + req->queue_timeout * HZ;
+		if (!timer_pending(&sclp_queue_timer) ||
+		    time_after(sclp_queue_timer.expires, req->queue_expires))
+			mod_timer(&sclp_queue_timer, req->queue_expires);
+	} else
+		req->queue_expires = 0;
 	/* Start if request is first in list */
 	if (sclp_running_state == sclp_running_state_idle &&
 	    req->list.prev == &sclp_req_queue) {
@@ -324,7 +417,7 @@ sclp_dispatch_evbufs(struct sccb_header *sccb)
 		reg = NULL;
 		list_for_each(l, &sclp_reg_list) {
 			reg = list_entry(l, struct sclp_register, list);
-			if (reg->receive_mask & (1 << (32 - evbuf->type)))
+			if (reg->receive_mask & SCLP_EVTYP_MASK(evbuf->type))
 				break;
 			else
 				reg = NULL;
@@ -334,7 +427,7 @@ sclp_dispatch_evbufs(struct sccb_header *sccb)
 			reg->receiver_fn(evbuf);
 			spin_lock_irqsave(&sclp_lock, flags);
 		} else if (reg == NULL)
-			rc = -ENOSYS;
+			rc = -EOPNOTSUPP;
 	}
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	return rc;
@@ -400,7 +493,7 @@ static void sclp_interrupt_handler(struct ext_code ext_code,
 	u32 finished_sccb;
 	u32 evbuf_pending;
 
-	kstat_cpu(smp_processor_id()).irqs[EXTINT_SCP]++;
+	inc_irq_stat(IRQEXT_SCP);
 	spin_lock(&sclp_lock);
 	finished_sccb = param32 & 0xfffffff8;
 	evbuf_pending = param32 & 0x3;
@@ -450,7 +543,7 @@ sclp_sync_wait(void)
 	timeout = 0;
 	if (timer_pending(&sclp_request_timer)) {
 		/* Get timeout TOD value */
-		timeout = get_clock() +
+		timeout = get_tod_clock_fast() +
 			  sclp_tod_from_jiffies(sclp_request_timer.expires -
 						jiffies);
 	}
@@ -463,18 +556,17 @@ sclp_sync_wait(void)
 	old_tick = local_tick_disable();
 	trace_hardirqs_on();
 	__ctl_store(cr0, 0, 0);
-	cr0_sync = cr0;
-	cr0_sync &= 0xffff00a0;
-	cr0_sync |= 0x00000200;
+	cr0_sync = cr0 & ~CR0_IRQ_SUBCLASS_MASK;
+	cr0_sync |= 1UL << (63 - 54);
 	__ctl_load(cr0_sync, 0, 0);
 	__arch_local_irq_stosm(0x01);
 	/* Loop until driver state indicates finished request */
 	while (sclp_running_state != sclp_running_state_idle) {
 		/* Check for expired request timer */
 		if (timer_pending(&sclp_request_timer) &&
-		    get_clock() > timeout &&
+		    get_tod_clock_fast() > timeout &&
 		    del_timer(&sclp_request_timer))
-			sclp_request_timer.function(sclp_request_timer.data);
+			sclp_request_timer.function(&sclp_request_timer);
 		cpu_relax();
 	}
 	local_irq_disable();
@@ -526,9 +618,12 @@ struct sclp_statechangebuf {
 	u16		_zeros : 12;
 	u16		mask_length;
 	u64		sclp_active_facility_mask;
-	sccb_mask_t	sclp_receive_mask;
-	sccb_mask_t	sclp_send_mask;
-	u32		read_data_function_mask;
+	u8		masks[2 * 1021 + 4];	/* variable length */
+	/*
+	 * u8		sclp_receive_mask[mask_length];
+	 * u8		sclp_send_mask[mask_length];
+	 * u32		read_data_function_mask;
+	 */
 } __attribute__((packed));
 
 
@@ -539,17 +634,17 @@ sclp_state_change_cb(struct evbuf_header *evbuf)
 	unsigned long flags;
 	struct sclp_statechangebuf *scbuf;
 
+	BUILD_BUG_ON(sizeof(struct sclp_statechangebuf) > PAGE_SIZE);
+
 	scbuf = (struct sclp_statechangebuf *) evbuf;
-	if (scbuf->mask_length != sizeof(sccb_mask_t))
-		return;
 	spin_lock_irqsave(&sclp_lock, flags);
 	if (scbuf->validity_sclp_receive_mask)
-		sclp_receive_mask = scbuf->sclp_receive_mask;
+		sclp_receive_mask = sccb_get_recv_mask(scbuf);
 	if (scbuf->validity_sclp_send_mask)
-		sclp_send_mask = scbuf->sclp_send_mask;
+		sclp_send_mask = sccb_get_send_mask(scbuf);
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	if (scbuf->validity_sclp_active_facility_mask)
-		sclp_facilities = scbuf->sclp_active_facility_mask;
+		sclp.facilities = scbuf->sclp_active_facility_mask;
 	sclp_dispatch_state_change();
 }
 
@@ -656,7 +751,7 @@ EXPORT_SYMBOL(sclp_remove_processed);
 
 /* Prepare init mask request. Called while sclp_lock is locked. */
 static inline void
-__sclp_make_init_req(u32 receive_mask, u32 send_mask)
+__sclp_make_init_req(sccb_mask_t receive_mask, sccb_mask_t send_mask)
 {
 	struct init_sccb *sccb;
 
@@ -669,12 +764,15 @@ __sclp_make_init_req(u32 receive_mask, u32 send_mask)
 	sclp_init_req.callback = NULL;
 	sclp_init_req.callback_data = NULL;
 	sclp_init_req.sccb = sccb;
-	sccb->header.length = sizeof(struct init_sccb);
-	sccb->mask_length = sizeof(sccb_mask_t);
-	sccb->receive_mask = receive_mask;
-	sccb->send_mask = send_mask;
-	sccb->sclp_receive_mask = 0;
-	sccb->sclp_send_mask = 0;
+	sccb->header.length = sizeof(*sccb);
+	if (sclp_mask_compat_mode)
+		sccb->mask_length = SCLP_MASK_SIZE_COMPAT;
+	else
+		sccb->mask_length = sizeof(sccb_mask_t);
+	sccb_set_recv_mask(sccb, receive_mask);
+	sccb_set_send_mask(sccb, send_mask);
+	sccb_set_sclp_recv_mask(sccb, 0);
+	sccb_set_sclp_send_mask(sccb, 0);
 }
 
 /* Start init mask request. If calculate is non-zero, calculate the mask as
@@ -730,8 +828,8 @@ sclp_init_mask(int calculate)
 		    sccb->header.response_code == 0x20) {
 			/* Successful request */
 			if (calculate) {
-				sclp_receive_mask = sccb->sclp_receive_mask;
-				sclp_send_mask = sccb->sclp_send_mask;
+				sclp_receive_mask = sccb_get_sclp_recv_mask(sccb);
+				sclp_send_mask = sccb_get_sclp_send_mask(sccb);
 			} else {
 				sclp_receive_mask = 0;
 				sclp_send_mask = 0;
@@ -813,7 +911,7 @@ static void sclp_check_handler(struct ext_code ext_code,
 {
 	u32 finished_sccb;
 
-	kstat_cpu(smp_processor_id()).irqs[EXTINT_SCP]++;
+	inc_irq_stat(IRQEXT_SCP);
 	finished_sccb = param32 & 0xfffffff8;
 	/* Is this the interrupt we are waiting for? */
 	if (finished_sccb == 0)
@@ -831,7 +929,7 @@ static void sclp_check_handler(struct ext_code ext_code,
 
 /* Initial init mask request timed out. Modify request state to failed. */
 static void
-sclp_check_timeout(unsigned long data)
+sclp_check_timeout(struct timer_list *unused)
 {
 	unsigned long flags;
 
@@ -856,7 +954,7 @@ sclp_check_interface(void)
 
 	spin_lock_irqsave(&sclp_lock, flags);
 	/* Prepare init mask command */
-	rc = register_external_interrupt(0x2401, sclp_check_handler);
+	rc = register_external_irq(EXT_IRQ_SERVICE_SIG, sclp_check_handler);
 	if (rc) {
 		spin_unlock_irqrestore(&sclp_lock, flags);
 		return rc;
@@ -870,26 +968,32 @@ sclp_check_interface(void)
 		sclp_init_req.status = SCLP_REQ_RUNNING;
 		sclp_running_state = sclp_running_state_running;
 		__sclp_set_request_timer(SCLP_RETRY_INTERVAL * HZ,
-					 sclp_check_timeout, 0);
+					 sclp_check_timeout);
 		spin_unlock_irqrestore(&sclp_lock, flags);
 		/* Enable service-signal interruption - needs to happen
 		 * with IRQs enabled. */
-		service_subclass_irq_register();
+		irq_subclass_register(IRQ_SUBCLASS_SERVICE_SIGNAL);
 		/* Wait for signal from interrupt or timeout */
 		sclp_sync_wait();
 		/* Disable service-signal interruption - needs to happen
 		 * with IRQs enabled. */
-		service_subclass_irq_unregister();
+		irq_subclass_unregister(IRQ_SUBCLASS_SERVICE_SIGNAL);
 		spin_lock_irqsave(&sclp_lock, flags);
 		del_timer(&sclp_request_timer);
-		if (sclp_init_req.status == SCLP_REQ_DONE &&
-		    sccb->header.response_code == 0x20) {
-			rc = 0;
-			break;
-		} else
-			rc = -EBUSY;
+		rc = -EBUSY;
+		if (sclp_init_req.status == SCLP_REQ_DONE) {
+			if (sccb->header.response_code == 0x20) {
+				rc = 0;
+				break;
+			} else if (sccb->header.response_code == 0x74f0) {
+				if (!sclp_mask_compat_mode) {
+					sclp_mask_compat_mode = true;
+					retry = 0;
+				}
+			}
+		}
 	}
-	unregister_external_interrupt(0x2401, sclp_check_handler);
+	unregister_external_irq(EXT_IRQ_SERVICE_SIG, sclp_check_handler);
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	return rc;
 }
@@ -1013,11 +1117,46 @@ static const struct dev_pm_ops sclp_pm_ops = {
 	.restore	= sclp_restore,
 };
 
+static ssize_t con_pages_show(struct device_driver *dev, char *buf)
+{
+	return sprintf(buf, "%i\n", sclp_console_pages);
+}
+
+static DRIVER_ATTR_RO(con_pages);
+
+static ssize_t con_drop_show(struct device_driver *dev, char *buf)
+{
+	return sprintf(buf, "%i\n", sclp_console_drop);
+}
+
+static DRIVER_ATTR_RO(con_drop);
+
+static ssize_t con_full_show(struct device_driver *dev, char *buf)
+{
+	return sprintf(buf, "%lu\n", sclp_console_full);
+}
+
+static DRIVER_ATTR_RO(con_full);
+
+static struct attribute *sclp_drv_attrs[] = {
+	&driver_attr_con_pages.attr,
+	&driver_attr_con_drop.attr,
+	&driver_attr_con_full.attr,
+	NULL,
+};
+static struct attribute_group sclp_drv_attr_group = {
+	.attrs = sclp_drv_attrs,
+};
+static const struct attribute_group *sclp_drv_attr_groups[] = {
+	&sclp_drv_attr_group,
+	NULL,
+};
+
 static struct platform_driver sclp_pdrv = {
 	.driver = {
 		.name	= "sclp",
-		.owner	= THIS_MODULE,
 		.pm	= &sclp_pm_ops,
+		.groups = sclp_drv_attr_groups,
 	},
 };
 
@@ -1040,7 +1179,8 @@ sclp_init(void)
 	INIT_LIST_HEAD(&sclp_req_queue);
 	INIT_LIST_HEAD(&sclp_reg_list);
 	list_add(&sclp_state_change_event.list, &sclp_reg_list);
-	init_timer(&sclp_request_timer);
+	timer_setup(&sclp_request_timer, NULL, 0);
+	timer_setup(&sclp_queue_timer, sclp_req_queue_timeout, 0);
 	/* Check interface */
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	rc = sclp_check_interface();
@@ -1052,14 +1192,14 @@ sclp_init(void)
 	if (rc)
 		goto fail_init_state_uninitialized;
 	/* Register interrupt handler */
-	rc = register_external_interrupt(0x2401, sclp_interrupt_handler);
+	rc = register_external_irq(EXT_IRQ_SERVICE_SIG, sclp_interrupt_handler);
 	if (rc)
 		goto fail_unregister_reboot_notifier;
 	sclp_init_state = sclp_init_state_initialized;
 	spin_unlock_irqrestore(&sclp_lock, flags);
 	/* Enable service-signal external interruption - needs to happen with
 	 * IRQs enabled. */
-	service_subclass_irq_register();
+	irq_subclass_register(IRQ_SUBCLASS_SERVICE_SIGNAL);
 	sclp_init_mask(1);
 	return 0;
 
@@ -1096,10 +1236,12 @@ static __init int sclp_initcall(void)
 	rc = platform_driver_register(&sclp_pdrv);
 	if (rc)
 		return rc;
+
 	sclp_pdev = platform_device_register_simple("sclp", -1, NULL, 0);
-	rc = IS_ERR(sclp_pdev) ? PTR_ERR(sclp_pdev) : 0;
+	rc = PTR_ERR_OR_ZERO(sclp_pdev);
 	if (rc)
 		goto fail_platform_driver_unregister;
+
 	rc = atomic_notifier_chain_register(&panic_notifier_list,
 					    &sclp_on_panic_nb);
 	if (rc)

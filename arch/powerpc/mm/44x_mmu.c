@@ -29,6 +29,7 @@
 #include <asm/mmu.h>
 #include <asm/page.h>
 #include <asm/cacheflush.h>
+#include <asm/code-patching.h>
 
 #include "mmu_decl.h"
 
@@ -41,24 +42,15 @@ int icache_44x_need_flush;
 
 unsigned long tlb_47x_boltmap[1024/8];
 
-static void __cpuinit ppc44x_update_tlb_hwater(void)
+static void ppc44x_update_tlb_hwater(void)
 {
-	extern unsigned int tlb_44x_patch_hwater_D[];
-	extern unsigned int tlb_44x_patch_hwater_I[];
-
 	/* The TLB miss handlers hard codes the watermark in a cmpli
 	 * instruction to improve performances rather than loading it
 	 * from the global variable. Thus, we patch the instructions
 	 * in the 2 TLB miss handlers when updating the value
 	 */
-	tlb_44x_patch_hwater_D[0] = (tlb_44x_patch_hwater_D[0] & 0xffff0000) |
-		tlb_44x_hwater;
-	flush_icache_range((unsigned long)&tlb_44x_patch_hwater_D[0],
-			   (unsigned long)&tlb_44x_patch_hwater_D[1]);
-	tlb_44x_patch_hwater_I[0] = (tlb_44x_patch_hwater_I[0] & 0xffff0000) |
-		tlb_44x_hwater;
-	flush_icache_range((unsigned long)&tlb_44x_patch_hwater_I[0],
-			   (unsigned long)&tlb_44x_patch_hwater_I[1]);
+	modify_instruction_site(&patch__tlb_44x_hwater_D, 0xffff, tlb_44x_hwater);
+	modify_instruction_site(&patch__tlb_44x_hwater_I, 0xffff, tlb_44x_hwater);
 }
 
 /*
@@ -134,7 +126,7 @@ static void __init ppc47x_update_boltmap(void)
 /*
  * "Pins" a 256MB TLB entry in AS0 for kernel lowmem for 47x type MMU
  */
-static void __cpuinit ppc47x_pin_tlb(unsigned int virt, unsigned int phys)
+static void ppc47x_pin_tlb(unsigned int virt, unsigned int phys)
 {
 	unsigned int rA;
 	int bolted;
@@ -229,7 +221,7 @@ void setup_initial_memory_limit(phys_addr_t first_memblock_base,
 }
 
 #ifdef CONFIG_SMP
-void __cpuinit mmu_init_secondary(int cpu)
+void __init mmu_init_secondary(int cpu)
 {
 	unsigned long addr;
 	unsigned long memstart = memstart_addr & ~(PPC_PIN_SIZE - 1);

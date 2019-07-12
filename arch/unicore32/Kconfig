@@ -1,41 +1,38 @@
+# SPDX-License-Identifier: GPL-2.0
 config UNICORE32
 	def_bool y
-	select HAVE_MEMBLOCK
+	select ARCH_HAS_DEVMEM_IS_ALLOWED
+	select ARCH_MIGHT_HAVE_PC_PARPORT
+	select ARCH_MIGHT_HAVE_PC_SERIO
 	select HAVE_GENERIC_DMA_COHERENT
-	select HAVE_GENERIC_HARDIRQS
-	select HAVE_DMA_ATTRS
 	select HAVE_KERNEL_GZIP
 	select HAVE_KERNEL_BZIP2
+	select GENERIC_ATOMIC64
 	select HAVE_KERNEL_LZO
 	select HAVE_KERNEL_LZMA
+	select HAVE_PCI
+	select VIRT_TO_BUS
 	select ARCH_HAVE_CUSTOM_GPIO_H
 	select GENERIC_FIND_FIRST_BIT
 	select GENERIC_IRQ_PROBE
 	select GENERIC_IRQ_SHOW
 	select ARCH_WANT_FRAME_POINTERS
 	select GENERIC_IOMAP
+	select MODULES_USE_ELF_REL
+	select NEED_DMA_MAP_STATE
 	help
 	  UniCore-32 is 32-bit Instruction Set Architecture,
 	  including a series of low-power-consumption RISC chip
 	  designs licensed by PKUnity Ltd.
 	  Please see web page at <http://www.pkunity.com/>.
 
-config HAVE_PWM
-	bool
-
-config GENERIC_GPIO
-	def_bool y
-
 config GENERIC_CSUM
 	def_bool y
 
-config NO_IOPORT
+config NO_IOPORT_MAP
 	bool
 
 config STACKTRACE_SUPPORT
-	def_bool y
-
-config HAVE_LATENCYTOP_SUPPORT
 	def_bool y
 
 config LOCKDEP_SUPPORT
@@ -53,9 +50,6 @@ config ARCH_HAS_ILOG2_U32
 config ARCH_HAS_ILOG2_U64
 	bool
 
-config ARCH_HAS_CPUFREQ
-	bool
-
 config GENERIC_HWEIGHT
 	def_bool y
 
@@ -65,12 +59,8 @@ config GENERIC_CALIBRATE_DELAY
 config ARCH_MAY_HAVE_PC_FDC
 	bool
 
-config NEED_DMA_MAP_STATE
-       def_bool y
-
-source "init/Kconfig"
-
-source "kernel/Kconfig.freezer"
+config ZONE_DMA
+	def_bool y
 
 menu "System Type"
 
@@ -85,8 +75,7 @@ config ARCH_PUV3
 	select CPU_UCV2
 	select GENERIC_CLOCKEVENTS
 	select HAVE_CLK
-	select ARCH_REQUIRE_GPIOLIB
-	select ARCH_HAS_CPUFREQ
+	select GPIOLIB
 
 # CONFIGs for ARCH_PUV3
 
@@ -105,7 +94,8 @@ config PUV3_DB0913
 
 config PUV3_NB0916
 	bool "NetBook board (0916)"
-	select HAVE_PWM
+	select PWM
+	select PWM_PUV3
 
 config PUV3_SMW0919
 	bool "Security Mini-Workstation board (0919)"
@@ -119,40 +109,20 @@ endif
 
 source "arch/unicore32/mm/Kconfig"
 
-comment "Floating poing support"
+comment "Floating point support"
 
 config UNICORE_FPU_F64
 	def_bool y if !ARCH_FPGA
 
 endmenu
 
-menu "Bus support"
-
-config PCI
-	bool "PCI Support"
-	help
-	  Find out whether you have a PCI motherboard. PCI is the name of a
-	  bus system, i.e. the way the CPU talks to the other stuff inside
-	  your box. Other bus systems are ISA, EISA, MicroChannel (MCA) or
-	  VESA. If you have PCI, say Y, otherwise N.
-
-source "drivers/pci/Kconfig"
-
-source "drivers/pcmcia/Kconfig"
-
-endmenu
-
 menu "Kernel Features"
-
-source "kernel/Kconfig.preempt"
 
 source "kernel/Kconfig.hz"
 
-source "mm/Kconfig"
-
 config LEDS
 	def_bool y
-	depends on GENERIC_GPIO
+	depends on GPIOLIB
 
 config ALIGNMENT_TRAP
 	def_bool y
@@ -186,19 +156,11 @@ config CMDLINE_FORCE
 
 endmenu
 
-menu "Userspace binary formats"
-
-source "fs/Kconfig.binfmt"
-
-endmenu
-
 menu "Power management options"
 
 source "kernel/power/Kconfig"
 
-if ARCH_HAS_CPUFREQ
 source "drivers/cpufreq/Kconfig"
-endif
 
 config ARCH_SUSPEND_POSSIBLE
 	def_bool y if !ARCH_FPGA
@@ -208,22 +170,13 @@ config ARCH_HIBERNATION_POSSIBLE
 
 endmenu
 
-source "net/Kconfig"
-
 if ARCH_PUV3
 
 config PUV3_GPIO
 	bool
 	depends on !ARCH_FPGA
-	select GENERIC_GPIO
-	select GPIO_SYSFS if EXPERIMENTAL
+	select GPIO_SYSFS
 	default y
-
-config PUV3_PWM
-	tristate
-	default BACKLIGHT_PWM
-	help
-	  Enable support for NB0916 PWM controllers
 
 if PUV3_NB0916
 
@@ -233,7 +186,7 @@ config I2C_BATTERY_BQ27200
 	tristate "I2C Battery BQ27200 Support"
 	select I2C_PUV3
 	select POWER_SUPPLY
-	select BATTERY_BQ27x00
+	select BATTERY_BQ27XXX
 
 config I2C_EEPROM_AT24
 	tristate "I2C EEPROMs AT24 support"
@@ -250,15 +203,3 @@ endmenu
 endif
 
 endif
-
-source "drivers/Kconfig"
-
-source "fs/Kconfig"
-
-source "arch/unicore32/Kconfig.debug"
-
-source "security/Kconfig"
-
-source "crypto/Kconfig"
-
-source "lib/Kconfig"

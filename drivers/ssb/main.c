@@ -13,6 +13,7 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/ssb/ssb.h>
 #include <linux/ssb/ssb_regs.h>
 #include <linux/ssb/ssb_driver_gige.h>
@@ -88,25 +89,6 @@ found:
 	return bus;
 }
 #endif /* CONFIG_SSB_PCMCIAHOST */
-
-#ifdef CONFIG_SSB_SDIOHOST
-struct ssb_bus *ssb_sdio_func_to_bus(struct sdio_func *func)
-{
-	struct ssb_bus *bus;
-
-	ssb_buses_lock();
-	list_for_each_entry(bus, &buses, list) {
-		if (bus->bustype == SSB_BUSTYPE_SDIO &&
-		    bus->host_sdio == func)
-			goto found;
-	}
-	bus = NULL;
-found:
-	ssb_buses_unlock();
-
-	return bus;
-}
-#endif /* CONFIG_SSB_SDIOHOST */
 
 int ssb_for_each_bus_call(unsigned long data,
 			  int (*func)(struct ssb_bus *bus, unsigned long data))
@@ -227,7 +209,7 @@ int ssb_devices_freeze(struct ssb_bus *bus, struct ssb_freeze_context *ctx)
 
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->bus = bus;
-	SSB_WARN_ON(bus->nr_devices > ARRAY_SIZE(ctx->device_frozen));
+	WARN_ON(bus->nr_devices > ARRAY_SIZE(ctx->device_frozen));
 
 	for (i = 0; i < bus->nr_devices; i++) {
 		sdev = ssb_device_get(&bus->devices[i]);
@@ -238,7 +220,7 @@ int ssb_devices_freeze(struct ssb_bus *bus, struct ssb_freeze_context *ctx)
 			continue;
 		}
 		sdrv = drv_to_ssb_drv(sdev->dev->driver);
-		if (SSB_WARN_ON(!sdrv->remove))
+		if (WARN_ON(!sdrv->remove))
 			continue;
 		sdrv->remove(sdev);
 		ctx->device_frozen[i] = 1;
@@ -266,16 +248,17 @@ int ssb_devices_thaw(struct ssb_freeze_context *ctx)
 			continue;
 		sdev = &bus->devices[i];
 
-		if (SSB_WARN_ON(!sdev->dev || !sdev->dev->driver))
+		if (WARN_ON(!sdev->dev || !sdev->dev->driver))
 			continue;
 		sdrv = drv_to_ssb_drv(sdev->dev->driver);
-		if (SSB_WARN_ON(!sdrv || !sdrv->probe))
+		if (WARN_ON(!sdrv || !sdrv->probe))
 			continue;
 
 		err = sdrv->probe(sdev, &sdev->id);
 		if (err) {
-			ssb_printk(KERN_ERR PFX "Failed to thaw device %s\n",
-				   dev_name(sdev->dev));
+			dev_err(sdev->dev,
+				"Failed to thaw device %s\n",
+				dev_name(sdev->dev));
 			result = err;
 		}
 		ssb_device_put(sdev);
@@ -373,7 +356,8 @@ static ssize_t \
 attrib##_show(struct device *dev, struct device_attribute *attr, char *buf) \
 { \
 	return sprintf(buf, format_string, dev_to_ssb_dev(dev)->field); \
-}
+} \
+static DEVICE_ATTR_RO(attrib);
 
 ssb_config_attr(core_num, core_index, "%u\n")
 ssb_config_attr(coreid, id.coreid, "0x%04x\n")
@@ -386,16 +370,18 @@ name_show(struct device *dev, struct device_attribute *attr, char *buf)
 	return sprintf(buf, "%s\n",
 		       ssb_core_name(dev_to_ssb_dev(dev)->id.coreid));
 }
+static DEVICE_ATTR_RO(name);
 
-static struct device_attribute ssb_device_attrs[] = {
-	__ATTR_RO(name),
-	__ATTR_RO(core_num),
-	__ATTR_RO(coreid),
-	__ATTR_RO(vendor),
-	__ATTR_RO(revision),
-	__ATTR_RO(irq),
-	__ATTR_NULL,
+static struct attribute *ssb_device_attrs[] = {
+	&dev_attr_name.attr,
+	&dev_attr_core_num.attr,
+	&dev_attr_coreid.attr,
+	&dev_attr_vendor.attr,
+	&dev_attr_revision.attr,
+	&dev_attr_irq.attr,
+	NULL,
 };
+ATTRIBUTE_GROUPS(ssb_device);
 
 static struct bus_type ssb_bustype = {
 	.name		= "ssb",
@@ -406,7 +392,7 @@ static struct bus_type ssb_bustype = {
 	.suspend	= ssb_device_suspend,
 	.resume		= ssb_device_resume,
 	.uevent		= ssb_device_uevent,
-	.dev_attrs	= ssb_device_attrs,
+	.dev_groups	= ssb_device_groups,
 };
 
 static void ssb_buses_lock(void)
@@ -433,10 +419,23 @@ static void ssb_devices_unregister(struct ssb_bus *bus)
 		if (sdev->dev)
 			device_unregister(sdev->dev);
 	}
+
+#ifdef CONFIG_SSB_EMBEDDED
+	if (bus->bustype == SSB_BUSTYPE_SSB)
+		platform_device_unregister(bus->watchdog);
+#endif
 }
 
 void ssb_bus_unregister(struct ssb_bus *bus)
 {
+	int err;
+
+	err = ssb_gpio_unregister(bus);
+	if (err == -EBUSY)
+		pr_debug("Some GPIOs are still in use\n");
+	else if (err)
+		pr_debug("Can not unregister GPIO driver: %i\n", err);
+
 	ssb_buses_lock();
 	ssb_devices_unregister(bus);
 	list_del(&bus->list);
@@ -482,8 +481,6 @@ static int ssb_devices_register(struct ssb_bus *bus)
 
 		devwrap = kzalloc(sizeof(*devwrap), GFP_KERNEL);
 		if (!devwrap) {
-			ssb_printk(KERN_ERR PFX
-				   "Could not allocate device\n");
 			err = -ENOMEM;
 			goto error;
 		}
@@ -522,17 +519,31 @@ static int ssb_devices_register(struct ssb_bus *bus)
 		sdev->dev = dev;
 		err = device_register(dev);
 		if (err) {
-			ssb_printk(KERN_ERR PFX
-				   "Could not register %s\n",
-				   dev_name(dev));
+			pr_err("Could not register %s\n", dev_name(dev));
 			/* Set dev to NULL to not unregister
 			 * dev on error unwinding. */
 			sdev->dev = NULL;
-			kfree(devwrap);
+			put_device(dev);
 			goto error;
 		}
 		dev_idx++;
 	}
+
+#ifdef CONFIG_SSB_DRIVER_MIPS
+	if (bus->mipscore.pflash.present) {
+		err = platform_device_register(&ssb_pflash_dev);
+		if (err)
+			pr_err("Error registering parallel flash\n");
+	}
+#endif
+
+#ifdef CONFIG_SSB_SFLASH
+	if (bus->mipscore.sflash.present) {
+		err = platform_device_register(&ssb_sflash_dev);
+		if (err)
+			pr_err("Error registering serial flash\n");
+	}
+#endif
 
 	return 0;
 error:
@@ -542,7 +553,7 @@ error:
 }
 
 /* Needs ssb_buses_lock() */
-static int __devinit ssb_attach_queued_buses(void)
+static int ssb_attach_queued_buses(void)
 {
 	struct ssb_bus *bus, *n;
 	int err = 0;
@@ -561,6 +572,15 @@ static int __devinit ssb_attach_queued_buses(void)
 		if (err)
 			goto error;
 		ssb_pcicore_init(&bus->pcicore);
+		if (bus->bustype == SSB_BUSTYPE_SSB)
+			ssb_watchdog_register(bus);
+
+		err = ssb_gpio_init(bus);
+		if (err == -ENOTSUPP)
+			pr_debug("GPIO driver not activated\n");
+		else if (err)
+			pr_debug("Error registering GPIO driver: %i\n", err);
+
 		ssb_bus_may_powerdown(bus);
 
 		err = ssb_devices_register(bus);
@@ -575,166 +595,6 @@ error:
 
 	return err;
 }
-
-static u8 ssb_ssb_read8(struct ssb_device *dev, u16 offset)
-{
-	struct ssb_bus *bus = dev->bus;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	return readb(bus->mmio + offset);
-}
-
-static u16 ssb_ssb_read16(struct ssb_device *dev, u16 offset)
-{
-	struct ssb_bus *bus = dev->bus;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	return readw(bus->mmio + offset);
-}
-
-static u32 ssb_ssb_read32(struct ssb_device *dev, u16 offset)
-{
-	struct ssb_bus *bus = dev->bus;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	return readl(bus->mmio + offset);
-}
-
-#ifdef CONFIG_SSB_BLOCKIO
-static void ssb_ssb_block_read(struct ssb_device *dev, void *buffer,
-			       size_t count, u16 offset, u8 reg_width)
-{
-	struct ssb_bus *bus = dev->bus;
-	void __iomem *addr;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	addr = bus->mmio + offset;
-
-	switch (reg_width) {
-	case sizeof(u8): {
-		u8 *buf = buffer;
-
-		while (count) {
-			*buf = __raw_readb(addr);
-			buf++;
-			count--;
-		}
-		break;
-	}
-	case sizeof(u16): {
-		__le16 *buf = buffer;
-
-		SSB_WARN_ON(count & 1);
-		while (count) {
-			*buf = (__force __le16)__raw_readw(addr);
-			buf++;
-			count -= 2;
-		}
-		break;
-	}
-	case sizeof(u32): {
-		__le32 *buf = buffer;
-
-		SSB_WARN_ON(count & 3);
-		while (count) {
-			*buf = (__force __le32)__raw_readl(addr);
-			buf++;
-			count -= 4;
-		}
-		break;
-	}
-	default:
-		SSB_WARN_ON(1);
-	}
-}
-#endif /* CONFIG_SSB_BLOCKIO */
-
-static void ssb_ssb_write8(struct ssb_device *dev, u16 offset, u8 value)
-{
-	struct ssb_bus *bus = dev->bus;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	writeb(value, bus->mmio + offset);
-}
-
-static void ssb_ssb_write16(struct ssb_device *dev, u16 offset, u16 value)
-{
-	struct ssb_bus *bus = dev->bus;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	writew(value, bus->mmio + offset);
-}
-
-static void ssb_ssb_write32(struct ssb_device *dev, u16 offset, u32 value)
-{
-	struct ssb_bus *bus = dev->bus;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	writel(value, bus->mmio + offset);
-}
-
-#ifdef CONFIG_SSB_BLOCKIO
-static void ssb_ssb_block_write(struct ssb_device *dev, const void *buffer,
-				size_t count, u16 offset, u8 reg_width)
-{
-	struct ssb_bus *bus = dev->bus;
-	void __iomem *addr;
-
-	offset += dev->core_index * SSB_CORE_SIZE;
-	addr = bus->mmio + offset;
-
-	switch (reg_width) {
-	case sizeof(u8): {
-		const u8 *buf = buffer;
-
-		while (count) {
-			__raw_writeb(*buf, addr);
-			buf++;
-			count--;
-		}
-		break;
-	}
-	case sizeof(u16): {
-		const __le16 *buf = buffer;
-
-		SSB_WARN_ON(count & 1);
-		while (count) {
-			__raw_writew((__force u16)(*buf), addr);
-			buf++;
-			count -= 2;
-		}
-		break;
-	}
-	case sizeof(u32): {
-		const __le32 *buf = buffer;
-
-		SSB_WARN_ON(count & 3);
-		while (count) {
-			__raw_writel((__force u32)(*buf), addr);
-			buf++;
-			count -= 4;
-		}
-		break;
-	}
-	default:
-		SSB_WARN_ON(1);
-	}
-}
-#endif /* CONFIG_SSB_BLOCKIO */
-
-/* Ops for the plain SSB bus without a host-device (no PCI or PCMCIA). */
-static const struct ssb_bus_ops ssb_ssb_ops = {
-	.read8		= ssb_ssb_read8,
-	.read16		= ssb_ssb_read16,
-	.read32		= ssb_ssb_read32,
-	.write8		= ssb_ssb_write8,
-	.write16	= ssb_ssb_write16,
-	.write32	= ssb_ssb_write32,
-#ifdef CONFIG_SSB_BLOCKIO
-	.block_read	= ssb_ssb_block_read,
-	.block_write	= ssb_ssb_block_write,
-#endif
-};
 
 static int ssb_fetch_invariants(struct ssb_bus *bus,
 				ssb_invariants_func_t get_invariants)
@@ -753,9 +613,10 @@ out:
 	return err;
 }
 
-static int __devinit ssb_bus_register(struct ssb_bus *bus,
-				      ssb_invariants_func_t get_invariants,
-				      unsigned long baseaddr)
+static int __maybe_unused
+ssb_bus_register(struct ssb_bus *bus,
+		 ssb_invariants_func_t get_invariants,
+		 unsigned long baseaddr)
 {
 	int err;
 
@@ -796,6 +657,7 @@ static int __devinit ssb_bus_register(struct ssb_bus *bus,
 	if (err)
 		goto err_pcmcia_exit;
 	ssb_chipcommon_init(&bus->chipco);
+	ssb_extif_init(&bus->extif);
 	ssb_mipscore_init(&bus->mipscore);
 	err = ssb_fetch_invariants(bus, get_invariants);
 	if (err) {
@@ -836,8 +698,7 @@ err_disable_xtal:
 }
 
 #ifdef CONFIG_SSB_PCIHOST
-int __devinit ssb_bus_pcibus_register(struct ssb_bus *bus,
-				      struct pci_dev *host_pci)
+int ssb_bus_pcibus_register(struct ssb_bus *bus, struct pci_dev *host_pci)
 {
 	int err;
 
@@ -847,22 +708,23 @@ int __devinit ssb_bus_pcibus_register(struct ssb_bus *bus,
 
 	err = ssb_bus_register(bus, ssb_pci_get_invariants, 0);
 	if (!err) {
-		ssb_printk(KERN_INFO PFX "Sonics Silicon Backplane found on "
-			   "PCI device %s\n", dev_name(&host_pci->dev));
+		dev_info(&host_pci->dev,
+			 "Sonics Silicon Backplane found on PCI device %s\n",
+			 dev_name(&host_pci->dev));
 	} else {
-		ssb_printk(KERN_ERR PFX "Failed to register PCI version"
-			   " of SSB with error %d\n", err);
+		dev_err(&host_pci->dev,
+			"Failed to register PCI version of SSB with error %d\n",
+			err);
 	}
 
 	return err;
 }
-EXPORT_SYMBOL(ssb_bus_pcibus_register);
 #endif /* CONFIG_SSB_PCIHOST */
 
 #ifdef CONFIG_SSB_PCMCIAHOST
-int __devinit ssb_bus_pcmciabus_register(struct ssb_bus *bus,
-					 struct pcmcia_device *pcmcia_dev,
-					 unsigned long baseaddr)
+int ssb_bus_pcmciabus_register(struct ssb_bus *bus,
+			       struct pcmcia_device *pcmcia_dev,
+			       unsigned long baseaddr)
 {
 	int err;
 
@@ -872,19 +734,18 @@ int __devinit ssb_bus_pcmciabus_register(struct ssb_bus *bus,
 
 	err = ssb_bus_register(bus, ssb_pcmcia_get_invariants, baseaddr);
 	if (!err) {
-		ssb_printk(KERN_INFO PFX "Sonics Silicon Backplane found on "
-			   "PCMCIA device %s\n", pcmcia_dev->devname);
+		dev_info(&pcmcia_dev->dev,
+			 "Sonics Silicon Backplane found on PCMCIA device %s\n",
+			 pcmcia_dev->devname);
 	}
 
 	return err;
 }
-EXPORT_SYMBOL(ssb_bus_pcmciabus_register);
 #endif /* CONFIG_SSB_PCMCIAHOST */
 
 #ifdef CONFIG_SSB_SDIOHOST
-int __devinit ssb_bus_sdiobus_register(struct ssb_bus *bus,
-				       struct sdio_func *func,
-				       unsigned int quirks)
+int ssb_bus_sdiobus_register(struct ssb_bus *bus, struct sdio_func *func,
+			     unsigned int quirks)
 {
 	int err;
 
@@ -895,8 +756,9 @@ int __devinit ssb_bus_sdiobus_register(struct ssb_bus *bus,
 
 	err = ssb_bus_register(bus, ssb_sdio_get_invariants, ~0);
 	if (!err) {
-		ssb_printk(KERN_INFO PFX "Sonics Silicon Backplane found on "
-			   "SDIO device %s\n", sdio_func_id(func));
+		dev_info(&func->dev,
+			 "Sonics Silicon Backplane found on SDIO device %s\n",
+			 sdio_func_id(func));
 	}
 
 	return err;
@@ -904,23 +766,23 @@ int __devinit ssb_bus_sdiobus_register(struct ssb_bus *bus,
 EXPORT_SYMBOL(ssb_bus_sdiobus_register);
 #endif /* CONFIG_SSB_PCMCIAHOST */
 
-int __devinit ssb_bus_ssbbus_register(struct ssb_bus *bus,
-				      unsigned long baseaddr,
-				      ssb_invariants_func_t get_invariants)
+#ifdef CONFIG_SSB_HOST_SOC
+int ssb_bus_host_soc_register(struct ssb_bus *bus, unsigned long baseaddr)
 {
 	int err;
 
 	bus->bustype = SSB_BUSTYPE_SSB;
-	bus->ops = &ssb_ssb_ops;
+	bus->ops = &ssb_host_soc_ops;
 
-	err = ssb_bus_register(bus, get_invariants, baseaddr);
+	err = ssb_bus_register(bus, ssb_host_soc_get_invariants, baseaddr);
 	if (!err) {
-		ssb_printk(KERN_INFO PFX "Sonics Silicon Backplane found at "
-			   "address 0x%08lX\n", baseaddr);
+		pr_info("Sonics Silicon Backplane found at address 0x%08lX\n",
+			baseaddr);
 	}
 
 	return err;
 }
+#endif
 
 int __ssb_driver_register(struct ssb_driver *drv, struct module *owner)
 {
@@ -999,13 +861,13 @@ u32 ssb_calc_clock_rate(u32 plltype, u32 n, u32 m)
 	case SSB_PLLTYPE_2: /* 48Mhz, 4 dividers */
 		n1 += SSB_CHIPCO_CLK_T2_BIAS;
 		n2 += SSB_CHIPCO_CLK_T2_BIAS;
-		SSB_WARN_ON(!((n1 >= 2) && (n1 <= 7)));
-		SSB_WARN_ON(!((n2 >= 5) && (n2 <= 23)));
+		WARN_ON(!((n1 >= 2) && (n1 <= 7)));
+		WARN_ON(!((n2 >= 5) && (n2 <= 23)));
 		break;
 	case SSB_PLLTYPE_5: /* 25Mhz, 4 dividers */
 		return 100000000;
 	default:
-		SSB_WARN_ON(1);
+		WARN_ON(1);
 	}
 
 	switch (plltype) {
@@ -1054,9 +916,9 @@ u32 ssb_calc_clock_rate(u32 plltype, u32 n, u32 m)
 		m1 += SSB_CHIPCO_CLK_T2_BIAS;
 		m2 += SSB_CHIPCO_CLK_T2M2_BIAS;
 		m3 += SSB_CHIPCO_CLK_T2_BIAS;
-		SSB_WARN_ON(!((m1 >= 2) && (m1 <= 7)));
-		SSB_WARN_ON(!((m2 >= 3) && (m2 <= 10)));
-		SSB_WARN_ON(!((m3 >= 2) && (m3 <= 7)));
+		WARN_ON(!((m1 >= 2) && (m1 <= 7)));
+		WARN_ON(!((m2 >= 3) && (m2 <= 10)));
+		WARN_ON(!((m3 >= 2) && (m3 <= 7)));
 
 		if (!(mc & SSB_CHIPCO_CLK_T2MC_M1BYP))
 			clock /= m1;
@@ -1066,7 +928,7 @@ u32 ssb_calc_clock_rate(u32 plltype, u32 n, u32 m)
 			clock /= m3;
 		return clock;
 	default:
-		SSB_WARN_ON(1);
+		WARN_ON(1);
 	}
 	return 0;
 }
@@ -1117,9 +979,10 @@ static u32 ssb_tmslow_reject_bitmask(struct ssb_device *dev)
 	case SSB_IDLOW_SSBREV_25:     /* TODO - find the proper REJECT bit */
 	case SSB_IDLOW_SSBREV_27:     /* same here */
 		return SSB_TMSLOW_REJECT;	/* this is a guess */
+	case SSB_IDLOW_SSBREV:
+		break;
 	default:
-		printk(KERN_INFO "ssb: Backplane Revision 0x%.8X\n", rev);
-		WARN_ON(1);
+		WARN(1, KERN_INFO "ssb: Backplane Revision 0x%.8X\n", rev);
 	}
 	return (SSB_TMSLOW_REJECT | SSB_TMSLOW_REJECT_23);
 }
@@ -1199,9 +1062,9 @@ static int ssb_wait_bits(struct ssb_device *dev, u16 reg, u32 bitmask,
 		}
 		udelay(10);
 	}
-	printk(KERN_ERR PFX "Timeout waiting for bitmask %08X on "
-			    "register %04X to %s.\n",
-	       bitmask, reg, (set ? "set" : "clear"));
+	dev_err(dev->dev,
+		"Timeout waiting for bitmask %08X on register %04X to %s\n",
+		bitmask, reg, set ? "set" : "clear");
 
 	return -ETIMEDOUT;
 }
@@ -1258,7 +1121,7 @@ static bool ssb_dma_translation_special_bit(struct ssb_device *dev)
 			chip_id == 43231 || chip_id == 43222);
 	}
 
-	return 0;
+	return false;
 }
 
 u32 ssb_dma_translation(struct ssb_device *dev)
@@ -1306,12 +1169,10 @@ int ssb_bus_may_powerdown(struct ssb_bus *bus)
 	if (err)
 		goto error;
 out:
-#ifdef CONFIG_SSB_DEBUG
 	bus->powered_up = 0;
-#endif
 	return err;
 error:
-	ssb_printk(KERN_ERR PFX "Bus powerdown failed\n");
+	pr_err("Bus powerdown failed\n");
 	goto out;
 }
 EXPORT_SYMBOL(ssb_bus_may_powerdown);
@@ -1325,16 +1186,14 @@ int ssb_bus_powerup(struct ssb_bus *bus, bool dynamic_pctl)
 	if (err)
 		goto error;
 
-#ifdef CONFIG_SSB_DEBUG
 	bus->powered_up = 1;
-#endif
 
 	mode = dynamic_pctl ? SSB_CLKMODE_DYNAMIC : SSB_CLKMODE_FAST;
 	ssb_chipco_set_clockmode(&bus->chipco, mode);
 
 	return 0;
 error:
-	ssb_printk(KERN_ERR PFX "Bus powerup failed\n");
+	pr_err("Bus powerup failed\n");
 	return err;
 }
 EXPORT_SYMBOL(ssb_bus_powerup);
@@ -1379,15 +1238,15 @@ u32 ssb_admatch_base(u32 adm)
 		base = (adm & SSB_ADM_BASE0);
 		break;
 	case SSB_ADM_TYPE1:
-		SSB_WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
+		WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
 		base = (adm & SSB_ADM_BASE1);
 		break;
 	case SSB_ADM_TYPE2:
-		SSB_WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
+		WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
 		base = (adm & SSB_ADM_BASE2);
 		break;
 	default:
-		SSB_WARN_ON(1);
+		WARN_ON(1);
 	}
 
 	return base;
@@ -1403,15 +1262,15 @@ u32 ssb_admatch_size(u32 adm)
 		size = ((adm & SSB_ADM_SZ0) >> SSB_ADM_SZ0_SHIFT);
 		break;
 	case SSB_ADM_TYPE1:
-		SSB_WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
+		WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
 		size = ((adm & SSB_ADM_SZ1) >> SSB_ADM_SZ1_SHIFT);
 		break;
 	case SSB_ADM_TYPE2:
-		SSB_WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
+		WARN_ON(adm & SSB_ADM_NEG); /* unsupported */
 		size = ((adm & SSB_ADM_SZ2) >> SSB_ADM_SZ2_SHIFT);
 		break;
 	default:
-		SSB_WARN_ON(1);
+		WARN_ON(1);
 	}
 	size = (1 << (size + 1));
 
@@ -1442,15 +1301,19 @@ static int __init ssb_modinit(void)
 
 	err = b43_pci_ssb_bridge_init();
 	if (err) {
-		ssb_printk(KERN_ERR "Broadcom 43xx PCI-SSB-bridge "
-			   "initialization failed\n");
+		pr_err("Broadcom 43xx PCI-SSB-bridge initialization failed\n");
+		/* don't fail SSB init because of this */
+		err = 0;
+	}
+	err = ssb_host_pcmcia_init();
+	if (err) {
+		pr_err("PCMCIA host initialization failed\n");
 		/* don't fail SSB init because of this */
 		err = 0;
 	}
 	err = ssb_gige_init();
 	if (err) {
-		ssb_printk(KERN_ERR "SSB Broadcom Gigabit Ethernet "
-			   "driver initialization failed\n");
+		pr_err("SSB Broadcom Gigabit Ethernet driver initialization failed\n");
 		/* don't fail SSB init because of this */
 		err = 0;
 	}
@@ -1465,6 +1328,7 @@ fs_initcall(ssb_modinit);
 static void __exit ssb_modexit(void)
 {
 	ssb_gige_exit();
+	ssb_host_pcmcia_exit();
 	b43_pci_ssb_bridge_exit();
 	bus_unregister(&ssb_bustype);
 }

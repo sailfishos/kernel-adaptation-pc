@@ -21,7 +21,7 @@
 
 #include <asm/dcr.h>
 
-#include "edac_core.h"
+#include "edac_module.h"
 #include "ppc4xx_edac.h"
 
 /*
@@ -193,18 +193,18 @@ static int ppc4xx_edac_remove(struct platform_device *device);
  * Device tree node type and compatible tuples this driver can match
  * on.
  */
-static struct of_device_id ppc4xx_edac_match[] = {
+static const struct of_device_id ppc4xx_edac_match[] = {
 	{
 		.compatible	= "ibm,sdram-4xx-ddr2"
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(of, ppc4xx_edac_match);
 
 static struct platform_driver ppc4xx_edac_driver = {
 	.probe			= ppc4xx_edac_probe,
 	.remove			= ppc4xx_edac_remove,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = PPC4XX_EDAC_MODULE_NAME,
 		.of_match_table = ppc4xx_edac_match,
 	},
@@ -838,8 +838,7 @@ ppc4xx_edac_isr(int irq, void *dev_id)
  *
  * Returns a device type width enumeration.
  */
-static enum dev_type __devinit
-ppc4xx_edac_get_dtype(u32 mcopt1)
+static enum dev_type ppc4xx_edac_get_dtype(u32 mcopt1)
 {
 	switch (mcopt1 & SDRAM_MCOPT1_WDTH_MASK) {
 	case SDRAM_MCOPT1_WDTH_16:
@@ -862,8 +861,7 @@ ppc4xx_edac_get_dtype(u32 mcopt1)
  *
  * Returns a memory type enumeration.
  */
-static enum mem_type __devinit
-ppc4xx_edac_get_mtype(u32 mcopt1)
+static enum mem_type ppc4xx_edac_get_mtype(u32 mcopt1)
 {
 	bool rden = ((mcopt1 & SDRAM_MCOPT1_RDEN_MASK) == SDRAM_MCOPT1_RDEN);
 
@@ -893,8 +891,7 @@ ppc4xx_edac_get_mtype(u32 mcopt1)
  * Returns 0 if OK; otherwise, -EINVAL if the memory bank size
  * configuration cannot be determined.
  */
-static int __devinit
-ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
+static int ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 {
 	const struct ppc4xx_edac_pdata *pdata = mci->pvt_info;
 	int status = 0;
@@ -924,7 +921,7 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 	 */
 
 	for (row = 0; row < mci->nr_csrows; row++) {
-		struct csrow_info *csi = &mci->csrows[row];
+		struct csrow_info *csi = mci->csrows[row];
 
 		/*
 		 * Get the configuration settings for this
@@ -977,7 +974,7 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 		 * page size (PAGE_SIZE) or the memory width (2 or 4).
 		 */
 		for (j = 0; j < csi->nr_channels; j++) {
-			struct dimm_info *dimm = csi->channels[j].dimm;
+			struct dimm_info *dimm = csi->channels[j]->dimm;
 
 			dimm->nr_pages  = nr_pages / csi->nr_channels;
 			dimm->grain	= 1;
@@ -1011,11 +1008,9 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
  *
  * Returns 0 if OK; otherwise, < 0 on error.
  */
-static int __devinit
-ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
-		    struct platform_device *op,
-		    const dcr_host_t *dcr_host,
-		    u32 mcopt1)
+static int ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
+			       struct platform_device *op,
+			       const dcr_host_t *dcr_host, u32 mcopt1)
 {
 	int status = 0;
 	const u32 memcheck = (mcopt1 & SDRAM_MCOPT1_MCHK_MASK);
@@ -1034,8 +1029,6 @@ ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
 	pdata			= mci->pvt_info;
 
 	pdata->dcr_host		= *dcr_host;
-	pdata->irqs.sec		= NO_IRQ;
-	pdata->irqs.ded		= NO_IRQ;
 
 	/* Initialize controller capabilities and configuration */
 
@@ -1070,7 +1063,6 @@ ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
 	/* Initialize strings */
 
 	mci->mod_name		= PPC4XX_EDAC_MODULE_NAME;
-	mci->mod_ver		= PPC4XX_EDAC_MODULE_REVISION;
 	mci->ctl_name		= ppc4xx_edac_match->compatible,
 	mci->dev_name		= np->full_name;
 
@@ -1105,8 +1097,8 @@ ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
  * Returns 0 if OK; otherwise, -ENODEV if the interrupts could not be
  * mapped and assigned.
  */
-static int __devinit
-ppc4xx_edac_register_irq(struct platform_device *op, struct mem_ctl_info *mci)
+static int ppc4xx_edac_register_irq(struct platform_device *op,
+				    struct mem_ctl_info *mci)
 {
 	int status = 0;
 	int ded_irq, sec_irq;
@@ -1116,7 +1108,7 @@ ppc4xx_edac_register_irq(struct platform_device *op, struct mem_ctl_info *mci)
 	ded_irq = irq_of_parse_and_map(np, INTMAP_ECCDED_INDEX);
 	sec_irq = irq_of_parse_and_map(np, INTMAP_ECCSEC_INDEX);
 
-	if (ded_irq == NO_IRQ || sec_irq == NO_IRQ) {
+	if (!ded_irq || !sec_irq) {
 		ppc4xx_edac_mc_printk(KERN_ERR, mci,
 				      "Unable to map interrupts.\n");
 		status = -ENODEV;
@@ -1125,7 +1117,7 @@ ppc4xx_edac_register_irq(struct platform_device *op, struct mem_ctl_info *mci)
 
 	status = request_irq(ded_irq,
 			     ppc4xx_edac_isr,
-			     IRQF_DISABLED,
+			     0,
 			     "[EDAC] MC ECCDED",
 			     mci);
 
@@ -1139,7 +1131,7 @@ ppc4xx_edac_register_irq(struct platform_device *op, struct mem_ctl_info *mci)
 
 	status = request_irq(sec_irq,
 			     ppc4xx_edac_isr,
-			     IRQF_DISABLED,
+			     0,
 			     "[EDAC] MC ECCSEC",
 			     mci);
 
@@ -1183,8 +1175,8 @@ ppc4xx_edac_register_irq(struct platform_device *op, struct mem_ctl_info *mci)
  * Returns 0 if the DCRs were successfully mapped; otherwise, < 0 on
  * error.
  */
-static int __devinit
-ppc4xx_edac_map_dcrs(const struct device_node *np, dcr_host_t *dcr_host)
+static int ppc4xx_edac_map_dcrs(const struct device_node *np,
+				dcr_host_t *dcr_host)
 {
 	unsigned int dcr_base, dcr_len;
 
@@ -1232,7 +1224,7 @@ ppc4xx_edac_map_dcrs(const struct device_node *np, dcr_host_t *dcr_host)
  * Returns 0 if the controller instance was successfully bound to the
  * driver; otherwise, < 0 on error.
  */
-static int __devinit ppc4xx_edac_probe(struct platform_device *op)
+static int ppc4xx_edac_probe(struct platform_device *op)
 {
 	int status = 0;
 	u32 mcopt1, memcheck;
@@ -1274,8 +1266,8 @@ static int __devinit ppc4xx_edac_probe(struct platform_device *op)
 	memcheck = (mcopt1 & SDRAM_MCOPT1_MCHK_MASK);
 
 	if (memcheck == SDRAM_MCOPT1_MCHK_NON) {
-		ppc4xx_edac_printk(KERN_INFO, "%s: No ECC memory detected or "
-				   "ECC is disabled.\n", np->full_name);
+		ppc4xx_edac_printk(KERN_INFO, "%pOF: No ECC memory detected or "
+				   "ECC is disabled.\n", np);
 		status = -ENODEV;
 		goto done;
 	}
@@ -1294,9 +1286,9 @@ static int __devinit ppc4xx_edac_probe(struct platform_device *op)
 	mci = edac_mc_alloc(ppc4xx_edac_instance, ARRAY_SIZE(layers), layers,
 			    sizeof(struct ppc4xx_edac_pdata));
 	if (mci == NULL) {
-		ppc4xx_edac_printk(KERN_ERR, "%s: "
+		ppc4xx_edac_printk(KERN_ERR, "%pOF: "
 				   "Failed to allocate EDAC MC instance!\n",
-				   np->full_name);
+				   np);
 		status = -ENOMEM;
 		goto done;
 	}

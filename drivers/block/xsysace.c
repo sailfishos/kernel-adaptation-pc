@@ -88,7 +88,7 @@
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include <linux/mutex.h>
 #include <linux/ata.h>
 #include <linux/hdreg.h>
@@ -209,6 +209,8 @@ struct ace_device {
 	struct device *dev;
 	struct request_queue *queue;
 	struct gendisk *gd;
+	struct blk_mq_tag_set tag_set;
+	struct list_head rq_list;
 
 	/* Inserted CF card parameters */
 	u16 cf_id[ATA_ID_WORDS];
@@ -407,7 +409,7 @@ static void ace_dump_regs(struct ace_device *ace)
 		 ace_in32(ace, ACE_CFGLBA), ace_in(ace, ACE_FATSTAT));
 }
 
-void ace_fix_driveid(u16 *id)
+static void ace_fix_driveid(u16 *id)
 {
 #if defined(__BIG_ENDIAN)
 	int i;
@@ -462,18 +464,26 @@ static inline void ace_fsm_yieldirq(struct ace_device *ace)
 	ace->fsm_continue_flag = 0;
 }
 
-/* Get the next read/write request; ending requests that we don't handle */
-struct request *ace_get_next_request(struct request_queue * q)
+static bool ace_has_next_request(struct request_queue *q)
 {
-	struct request *req;
+	struct ace_device *ace = q->queuedata;
 
-	while ((req = blk_peek_request(q)) != NULL) {
-		if (req->cmd_type == REQ_TYPE_FS)
-			break;
-		blk_start_request(req);
-		__blk_end_request_all(req, -EIO);
+	return !list_empty(&ace->rq_list);
+}
+
+/* Get the next read/write request; ending requests that we don't handle */
+static struct request *ace_get_next_request(struct request_queue *q)
+{
+	struct ace_device *ace = q->queuedata;
+	struct request *rq;
+
+	rq = list_first_entry_or_null(&ace->rq_list, struct request, queuelist);
+	if (rq) {
+		list_del_init(&rq->queuelist);
+		blk_mq_start_request(rq);
 	}
-	return req;
+
+	return NULL;
 }
 
 static void ace_fsm_dostate(struct ace_device *ace)
@@ -499,11 +509,11 @@ static void ace_fsm_dostate(struct ace_device *ace)
 
 		/* Drop all in-flight and pending requests */
 		if (ace->req) {
-			__blk_end_request_all(ace->req, -EIO);
+			blk_mq_end_request(ace->req, BLK_STS_IOERR);
 			ace->req = NULL;
 		}
-		while ((req = blk_fetch_request(ace->queue)) != NULL)
-			__blk_end_request_all(req, -EIO);
+		while ((req = ace_get_next_request(ace->queue)) != NULL)
+			blk_mq_end_request(req, BLK_STS_IOERR);
 
 		/* Drop back to IDLE state and notify waiters */
 		ace->fsm_state = ACE_FSM_STATE_IDLE;
@@ -517,7 +527,7 @@ static void ace_fsm_dostate(struct ace_device *ace)
 	switch (ace->fsm_state) {
 	case ACE_FSM_STATE_IDLE:
 		/* See if there is anything to do */
-		if (ace->id_req_count || ace_get_next_request(ace->queue)) {
+		if (ace->id_req_count || ace_has_next_request(ace->queue)) {
 			ace->fsm_iter_num++;
 			ace->fsm_state = ACE_FSM_STATE_REQ_LOCK;
 			mod_timer(&ace->stall_timer, jiffies + HZ);
@@ -651,7 +661,6 @@ static void ace_fsm_dostate(struct ace_device *ace)
 			ace->fsm_state = ACE_FSM_STATE_IDLE;
 			break;
 		}
-		blk_start_request(req);
 
 		/* Okay, it's a data request, set it up for transfer */
 		dev_dbg(ace->dev,
@@ -661,7 +670,7 @@ static void ace_fsm_dostate(struct ace_device *ace)
 			rq_data_dir(req));
 
 		ace->req = req;
-		ace->data_ptr = req->buffer;
+		ace->data_ptr = bio_data(req->bio);
 		ace->data_count = blk_rq_cur_sectors(req) * ACE_BUF_PER_SECTOR;
 		ace_out32(ace, ACE_MPULBA, blk_rq_pos(req) & 0x0FFFFFFF);
 
@@ -728,12 +737,13 @@ static void ace_fsm_dostate(struct ace_device *ace)
 		}
 
 		/* bio finished; is there another one? */
-		if (__blk_end_request_cur(ace->req, 0)) {
+		if (blk_update_request(ace->req, BLK_STS_OK,
+		    blk_rq_cur_bytes(ace->req))) {
 			/* dev_dbg(ace->dev, "next block; h=%u c=%u\n",
 			 *      blk_rq_sectors(ace->req),
 			 *      blk_rq_cur_sectors(ace->req));
 			 */
-			ace->data_ptr = ace->req->buffer;
+			ace->data_ptr = bio_data(ace->req->bio);
 			ace->data_count = blk_rq_cur_sectors(ace->req) * 16;
 			ace_fsm_yieldirq(ace);
 			break;
@@ -770,9 +780,9 @@ static void ace_fsm_tasklet(unsigned long data)
 	spin_unlock_irqrestore(&ace->lock, flags);
 }
 
-static void ace_stall_timer(unsigned long data)
+static void ace_stall_timer(struct timer_list *t)
 {
-	struct ace_device *ace = (void *)data;
+	struct ace_device *ace = from_timer(ace, t, stall_timer);
 	unsigned long flags;
 
 	dev_warn(ace->dev,
@@ -854,17 +864,23 @@ static irqreturn_t ace_interrupt(int irq, void *dev_id)
 /* ---------------------------------------------------------------------
  * Block ops
  */
-static void ace_request(struct request_queue * q)
+static blk_status_t ace_queue_rq(struct blk_mq_hw_ctx *hctx,
+				 const struct blk_mq_queue_data *bd)
 {
-	struct request *req;
-	struct ace_device *ace;
+	struct ace_device *ace = hctx->queue->queuedata;
+	struct request *req = bd->rq;
 
-	req = ace_get_next_request(q);
-
-	if (req) {
-		ace = req->rq_disk->private_data;
-		tasklet_schedule(&ace->fsm_tasklet);
+	if (blk_rq_is_passthrough(req)) {
+		blk_mq_start_request(req);
+		return BLK_STS_IOERR;
 	}
+
+	spin_lock_irq(&ace->lock);
+	list_add_tail(&req->queuelist, &ace->rq_list);
+	spin_unlock_irq(&ace->lock);
+
+	tasklet_schedule(&ace->fsm_tasklet);
+	return BLK_STS_OK;
 }
 
 static unsigned int ace_check_events(struct gendisk *gd, unsigned int clearing)
@@ -915,7 +931,7 @@ static int ace_open(struct block_device *bdev, fmode_t mode)
 	return 0;
 }
 
-static int ace_release(struct gendisk *disk, fmode_t mode)
+static void ace_release(struct gendisk *disk, fmode_t mode)
 {
 	struct ace_device *ace = disk->private_data;
 	unsigned long flags;
@@ -932,7 +948,6 @@ static int ace_release(struct gendisk *disk, fmode_t mode)
 	}
 	spin_unlock_irqrestore(&ace->lock, flags);
 	mutex_unlock(&xsysace_mutex);
-	return 0;
 }
 
 static int ace_getgeo(struct block_device *bdev, struct hd_geometry *geo)
@@ -958,10 +973,14 @@ static const struct block_device_operations ace_fops = {
 	.getgeo = ace_getgeo,
 };
 
+static const struct blk_mq_ops ace_mq_ops = {
+	.queue_rq	= ace_queue_rq,
+};
+
 /* --------------------------------------------------------------------
  * SystemACE device setup/teardown code
  */
-static int __devinit ace_setup(struct ace_device *ace)
+static int ace_setup(struct ace_device *ace)
 {
 	u16 version;
 	u16 val;
@@ -973,6 +992,7 @@ static int __devinit ace_setup(struct ace_device *ace)
 
 	spin_lock_init(&ace->lock);
 	init_completion(&ace->id_completion);
+	INIT_LIST_HEAD(&ace->rq_list);
 
 	/*
 	 * Map the device
@@ -985,15 +1005,22 @@ static int __devinit ace_setup(struct ace_device *ace)
 	 * Initialize the state machine tasklet and stall timer
 	 */
 	tasklet_init(&ace->fsm_tasklet, ace_fsm_tasklet, (unsigned long)ace);
-	setup_timer(&ace->stall_timer, ace_stall_timer, (unsigned long)ace);
+	timer_setup(&ace->stall_timer, ace_stall_timer, 0);
 
 	/*
 	 * Initialize the request queue
 	 */
-	ace->queue = blk_init_queue(ace_request, &ace->lock);
-	if (ace->queue == NULL)
+	ace->queue = blk_mq_init_sq_queue(&ace->tag_set, &ace_mq_ops, 2,
+						BLK_MQ_F_SHOULD_MERGE);
+	if (IS_ERR(ace->queue)) {
+		rc = PTR_ERR(ace->queue);
+		ace->queue = NULL;
 		goto err_blk_initq;
+	}
+	ace->queue->queuedata = ace;
+
 	blk_queue_logical_block_size(ace->queue, 512);
+	blk_queue_bounce_limit(ace->queue, BLK_BOUNCE_HIGH);
 
 	/*
 	 * Allocate and initialize GD structure
@@ -1063,9 +1090,12 @@ static int __devinit ace_setup(struct ace_device *ace)
 	return 0;
 
 err_read:
+	/* prevent double queue cleanup */
+	ace->gd->queue = NULL;
 	put_disk(ace->gd);
 err_alloc_disk:
 	blk_cleanup_queue(ace->queue);
+	blk_mq_free_tag_set(&ace->tag_set);
 err_blk_initq:
 	iounmap(ace->baseaddr);
 err_ioremap:
@@ -1074,15 +1104,17 @@ err_ioremap:
 	return -ENOMEM;
 }
 
-static void __devexit ace_teardown(struct ace_device *ace)
+static void ace_teardown(struct ace_device *ace)
 {
 	if (ace->gd) {
 		del_gendisk(ace->gd);
 		put_disk(ace->gd);
 	}
 
-	if (ace->queue)
+	if (ace->queue) {
 		blk_cleanup_queue(ace->queue);
+		blk_mq_free_tag_set(&ace->tag_set);
+	}
 
 	tasklet_kill(&ace->fsm_tasklet);
 
@@ -1092,9 +1124,8 @@ static void __devexit ace_teardown(struct ace_device *ace)
 	iounmap(ace->baseaddr);
 }
 
-static int __devinit
-ace_alloc(struct device *dev, int id, resource_size_t physaddr,
-	  int irq, int bus_width)
+static int ace_alloc(struct device *dev, int id, resource_size_t physaddr,
+		     int irq, int bus_width)
 {
 	struct ace_device *ace;
 	int rc;
@@ -1135,7 +1166,7 @@ err_noreg:
 	return rc;
 }
 
-static void __devexit ace_free(struct device *dev)
+static void ace_free(struct device *dev)
 {
 	struct ace_device *ace = dev_get_drvdata(dev);
 	dev_dbg(dev, "ace_free(%p)\n", dev);
@@ -1151,7 +1182,7 @@ static void __devexit ace_free(struct device *dev)
  * Platform Bus Support
  */
 
-static int __devinit ace_probe(struct platform_device *dev)
+static int ace_probe(struct platform_device *dev)
 {
 	resource_size_t physaddr = 0;
 	int bus_width = ACE_BUS_WIDTH_16; /* FIXME: should not be hard coded */
@@ -1162,8 +1193,7 @@ static int __devinit ace_probe(struct platform_device *dev)
 	dev_dbg(&dev->dev, "ace_probe(%p)\n", dev);
 
 	/* device id and bus width */
-	of_property_read_u32(dev->dev.of_node, "port-number", &id);
-	if (id < 0)
+	if (of_property_read_u32(dev->dev.of_node, "port-number", &id))
 		id = 0;
 	if (of_find_property(dev->dev.of_node, "8-bit", NULL))
 		bus_width = ACE_BUS_WIDTH_8;
@@ -1182,7 +1212,7 @@ static int __devinit ace_probe(struct platform_device *dev)
 /*
  * Platform bus remove() method
  */
-static int __devexit ace_remove(struct platform_device *dev)
+static int ace_remove(struct platform_device *dev)
 {
 	ace_free(&dev->dev);
 	return 0;
@@ -1190,7 +1220,7 @@ static int __devexit ace_remove(struct platform_device *dev)
 
 #if defined(CONFIG_OF)
 /* Match table for of_platform binding */
-static const struct of_device_id ace_of_match[] __devinitconst = {
+static const struct of_device_id ace_of_match[] = {
 	{ .compatible = "xlnx,opb-sysace-1.00.b", },
 	{ .compatible = "xlnx,opb-sysace-1.00.c", },
 	{ .compatible = "xlnx,xps-sysace-1.00.a", },
@@ -1204,9 +1234,8 @@ MODULE_DEVICE_TABLE(of, ace_of_match);
 
 static struct platform_driver ace_platform_driver = {
 	.probe = ace_probe,
-	.remove = __devexit_p(ace_remove),
+	.remove = ace_remove,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "xsysace",
 		.of_match_table = ace_of_match,
 	},

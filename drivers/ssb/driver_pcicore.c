@@ -8,13 +8,13 @@
  * Licensed under the GNU/GPL. See COPYING for details.
  */
 
+#include "ssb_private.h"
+
 #include <linux/ssb/ssb.h>
 #include <linux/pci.h>
 #include <linux/export.h>
 #include <linux/delay.h>
 #include <linux/ssb/ssb_embedded.h>
-
-#include "ssb_private.h"
 
 static u32 ssb_pcie_read(struct ssb_pcicore *pc, u32 address);
 static void ssb_pcie_write(struct ssb_pcicore *pc, u32 address, u32 data);
@@ -115,7 +115,7 @@ static int ssb_extpci_read_config(struct ssb_pcicore *pc,
 	u32 addr, val;
 	void __iomem *mmio;
 
-	SSB_WARN_ON(!pc->hostmode);
+	WARN_ON(!pc->hostmode);
 	if (unlikely(len != 1 && len != 2 && len != 4))
 		goto out;
 	addr = get_cfgspace_addr(pc, bus, dev, func, off);
@@ -161,7 +161,7 @@ static int ssb_extpci_write_config(struct ssb_pcicore *pc,
 	u32 addr, val = 0;
 	void __iomem *mmio;
 
-	SSB_WARN_ON(!pc->hostmode);
+	WARN_ON(!pc->hostmode);
 	if (unlikely(len != 1 && len != 2 && len != 4))
 		goto out;
 	addr = get_cfgspace_addr(pc, bus, dev, func, off);
@@ -263,8 +263,7 @@ int ssb_pcicore_plat_dev_init(struct pci_dev *d)
 		return -ENODEV;
 	}
 
-	ssb_printk(KERN_INFO "PCI: Fixing up device %s\n",
-		   pci_name(d));
+	dev_info(&d->dev, "PCI: Fixing up device %s\n", pci_name(d));
 
 	/* Fix up interrupt lines */
 	d->irq = ssb_mips_irq(extpci_core->dev) + 2;
@@ -285,12 +284,12 @@ static void ssb_pcicore_fixup_pcibridge(struct pci_dev *dev)
 	if (dev->bus->number != 0 || PCI_SLOT(dev->devfn) != 0)
 		return;
 
-	ssb_printk(KERN_INFO "PCI: Fixing up bridge %s\n", pci_name(dev));
+	dev_info(&dev->dev, "PCI: Fixing up bridge %s\n", pci_name(dev));
 
 	/* Enable PCI bridge bus mastering and memory space */
 	pci_set_master(dev);
 	if (pcibios_enable_device(dev, ~0) < 0) {
-		ssb_printk(KERN_ERR "PCI: SSB bridge enable failed\n");
+		dev_err(&dev->dev, "PCI: SSB bridge enable failed\n");
 		return;
 	}
 
@@ -299,8 +298,9 @@ static void ssb_pcicore_fixup_pcibridge(struct pci_dev *dev)
 
 	/* Make sure our latency is high enough to handle the devices behind us */
 	lat = 168;
-	ssb_printk(KERN_INFO "PCI: Fixing latency timer of device %s to %u\n",
-		   pci_name(dev), lat);
+	dev_info(&dev->dev,
+		 "PCI: Fixing latency timer of device %s to %u\n",
+		 pci_name(dev), lat);
 	pci_write_config_byte(dev, PCI_LATENCY_TIMER, lat);
 }
 DECLARE_PCI_FIXUP_EARLY(PCI_ANY_ID, PCI_ANY_ID, ssb_pcicore_fixup_pcibridge);
@@ -315,7 +315,7 @@ int ssb_pcicore_pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 	return ssb_mips_irq(extpci_core->dev) + 2;
 }
 
-static void __devinit ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
+static void ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 {
 	u32 val;
 
@@ -323,7 +323,7 @@ static void __devinit ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 		return;
 	extpci_core = pc;
 
-	ssb_dprintk(KERN_INFO PFX "PCIcore in host mode found\n");
+	dev_dbg(pc->dev->dev, "PCIcore in host mode found\n");
 	/* Reset devices on the external PCI bus */
 	val = SSB_PCICORE_CTL_RST_OE;
 	val |= SSB_PCICORE_CTL_CLK_OE;
@@ -338,7 +338,7 @@ static void __devinit ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 	udelay(1); /* Assertion time demanded by the PCI standard */
 
 	if (pc->dev->bus->has_cardbus_slot) {
-		ssb_dprintk(KERN_INFO PFX "CardBus slot detected\n");
+		dev_dbg(pc->dev->dev, "CardBus slot detected\n");
 		pc->cardbusmode = 1;
 		/* GPIO 1 resets the bridge */
 		ssb_gpio_out(pc->dev->bus, 1, 1);
@@ -357,6 +357,16 @@ static void __devinit ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 	/* 1GB memory window */
 	pcicore_write32(pc, SSB_PCICORE_SBTOPCI2,
 			SSB_PCICORE_SBTOPCI_MEM | SSB_PCI_DMA);
+
+	/*
+	 * Accessing PCI config without a proper delay after devices reset (not
+	 * GPIO reset) was causing reboots on WRT300N v1.0 (BCM4704).
+	 * Tested delay 850 us lowered reboot chance to 50-80%, 1000 us fixed it
+	 * completely. Flushing all writes was also tested but with no luck.
+	 * The same problem was reported for WRT350N v1 (BCM4705), so we just
+	 * sleep here unconditionally.
+	 */
+	usleep_range(1000, 2000);
 
 	/* Enable PCI bridge BAR0 prefetch and burst */
 	val = PCI_COMMAND_MASTER | PCI_COMMAND_MEMORY;
@@ -380,7 +390,7 @@ static void __devinit ssb_pcicore_init_hostmode(struct ssb_pcicore *pc)
 	register_pci_controller(&ssb_pcicore_controller);
 }
 
-static int __devinit pcicore_is_in_hostmode(struct ssb_pcicore *pc)
+static int pcicore_is_in_hostmode(struct ssb_pcicore *pc)
 {
 	struct ssb_bus *bus = pc->dev->bus;
 	u16 chipid_top;
@@ -413,7 +423,7 @@ static int __devinit pcicore_is_in_hostmode(struct ssb_pcicore *pc)
  * Workarounds.
  **************************************************/
 
-static void __devinit ssb_pcicore_fix_sprom_core_index(struct ssb_pcicore *pc)
+static void ssb_pcicore_fix_sprom_core_index(struct ssb_pcicore *pc)
 {
 	u16 tmp = pcicore_read16(pc, SSB_PCICORE_SPROM(0));
 	if (((tmp & 0xF000) >> 12) != pc->dev->core_index) {
@@ -515,7 +525,7 @@ static void ssb_pcicore_pcie_setup_workarounds(struct ssb_pcicore *pc)
  * Generic and Clientmode operation code.
  **************************************************/
 
-static void __devinit ssb_pcicore_init_clientmode(struct ssb_pcicore *pc)
+static void ssb_pcicore_init_clientmode(struct ssb_pcicore *pc)
 {
 	struct ssb_device *pdev = pc->dev;
 	struct ssb_bus *bus = pdev->bus;
@@ -534,7 +544,7 @@ static void __devinit ssb_pcicore_init_clientmode(struct ssb_pcicore *pc)
 	}
 }
 
-void __devinit ssb_pcicore_init(struct ssb_pcicore *pc)
+void ssb_pcicore_init(struct ssb_pcicore *pc)
 {
 	struct ssb_device *dev = pc->dev;
 
@@ -692,7 +702,7 @@ int ssb_pcicore_dev_irqvecs_enable(struct ssb_pcicore *pc,
 		/* Calculate the "coremask" for the device. */
 		coremask = (1 << dev->core_index);
 
-		SSB_WARN_ON(bus->bustype != SSB_BUSTYPE_PCI);
+		WARN_ON(bus->bustype != SSB_BUSTYPE_PCI);
 		err = pci_read_config_dword(bus->host_pci, SSB_PCI_IRQMASK, &tmp);
 		if (err)
 			goto out;

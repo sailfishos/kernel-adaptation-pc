@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for the HP iLO management processor.
  *
  * Copyright (C) 2008 Hewlett-Packard Development Company, L.P.
- *	David Altobelli <david.altobelli@hp.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ *	David Altobelli <david.altobelli@hpe.com>
  */
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -30,7 +27,7 @@
 
 static struct class *ilo_class;
 static unsigned int ilo_major;
-static unsigned int max_ccb = MIN_CCB;
+static unsigned int max_ccb = 16;
 static char ilo_hwdev[MAX_ILO_DEV];
 
 static inline int get_entry_id(int entry)
@@ -514,7 +511,7 @@ static ssize_t ilo_write(struct file *fp, const char __user *buf,
 	return err ? -EFAULT : len;
 }
 
-static unsigned int ilo_poll(struct file *fp, poll_table *wait)
+static __poll_t ilo_poll(struct file *fp, poll_table *wait)
 {
 	struct ccb_data *data = fp->private_data;
 	struct ccb *driver_ccb = &data->driver_ccb;
@@ -522,9 +519,9 @@ static unsigned int ilo_poll(struct file *fp, poll_table *wait)
 	poll_wait(fp, &data->ccb_waitq, wait);
 
 	if (is_channel_reset(driver_ccb))
-		return POLLERR;
+		return EPOLLERR;
 	else if (ilo_pkt_recv(data->ilo_hw, driver_ccb))
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 
 	return 0;
 }
@@ -686,9 +683,10 @@ static void ilo_unmap_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 	pci_iounmap(pdev, hw->mmio_vaddr);
 }
 
-static int __devinit ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
+static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 {
-	int error = -ENOMEM;
+	int bar;
+	unsigned long off;
 
 	/* map the memory mapped i/o registers */
 	hw->mmio_vaddr = pci_iomap(pdev, 1, 0);
@@ -698,7 +696,15 @@ static int __devinit ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 	}
 
 	/* map the adapter shared memory region */
-	hw->ram_vaddr = pci_iomap(pdev, 2, max_ccb * ILOHW_CCB_SZ);
+	if (pdev->subsystem_device == 0x00E4) {
+		bar = 5;
+		/* Last 8k is reserved for CCBs */
+		off = pci_resource_len(pdev, bar) - 0x2000;
+	} else {
+		bar = 2;
+		off = 0;
+	}
+	hw->ram_vaddr = pci_iomap_range(pdev, bar, off, max_ccb * ILOHW_CCB_SZ);
 	if (hw->ram_vaddr == NULL) {
 		dev_err(&pdev->dev, "Error mapping shared mem\n");
 		goto mmio_free;
@@ -717,13 +723,16 @@ ram_free:
 mmio_free:
 	pci_iounmap(pdev, hw->mmio_vaddr);
 out:
-	return error;
+	return -ENOMEM;
 }
 
 static void ilo_remove(struct pci_dev *pdev)
 {
 	int i, minor;
 	struct ilo_hwinfo *ilo_hw = pci_get_drvdata(pdev);
+
+	if (!ilo_hw)
+		return;
 
 	clear_device(ilo_hw);
 
@@ -736,16 +745,27 @@ static void ilo_remove(struct pci_dev *pdev)
 	free_irq(pdev->irq, ilo_hw);
 	ilo_unmap_device(pdev, ilo_hw);
 	pci_release_regions(pdev);
-	pci_disable_device(pdev);
+	/*
+	 * pci_disable_device(pdev) used to be here. But this PCI device has
+	 * two functions with interrupt lines connected to a single pin. The
+	 * other one is a USB host controller. So when we disable the PIN here
+	 * e.g. by rmmod hpilo, the controller stops working. It is because
+	 * the interrupt link is disabled in ACPI since it is not refcounted
+	 * yet. See acpi_pci_link_free_irq called from acpi_pci_irq_disable.
+	 */
 	kfree(ilo_hw);
 	ilo_hwdev[(minor / max_ccb)] = 0;
 }
 
-static int __devinit ilo_probe(struct pci_dev *pdev,
+static int ilo_probe(struct pci_dev *pdev,
 			       const struct pci_device_id *ent)
 {
-	int devnum, minor, start, error;
+	int devnum, minor, start, error = 0;
 	struct ilo_hwinfo *ilo_hw;
+
+	/* Ignore subsystem_device = 0x1979 (set by BIOS)  */
+	if (pdev->subsystem_device == 0x1979)
+		return 0;
 
 	if (max_ccb > MAX_CCB)
 		max_ccb = MAX_CCB;
@@ -826,7 +846,7 @@ unmap:
 free_regions:
 	pci_release_regions(pdev);
 disable:
-	pci_disable_device(pdev);
+/*	pci_disable_device(pdev);  see comment in ilo_remove */
 free:
 	kfree(ilo_hw);
 out:
@@ -834,7 +854,7 @@ out:
 	return error;
 }
 
-static struct pci_device_id ilo_devices[] = {
+static const struct pci_device_id ilo_devices[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_COMPAQ, 0xB204) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_HP, 0x3307) },
 	{ }
@@ -845,7 +865,7 @@ static struct pci_driver ilo_driver = {
 	.name 	  = ILO_NAME,
 	.id_table = ilo_devices,
 	.probe 	  = ilo_probe,
-	.remove   = __devexit_p(ilo_remove),
+	.remove   = ilo_remove,
 };
 
 static int __init ilo_init(void)
@@ -885,14 +905,14 @@ static void __exit ilo_exit(void)
 	class_destroy(ilo_class);
 }
 
-MODULE_VERSION("1.3");
+MODULE_VERSION("1.5.0");
 MODULE_ALIAS(ILO_NAME);
 MODULE_DESCRIPTION(ILO_NAME);
-MODULE_AUTHOR("David Altobelli <david.altobelli@hp.com>");
+MODULE_AUTHOR("David Altobelli <david.altobelli@hpe.com>");
 MODULE_LICENSE("GPL v2");
 
 module_param(max_ccb, uint, 0444);
-MODULE_PARM_DESC(max_ccb, "Maximum number of HP iLO channels to attach (8)");
+MODULE_PARM_DESC(max_ccb, "Maximum number of HP iLO channels to attach (8-24)(default=16)");
 
 module_init(ilo_init);
 module_exit(ilo_exit);

@@ -69,7 +69,7 @@ static int __init get_offset_from_cmdline(char *str)
 __setup("cache-sram-size=", get_size_from_cmdline);
 __setup("cache-sram-offset=", get_offset_from_cmdline);
 
-static int __devinit mpc85xx_l2ctlr_of_probe(struct platform_device *dev)
+static int mpc85xx_l2ctlr_of_probe(struct platform_device *dev)
 {
 	long rval;
 	unsigned int rem;
@@ -90,12 +90,8 @@ static int __devinit mpc85xx_l2ctlr_of_probe(struct platform_device *dev)
 	}
 	l2cache_size = *prop;
 
-	if (get_cache_sram_params(&sram_params)) {
-		dev_err(&dev->dev,
-			"Entire L2 as cache, provide valid sram offset and size\n");
-		return -EINVAL;
-	}
-
+	if (get_cache_sram_params(&sram_params))
+		return 0; /* fall back to L2 cache only */
 
 	rem = l2cache_size % sram_params.sram_size;
 	ways = LOCK_WAYS_FULL * sram_params.sram_size / l2cache_size;
@@ -160,7 +156,7 @@ static int __devinit mpc85xx_l2ctlr_of_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __devexit mpc85xx_l2ctlr_of_remove(struct platform_device *dev)
+static int mpc85xx_l2ctlr_of_remove(struct platform_device *dev)
 {
 	BUG_ON(!l2ctlr);
 
@@ -171,7 +167,7 @@ static int __devexit mpc85xx_l2ctlr_of_remove(struct platform_device *dev)
 	return 0;
 }
 
-static struct of_device_id mpc85xx_l2ctlr_of_match[] = {
+static const struct of_device_id mpc85xx_l2ctlr_of_match[] = {
 	{
 		.compatible = "fsl,p2020-l2-cache-controller",
 	},
@@ -193,17 +189,27 @@ static struct of_device_id mpc85xx_l2ctlr_of_match[] = {
 	{
 		.compatible = "fsl,mpc8548-l2-cache-controller",
 	},
+	{	.compatible = "fsl,mpc8544-l2-cache-controller",},
+	{	.compatible = "fsl,mpc8572-l2-cache-controller",},
+	{	.compatible = "fsl,mpc8536-l2-cache-controller",},
+	{	.compatible = "fsl,p1021-l2-cache-controller",},
+	{	.compatible = "fsl,p1012-l2-cache-controller",},
+	{	.compatible = "fsl,p1025-l2-cache-controller",},
+	{	.compatible = "fsl,p1016-l2-cache-controller",},
+	{	.compatible = "fsl,p1024-l2-cache-controller",},
+	{	.compatible = "fsl,p1015-l2-cache-controller",},
+	{	.compatible = "fsl,p1010-l2-cache-controller",},
+	{	.compatible = "fsl,bsc9131-l2-cache-controller",},
 	{},
 };
 
 static struct platform_driver mpc85xx_l2ctlr_of_platform_driver = {
 	.driver	= {
 		.name		= "fsl-l2ctlr",
-		.owner		= THIS_MODULE,
 		.of_match_table	= mpc85xx_l2ctlr_of_match,
 	},
 	.probe		= mpc85xx_l2ctlr_of_probe,
-	.remove		= __devexit_p(mpc85xx_l2ctlr_of_remove),
+	.remove		= mpc85xx_l2ctlr_of_remove,
 };
 
 static __init int mpc85xx_l2ctlr_of_init(void)

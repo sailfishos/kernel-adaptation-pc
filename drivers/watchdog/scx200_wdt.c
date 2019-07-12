@@ -37,7 +37,6 @@
 MODULE_AUTHOR("Christer Weinigel <wingel@nano-system.com>");
 MODULE_DESCRIPTION("NatSemi SCx200 Watchdog Driver");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 
 static int margin = 60;		/* in seconds */
 module_param(margin, int, 0);
@@ -263,10 +262,3 @@ static void __exit scx200_wdt_cleanup(void)
 
 module_init(scx200_wdt_init);
 module_exit(scx200_wdt_cleanup);
-
-/*
-    Local variables:
-	compile-command: "make -k -C ../.. SUBDIRS=drivers/char modules"
-	c-basic-offset: 8
-    End:
-*/

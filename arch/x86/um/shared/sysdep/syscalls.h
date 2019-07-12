@@ -1,5 +1,4 @@
-extern long sys_clone(unsigned long clone_flags, unsigned long newsp,
-	       void __user *parent_tid, void __user *child_tid);
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifdef __i386__
 #include "syscalls_32.h"
 #else

@@ -32,7 +32,7 @@ void wl1251_elp_work(struct work_struct *work)
 	struct delayed_work *dwork;
 	struct wl1251 *wl;
 
-	dwork = container_of(work, struct delayed_work, work);
+	dwork = to_delayed_work(work);
 	wl = container_of(dwork, struct wl1251, elp_work);
 
 	wl1251_debug(DEBUG_PSM, "elp work");
@@ -68,8 +68,7 @@ int wl1251_ps_elp_wakeup(struct wl1251 *wl)
 	unsigned long timeout, start;
 	u32 elp_reg;
 
-	if (delayed_work_pending(&wl->elp_work))
-		cancel_delayed_work(&wl->elp_work);
+	cancel_delayed_work(&wl->elp_work);
 
 	if (!wl->elp)
 		return 0;

@@ -28,7 +28,6 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/watchdog.h>
-#include <linux/miscdevice.h>
 #include <linux/seq_file.h>
 #include <linux/debugfs.h>
 #include <linux/uaccess.h>
@@ -194,7 +193,7 @@ static struct watchdog_device ie6xx_wdt_dev = {
 
 #ifdef CONFIG_DEBUG_FS
 
-static int ie6xx_wdt_dbg_show(struct seq_file *s, void *unused)
+static int ie6xx_wdt_show(struct seq_file *s, void *unused)
 {
 	seq_printf(s, "PV1   = 0x%08x\n",
 		inl(ie6xx_wdt_data.sch_wdtba + PV1));
@@ -213,23 +212,13 @@ static int ie6xx_wdt_dbg_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
-static int ie6xx_wdt_dbg_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, ie6xx_wdt_dbg_show, NULL);
-}
+DEFINE_SHOW_ATTRIBUTE(ie6xx_wdt);
 
-static const struct file_operations ie6xx_wdt_dbg_operations = {
-	.open		= ie6xx_wdt_dbg_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static void __devinit ie6xx_wdt_debugfs_init(void)
+static void ie6xx_wdt_debugfs_init(void)
 {
 	/* /sys/kernel/debug/ie6xx_wdt */
 	ie6xx_wdt_data.debugfs = debugfs_create_file("ie6xx_wdt",
-		S_IFREG | S_IRUGO, NULL, NULL, &ie6xx_wdt_dbg_operations);
+		S_IFREG | S_IRUGO, NULL, NULL, &ie6xx_wdt_fops);
 }
 
 static void ie6xx_wdt_debugfs_exit(void)
@@ -238,7 +227,7 @@ static void ie6xx_wdt_debugfs_exit(void)
 }
 
 #else
-static void __devinit ie6xx_wdt_debugfs_init(void)
+static void ie6xx_wdt_debugfs_init(void)
 {
 }
 
@@ -247,7 +236,7 @@ static void ie6xx_wdt_debugfs_exit(void)
 }
 #endif
 
-static int __devinit ie6xx_wdt_probe(struct platform_device *pdev)
+static int ie6xx_wdt_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	u8 wdtlr;
@@ -268,6 +257,7 @@ static int __devinit ie6xx_wdt_probe(struct platform_device *pdev)
 
 	ie6xx_wdt_dev.timeout = timeout;
 	watchdog_set_nowayout(&ie6xx_wdt_dev, nowayout);
+	ie6xx_wdt_dev.parent = &pdev->dev;
 
 	spin_lock_init(&ie6xx_wdt_data.unlock_sequence);
 
@@ -295,7 +285,7 @@ misc_register_error:
 	return ret;
 }
 
-static int __devexit ie6xx_wdt_remove(struct platform_device *pdev)
+static int ie6xx_wdt_remove(struct platform_device *pdev)
 {
 	struct resource *res;
 
@@ -311,10 +301,9 @@ static int __devexit ie6xx_wdt_remove(struct platform_device *pdev)
 
 static struct platform_driver ie6xx_wdt_driver = {
 	.probe		= ie6xx_wdt_probe,
-	.remove		= __devexit_p(ie6xx_wdt_remove),
+	.remove		= ie6xx_wdt_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
 	},
 };
 
@@ -344,5 +333,4 @@ module_exit(ie6xx_wdt_exit);
 MODULE_AUTHOR("Alexander Stein <alexander.stein@systec-electronic.com>");
 MODULE_DESCRIPTION("Intel Atom E6xx Watchdog Device Driver");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 MODULE_ALIAS("platform:" DRIVER_NAME);

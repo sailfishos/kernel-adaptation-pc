@@ -1,9 +1,7 @@
 /*******************************************************************************
  * This file contains error recovery level one used by the iSCSI Target driver.
  *
- * \u00a9 Copyright 2007-2011 RisingTide Systems LLC.
- *
- * Licensed to the Linux Foundation under the General Public License (GPL) version 2.
+ * (c) Copyright 2007-2013 Datera, Inc.
  *
  * Author: Nicholas A. Bellinger <nab@linux-iscsi.org>
  *
@@ -19,11 +17,13 @@
  ******************************************************************************/
 
 #include <linux/list.h>
+#include <linux/slab.h>
 #include <scsi/iscsi_proto.h>
 #include <target/target_core_base.h>
 #include <target/target_core_fabric.h>
+#include <target/iscsi/iscsi_transport.h>
 
-#include "iscsi_target_core.h"
+#include <target/iscsi/iscsi_target_core.h>
 #include "iscsi_target_seq_pdu_list.h"
 #include "iscsi_target_datain_values.h"
 #include "iscsi_target_device.h"
@@ -34,7 +34,7 @@
 #include "iscsi_target_erl2.h"
 #include "iscsi_target.h"
 
-#define OFFLOAD_BUF_SIZE	32768
+#define OFFLOAD_BUF_SIZE	32768U
 
 /*
  *	Used to dump excess datain payload for certain error recovery
@@ -53,7 +53,10 @@ int iscsit_dump_data_payload(
 	u32 length, padding, offset = 0, size;
 	struct kvec iov;
 
-	length = (buf_len > OFFLOAD_BUF_SIZE) ? OFFLOAD_BUF_SIZE : buf_len;
+	if (conn->sess->sess_ops->RDMAExtensions)
+		return 0;
+
+	length = min(buf_len, OFFLOAD_BUF_SIZE);
 
 	buf = kzalloc(length, GFP_ATOMIC);
 	if (!buf) {
@@ -64,8 +67,7 @@ int iscsit_dump_data_payload(
 	memset(&iov, 0, sizeof(struct kvec));
 
 	while (offset < buf_len) {
-		size = ((offset + length) > buf_len) ?
-			(buf_len - offset) : length;
+		size = min(buf_len - offset, length);
 
 		iov.iov_len = size;
 		iov.iov_base = buf;
@@ -158,9 +160,7 @@ static int iscsit_handle_r2t_snack(
 			" protocol error.\n", cmd->init_task_tag, begrun,
 			(begrun + runlength), cmd->acked_data_sn);
 
-			return iscsit_add_reject_from_cmd(
-					ISCSI_REASON_PROTOCOL_ERROR,
-					1, 0, buf, cmd);
+		return iscsit_reject_cmd(cmd, ISCSI_REASON_PROTOCOL_ERROR, buf);
 	}
 
 	if (runlength) {
@@ -169,8 +169,8 @@ static int iscsit_handle_r2t_snack(
 			" with BegRun: 0x%08x, RunLength: 0x%08x, exceeds"
 			" current R2TSN: 0x%08x, protocol error.\n",
 			cmd->init_task_tag, begrun, runlength, cmd->r2t_sn);
-			return iscsit_add_reject_from_cmd(
-				ISCSI_REASON_BOOKMARK_INVALID, 1, 0, buf, cmd);
+			return iscsit_reject_cmd(cmd,
+					ISCSI_REASON_BOOKMARK_INVALID, buf);
 		}
 		last_r2tsn = (begrun + runlength);
 	} else
@@ -429,8 +429,7 @@ static int iscsit_handle_recovery_datain(
 			" protocol error.\n", cmd->init_task_tag, begrun,
 			(begrun + runlength), cmd->acked_data_sn);
 
-		return iscsit_add_reject_from_cmd(ISCSI_REASON_PROTOCOL_ERROR,
-				1, 0, buf, cmd);
+		return iscsit_reject_cmd(cmd, ISCSI_REASON_PROTOCOL_ERROR, buf);
 	}
 
 	/*
@@ -441,14 +440,14 @@ static int iscsit_handle_recovery_datain(
 		pr_err("Initiator requesting BegRun: 0x%08x, RunLength"
 			": 0x%08x greater than maximum DataSN: 0x%08x.\n",
 				begrun, runlength, (cmd->data_sn - 1));
-		return iscsit_add_reject_from_cmd(ISCSI_REASON_BOOKMARK_INVALID,
-				1, 0, buf, cmd);
+		return iscsit_reject_cmd(cmd, ISCSI_REASON_BOOKMARK_INVALID,
+					 buf);
 	}
 
 	dr = iscsit_allocate_datain_req();
 	if (!dr)
-		return iscsit_add_reject_from_cmd(ISCSI_REASON_BOOKMARK_NO_RESOURCES,
-				1, 0, buf, cmd);
+		return iscsit_reject_cmd(cmd, ISCSI_REASON_BOOKMARK_NO_RESOURCES,
+					 buf);
 
 	dr->data_sn = dr->begrun = begrun;
 	dr->runlength = runlength;
@@ -466,7 +465,7 @@ static int iscsit_handle_recovery_datain(
 int iscsit_handle_recovery_datain_or_r2t(
 	struct iscsi_conn *conn,
 	unsigned char *buf,
-	u32 init_task_tag,
+	itt_t init_task_tag,
 	u32 targ_xfer_tag,
 	u32 begrun,
 	u32 runlength)
@@ -498,7 +497,7 @@ int iscsit_handle_recovery_datain_or_r2t(
 /* #warning FIXME: Status SNACK needs to be dependent on OPCODE!!! */
 int iscsit_handle_status_snack(
 	struct iscsi_conn *conn,
-	u32 init_task_tag,
+	itt_t init_task_tag,
 	u32 targ_xfer_tag,
 	u32 begrun,
 	u32 runlength)
@@ -507,7 +506,9 @@ int iscsit_handle_status_snack(
 	u32 last_statsn;
 	int found_cmd;
 
-	if (conn->exp_statsn > begrun) {
+	if (!begrun) {
+		begrun = conn->exp_statsn;
+	} else if (conn->exp_statsn > begrun) {
 		pr_err("Got Status SNACK Begrun: 0x%08x, RunLength:"
 			" 0x%08x but already got ExpStatSN: 0x%08x on CID:"
 			" %hu.\n", begrun, runlength, conn->exp_statsn,
@@ -626,8 +627,8 @@ int iscsit_dataout_datapduinorder_no_fbit(
 			if (cmd->pdu_list[i].seq_no == pdu->seq_no) {
 				if (!first_pdu)
 					first_pdu = &cmd->pdu_list[i];
-				 xfer_len += cmd->pdu_list[i].length;
-				 pdu_count++;
+				xfer_len += cmd->pdu_list[i].length;
+				pdu_count++;
 			} else if (pdu_count)
 				break;
 		}
@@ -819,7 +820,7 @@ static int iscsit_attach_ooo_cmdsn(
 		/*
 		 * CmdSN is greater than the tail of the list.
 		 */
-		if (ooo_tail->cmdsn < ooo_cmdsn->cmdsn)
+		if (iscsi_sna_lt(ooo_tail->cmdsn, ooo_cmdsn->cmdsn))
 			list_add_tail(&ooo_cmdsn->ooo_list,
 					&sess->sess_ooo_cmdsn_list);
 		else {
@@ -829,11 +830,12 @@ static int iscsit_attach_ooo_cmdsn(
 			 */
 			list_for_each_entry(ooo_tmp, &sess->sess_ooo_cmdsn_list,
 						ooo_list) {
-				if (ooo_tmp->cmdsn < ooo_cmdsn->cmdsn)
+				if (iscsi_sna_lt(ooo_tmp->cmdsn, ooo_cmdsn->cmdsn))
 					continue;
 
+				/* Insert before this entry */
 				list_add(&ooo_cmdsn->ooo_list,
-					&ooo_tmp->ooo_list);
+					ooo_tmp->ooo_list.prev);
 				break;
 			}
 		}
@@ -919,6 +921,7 @@ int iscsit_execute_ooo_cmdsns(struct iscsi_session *sess)
 int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 {
 	struct se_cmd *se_cmd = &cmd->se_cmd;
+	struct iscsi_conn *conn = cmd->conn;
 	int lr = 0;
 
 	spin_lock_bh(&cmd->istate_lock);
@@ -929,11 +932,10 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 	case ISCSI_OP_SCSI_CMD:
 		/*
 		 * Go ahead and send the CHECK_CONDITION status for
-		 * any SCSI CDB exceptions that may have occurred, also
-		 * handle the SCF_SCSI_RESERVATION_CONFLICT case here as well.
+		 * any SCSI CDB exceptions that may have occurred.
 		 */
-		if (se_cmd->se_cmd_flags & SCF_SCSI_CDB_EXCEPTION) {
-			if (se_cmd->scsi_sense_reason == TCM_RESERVATION_CONFLICT) {
+		if (cmd->sense_reason) {
+			if (cmd->sense_reason == TCM_RESERVATION_CONFLICT) {
 				cmd->i_state = ISTATE_SEND_STATUS;
 				spin_unlock_bh(&cmd->istate_lock);
 				iscsit_add_cmd_to_response_queue(cmd, cmd->conn,
@@ -941,22 +943,10 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 				return 0;
 			}
 			spin_unlock_bh(&cmd->istate_lock);
-			/*
-			 * Determine if delayed TASK_ABORTED status for WRITEs
-			 * should be sent now if no unsolicited data out
-			 * payloads are expected, or if the delayed status
-			 * should be sent after unsolicited data out with
-			 * ISCSI_FLAG_CMD_FINAL set in iscsi_handle_data_out()
-			 */
-			if (transport_check_aborted_status(se_cmd,
-					(cmd->unsolicited_data == 0)) != 0)
+			if (cmd->se_cmd.transport_state & CMD_T_ABORTED)
 				return 0;
-			/*
-			 * Otherwise send CHECK_CONDITION and sense for
-			 * exception
-			 */
 			return transport_send_check_condition_and_sense(se_cmd,
-					se_cmd->scsi_sense_reason, 0);
+					cmd->sense_reason, 0);
 		}
 		/*
 		 * Special case for delayed CmdSN with Immediate
@@ -972,17 +962,11 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 
 			if (!(cmd->cmd_flags &
 					ICF_NON_IMMEDIATE_UNSOLICITED_DATA)) {
-				/*
-				 * Send the delayed TASK_ABORTED status for
-				 * WRITEs if no more unsolicitied data is
-				 * expected.
-				 */
-				if (transport_check_aborted_status(se_cmd, 1)
-						!= 0)
+				if (cmd->se_cmd.transport_state & CMD_T_ABORTED)
 					return 0;
 
 				iscsit_set_dataout_sequence_values(cmd);
-				iscsit_build_r2ts_for_cmd(cmd, cmd->conn, false);
+				conn->conn_transport->iscsit_get_dataout(conn, cmd, false);
 			}
 			return 0;
 		}
@@ -993,17 +977,10 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 
 		if ((cmd->data_direction == DMA_TO_DEVICE) &&
 		    !(cmd->cmd_flags & ICF_NON_IMMEDIATE_UNSOLICITED_DATA)) {
-			/*
-			 * Send the delayed TASK_ABORTED status for WRITEs if
-			 * no more nsolicitied data is expected.
-			 */
-			if (transport_check_aborted_status(se_cmd, 1) != 0)
+			if (cmd->se_cmd.transport_state & CMD_T_ABORTED)
 				return 0;
 
-			iscsit_set_dataout_sequence_values(cmd);
-			spin_lock_bh(&cmd->dataout_timeout_lock);
-			iscsit_start_dataout_timer(cmd, cmd->conn);
-			spin_unlock_bh(&cmd->dataout_timeout_lock);
+			iscsit_set_unsoliticed_dataout(cmd);
 		}
 		return transport_handle_cdb_direct(&cmd->se_cmd);
 
@@ -1013,7 +990,7 @@ int iscsit_execute_cmd(struct iscsi_cmd *cmd, int ooo)
 		iscsit_add_cmd_to_response_queue(cmd, cmd->conn, cmd->i_state);
 		break;
 	case ISCSI_OP_SCSI_TMFUNC:
-		if (se_cmd->se_cmd_flags & SCF_SCSI_CDB_EXCEPTION) {
+		if (cmd->se_cmd.se_tmr_req->response) {
 			spin_unlock_bh(&cmd->istate_lock);
 			iscsit_add_cmd_to_response_queue(cmd, cmd->conn,
 					cmd->i_state);
@@ -1088,7 +1065,7 @@ int iscsit_handle_ooo_cmdsn(
 
 	ooo_cmdsn = iscsit_allocate_ooo_cmdsn();
 	if (!ooo_cmdsn)
-		return CMDSN_ERROR_CANNOT_RECOVER;
+		return -ENOMEM;
 
 	ooo_cmdsn->cmd			= cmd;
 	ooo_cmdsn->batch_count		= (batch) ?
@@ -1099,10 +1076,10 @@ int iscsit_handle_ooo_cmdsn(
 
 	if (iscsit_attach_ooo_cmdsn(sess, ooo_cmdsn) < 0) {
 		kmem_cache_free(lio_ooo_cache, ooo_cmdsn);
-		return CMDSN_ERROR_CANNOT_RECOVER;
+		return -ENOMEM;
 	}
 
-	return CMDSN_HIGHER_THAN_EXP;
+	return 0;
 }
 
 static int iscsit_set_dataout_timeout_values(
@@ -1148,11 +1125,11 @@ static int iscsit_set_dataout_timeout_values(
 /*
  *	NOTE: Called from interrupt (timer) context.
  */
-static void iscsit_handle_dataout_timeout(unsigned long data)
+void iscsit_handle_dataout_timeout(struct timer_list *t)
 {
 	u32 pdu_length = 0, pdu_offset = 0;
 	u32 r2t_length = 0, r2t_offset = 0;
-	struct iscsi_cmd *cmd = (struct iscsi_cmd *) data;
+	struct iscsi_cmd *cmd = from_timer(cmd, t, dataout_timer);
 	struct iscsi_conn *conn = cmd->conn;
 	struct iscsi_session *sess = NULL;
 	struct iscsi_node_attrib *na;
@@ -1170,15 +1147,21 @@ static void iscsit_handle_dataout_timeout(unsigned long data)
 	na = iscsit_tpg_get_node_attrib(sess);
 
 	if (!sess->sess_ops->ErrorRecoveryLevel) {
-		pr_debug("Unable to recover from DataOut timeout while"
-			" in ERL=0.\n");
+		pr_err("Unable to recover from DataOut timeout while"
+			" in ERL=0, closing iSCSI connection for I_T Nexus"
+			" %s,i,0x%6phN,%s,t,0x%02x\n",
+			sess->sess_ops->InitiatorName, sess->isid,
+			sess->tpg->tpg_tiqn->tiqn, (u32)sess->tpg->tpgt);
 		goto failure;
 	}
 
 	if (++cmd->dataout_timeout_retries == na->dataout_timeout_retries) {
-		pr_debug("Command ITT: 0x%08x exceeded max retries"
-			" for DataOUT timeout %u, closing iSCSI connection.\n",
-			cmd->init_task_tag, na->dataout_timeout_retries);
+		pr_err("Command ITT: 0x%08x exceeded max retries"
+			" for DataOUT timeout %u, closing iSCSI connection for"
+			" I_T Nexus %s,i,0x%6phN,%s,t,0x%02x\n",
+			cmd->init_task_tag, na->dataout_timeout_retries,
+			sess->sess_ops->InitiatorName, sess->isid,
+			sess->tpg->tpg_tiqn->tiqn, (u32)sess->tpg->tpgt);
 		goto failure;
 	}
 
@@ -1225,6 +1208,7 @@ static void iscsit_handle_dataout_timeout(unsigned long data)
 
 failure:
 	spin_unlock_bh(&cmd->dataout_timeout_lock);
+	iscsit_fill_cxn_timeout_err_stats(sess);
 	iscsit_cause_connection_reinstatement(conn, 0);
 	iscsit_dec_conn_usage_count(conn);
 }
@@ -1264,13 +1248,9 @@ void iscsit_start_dataout_timer(
 	pr_debug("Starting DataOUT timer for ITT: 0x%08x on"
 		" CID: %hu.\n", cmd->init_task_tag, conn->cid);
 
-	init_timer(&cmd->dataout_timer);
-	cmd->dataout_timer.expires = (get_jiffies_64() + na->dataout_timeout * HZ);
-	cmd->dataout_timer.data = (unsigned long)cmd;
-	cmd->dataout_timer.function = iscsit_handle_dataout_timeout;
 	cmd->dataout_timer_flags &= ~ISCSI_TF_STOP;
 	cmd->dataout_timer_flags |= ISCSI_TF_RUNNING;
-	add_timer(&cmd->dataout_timer);
+	mod_timer(&cmd->dataout_timer, jiffies + na->dataout_timeout * HZ);
 }
 
 void iscsit_stop_dataout_timer(struct iscsi_cmd *cmd)
@@ -1291,3 +1271,4 @@ void iscsit_stop_dataout_timer(struct iscsi_cmd *cmd)
 			cmd->init_task_tag);
 	spin_unlock_bh(&cmd->dataout_timeout_lock);
 }
+EXPORT_SYMBOL(iscsit_stop_dataout_timer);

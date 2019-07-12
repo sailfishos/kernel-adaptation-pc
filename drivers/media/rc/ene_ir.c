@@ -13,11 +13,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * General Public License for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
- *
  * Special thanks to:
  *   Sami R. <maesesami@gmail.com> for lot of help in debugging and therefore
  *    bringing to life support for transmission & learning mode.
@@ -329,10 +324,8 @@ static int ene_rx_get_sample_reg(struct ene_device *dev)
 }
 
 /* Sense current received carrier */
-void ene_rx_sense_carrier(struct ene_device *dev)
+static void ene_rx_sense_carrier(struct ene_device *dev)
 {
-	DEFINE_IR_RAW_EVENT(ev);
-
 	int carrier, duty_cycle;
 	int period = ene_read_reg(dev, ENE_CIRCAR_PRD);
 	int hperiod = ene_read_reg(dev, ENE_CIRCAR_HPRD);
@@ -353,9 +346,11 @@ void ene_rx_sense_carrier(struct ene_device *dev)
 	dbg("RX: sensed carrier = %d Hz, duty cycle %d%%",
 						carrier, duty_cycle);
 	if (dev->carrier_detect_enabled) {
-		ev.carrier_report = true;
-		ev.carrier = carrier;
-		ev.duty_cycle = duty_cycle;
+		struct ir_raw_event ev = {
+			.carrier_report = true,
+			.carrier = carrier,
+			.duty_cycle = duty_cycle
+		};
 		ir_raw_event_store(dev->rdev, &ev);
 	}
 }
@@ -476,7 +471,7 @@ select_timeout:
 }
 
 /* Enable the device for receive */
-static void ene_rx_enable(struct ene_device *dev)
+static void ene_rx_enable_hw(struct ene_device *dev)
 {
 	u8 reg_value;
 
@@ -504,11 +499,17 @@ static void ene_rx_enable(struct ene_device *dev)
 
 	/* enter idle mode */
 	ir_raw_event_set_idle(dev->rdev, true);
+}
+
+/* Enable the device for receive - wrapper to track the state*/
+static void ene_rx_enable(struct ene_device *dev)
+{
+	ene_rx_enable_hw(dev);
 	dev->rx_enabled = true;
 }
 
 /* Disable the device receiver */
-static void ene_rx_disable(struct ene_device *dev)
+static void ene_rx_disable_hw(struct ene_device *dev)
 {
 	/* disable inputs */
 	ene_rx_enable_cir_engine(dev, false);
@@ -516,8 +517,13 @@ static void ene_rx_disable(struct ene_device *dev)
 
 	/* disable hardware IRQ and firmware flag */
 	ene_clear_reg_mask(dev, ENE_FW1, ENE_FW1_ENABLE | ENE_FW1_IRQ);
-
 	ir_raw_event_set_idle(dev->rdev, true);
+}
+
+/* Disable the device receiver - wrapper to track the state */
+static void ene_rx_disable(struct ene_device *dev)
+{
+	ene_rx_disable_hw(dev);
 	dev->rx_enabled = false;
 }
 
@@ -664,9 +670,9 @@ exit:
 }
 
 /* timer to simulate tx done interrupt */
-static void ene_tx_irqsim(unsigned long data)
+static void ene_tx_irqsim(struct timer_list *t)
 {
-	struct ene_device *dev = (struct ene_device *)data;
+	struct ene_device *dev = from_timer(dev, t, tx_sim_timer);
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->hw_lock, flags);
@@ -727,7 +733,7 @@ static irqreturn_t ene_isr(int irq, void *data)
 	unsigned long flags;
 	irqreturn_t retval = IRQ_NONE;
 	struct ene_device *dev = (struct ene_device *)data;
-	DEFINE_IR_RAW_EVENT(ev);
+	struct ir_raw_event ev = {};
 
 	spin_lock_irqsave(&dev->hw_lock, flags);
 
@@ -881,16 +887,19 @@ static int ene_set_tx_mask(struct rc_dev *rdev, u32 tx_mask)
 static int ene_set_tx_carrier(struct rc_dev *rdev, u32 carrier)
 {
 	struct ene_device *dev = rdev->priv;
-	u32 period = 2000000 / carrier;
+	u32 period;
 
 	dbg("TX: attempt to set tx carrier to %d kHz", carrier);
+	if (carrier == 0)
+		return -EINVAL;
 
+	period = 2000000 / carrier;
 	if (period && (period > ENE_CIRMOD_PRD_MAX ||
 			period < ENE_CIRMOD_PRD_MIN)) {
 
 		dbg("TX: out of range %d-%d kHz carrier",
 			2000 / ENE_CIRMOD_PRD_MIN, 2000 / ENE_CIRMOD_PRD_MAX);
-		return -1;
+		return -EINVAL;
 	}
 
 	dev->tx_period = period;
@@ -965,7 +974,7 @@ static int ene_transmit(struct rc_dev *rdev, unsigned *buf, unsigned n)
 	dev->tx_reg = 0;
 	dev->tx_done = 0;
 	dev->tx_sample = 0;
-	dev->tx_sample_pulse = 0;
+	dev->tx_sample_pulse = false;
 
 	dbg("TX: %d samples", dev->tx_len);
 
@@ -998,9 +1007,9 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 
 	/* allocate memory */
 	dev = kzalloc(sizeof(struct ene_device), GFP_KERNEL);
-	rdev = rc_allocate_device();
+	rdev = rc_allocate_device(RC_DRIVER_IR_RAW);
 	if (!dev || !rdev)
-		goto error1;
+		goto exit_free_dev_rdev;
 
 	/* validate resources */
 	error = -ENODEV;
@@ -1011,14 +1020,16 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 
 	if (!pnp_port_valid(pnp_dev, 0) ||
 	    pnp_port_len(pnp_dev, 0) < ENE_IO_SIZE)
-		goto error;
+		goto exit_free_dev_rdev;
 
 	if (!pnp_irq_valid(pnp_dev, 0))
-		goto error;
+		goto exit_free_dev_rdev;
 
 	spin_lock_init(&dev->hw_lock);
 
 	dev->hw_io = pnp_port_start(pnp_dev, 0);
+	dev->irq = pnp_irq(pnp_dev, 0);
+
 
 	pnp_set_drvdata(pnp_dev, dev);
 	dev->pnp_dev = pnp_dev;
@@ -1030,27 +1041,25 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 	/* detect hardware version and features */
 	error = ene_hw_detect(dev);
 	if (error)
-		goto error;
+		goto exit_free_dev_rdev;
 
 	if (!dev->hw_learning_and_tx_capable && txsim) {
 		dev->hw_learning_and_tx_capable = true;
-		setup_timer(&dev->tx_sim_timer, ene_tx_irqsim,
-						(long unsigned int)dev);
+		timer_setup(&dev->tx_sim_timer, ene_tx_irqsim, 0);
 		pr_warn("Simulation of TX activated\n");
 	}
 
 	if (!dev->hw_learning_and_tx_capable)
 		learning_mode_force = false;
 
-	rdev->driver_type = RC_DRIVER_IR_RAW;
-	rdev->allowed_protos = RC_TYPE_ALL;
+	rdev->allowed_protocols = RC_PROTO_BIT_ALL_IR_DECODER;
 	rdev->priv = dev;
 	rdev->open = ene_open;
 	rdev->close = ene_close;
 	rdev->s_idle = ene_set_idle;
 	rdev->driver_name = ENE_DRIVER_NAME;
 	rdev->map_name = RC_MAP_RC6_MCE;
-	rdev->input_name = "ENE eHome Infrared Remote Receiver";
+	rdev->device_name = "ENE eHome Infrared Remote Receiver";
 
 	if (dev->hw_learning_and_tx_capable) {
 		rdev->s_learning_mode = ene_set_learning_mode;
@@ -1060,7 +1069,7 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 		rdev->s_tx_carrier = ene_set_tx_carrier;
 		rdev->s_tx_duty_cycle = ene_set_tx_duty_cycle;
 		rdev->s_carrier_report = ene_set_carrier_report;
-		rdev->input_name = "ENE eHome Infrared Remote Transceiver";
+		rdev->device_name = "ENE eHome Infrared Remote Transceiver";
 	}
 
 	dev->rdev = rdev;
@@ -1072,33 +1081,30 @@ static int ene_probe(struct pnp_dev *pnp_dev, const struct pnp_device_id *id)
 	device_set_wakeup_capable(&pnp_dev->dev, true);
 	device_set_wakeup_enable(&pnp_dev->dev, true);
 
+	error = rc_register_device(rdev);
+	if (error < 0)
+		goto exit_free_dev_rdev;
+
 	/* claim the resources */
 	error = -EBUSY;
 	if (!request_region(dev->hw_io, ENE_IO_SIZE, ENE_DRIVER_NAME)) {
-		dev->hw_io = -1;
-		dev->irq = -1;
-		goto error;
+		goto exit_unregister_device;
 	}
 
-	dev->irq = pnp_irq(pnp_dev, 0);
 	if (request_irq(dev->irq, ene_isr,
 			IRQF_SHARED, ENE_DRIVER_NAME, (void *)dev)) {
-		dev->irq = -1;
-		goto error;
+		goto exit_release_hw_io;
 	}
-
-	error = rc_register_device(rdev);
-	if (error < 0)
-		goto error;
 
 	pr_notice("driver has been successfully loaded\n");
 	return 0;
-error:
-	if (dev && dev->irq >= 0)
-		free_irq(dev->irq, dev);
-	if (dev && dev->hw_io >= 0)
-		release_region(dev->hw_io, ENE_IO_SIZE);
-error1:
+
+exit_release_hw_io:
+	release_region(dev->hw_io, ENE_IO_SIZE);
+exit_unregister_device:
+	rc_unregister_device(rdev);
+	rdev = NULL;
+exit_free_dev_rdev:
 	rc_free_device(rdev);
 	kfree(dev);
 	return error;
@@ -1122,9 +1128,8 @@ static void ene_remove(struct pnp_dev *pnp_dev)
 }
 
 /* enable wake on IR (wakes on specific button on original remote) */
-static void ene_enable_wake(struct ene_device *dev, int enable)
+static void ene_enable_wake(struct ene_device *dev, bool enable)
 {
-	enable = enable && device_may_wakeup(&dev->pnp_dev->dev);
 	dbg("wake on IR %s", enable ? "enabled" : "disabled");
 	ene_set_clear_reg_mask(dev, ENE_FW1, ENE_FW1_WAKE, enable);
 }
@@ -1133,9 +1138,12 @@ static void ene_enable_wake(struct ene_device *dev, int enable)
 static int ene_suspend(struct pnp_dev *pnp_dev, pm_message_t state)
 {
 	struct ene_device *dev = pnp_get_drvdata(pnp_dev);
-	ene_enable_wake(dev, true);
+	bool wake = device_may_wakeup(&dev->pnp_dev->dev);
 
-	/* TODO: add support for wake pattern */
+	if (!wake && dev->rx_enabled)
+		ene_rx_disable_hw(dev);
+
+	ene_enable_wake(dev, wake);
 	return 0;
 }
 
@@ -1172,23 +1180,13 @@ static struct pnp_driver ene_driver = {
 	.flags = PNP_DRIVER_RES_DO_NOT_CHANGE,
 
 	.probe = ene_probe,
-	.remove = __devexit_p(ene_remove),
+	.remove = ene_remove,
 #ifdef CONFIG_PM
 	.suspend = ene_suspend,
 	.resume = ene_resume,
 #endif
 	.shutdown = ene_shutdown,
 };
-
-static int __init ene_init(void)
-{
-	return pnp_register_driver(&ene_driver);
-}
-
-static void ene_exit(void)
-{
-	pnp_unregister_driver(&ene_driver);
-}
 
 module_param(sample_period, int, S_IRUGO);
 MODULE_PARM_DESC(sample_period, "Hardware sample period (50 us default)");
@@ -1205,11 +1203,9 @@ MODULE_PARM_DESC(txsim,
 
 MODULE_DEVICE_TABLE(pnp, ene_ids);
 MODULE_DESCRIPTION
-	("Infrared input driver for KB3926B/C/D/E/F "
-	"(aka ENE0100/ENE0200/ENE0201/ENE0202) CIR port");
+	("Infrared input driver for KB3926B/C/D/E/F (aka ENE0100/ENE0200/ENE0201/ENE0202) CIR port");
 
 MODULE_AUTHOR("Maxim Levitsky");
 MODULE_LICENSE("GPL");
 
-module_init(ene_init);
-module_exit(ene_exit);
+module_pnp_driver(ene_driver);

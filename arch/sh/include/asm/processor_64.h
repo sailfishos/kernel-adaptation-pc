@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_PROCESSOR_64_H
 #define __ASM_SH_PROCESSOR_64_H
 
@@ -7,10 +8,6 @@
  * Copyright (C) 2000, 2001  Paolo Alberelli
  * Copyright (C) 2003  Paul Mundt
  * Copyright (C) 2004  Richard Curnow
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #ifndef __ASSEMBLY__
 
@@ -18,21 +15,6 @@
 #include <asm/page.h>
 #include <asm/types.h>
 #include <cpu/registers.h>
-
-/*
- * Default implementation of macro that returns current
- * instruction pointer ("program counter").
- */
-#define current_text_addr() ({ \
-void *pc; \
-unsigned long long __dummy = 0; \
-__asm__("gettr	tr0, %1\n\t" \
-	"pta	4, tr0\n\t" \
-	"gettr	tr0, %0\n\t" \
-	"ptabs	%1, tr0\n\t"	\
-	:"=r" (pc), "=r" (__dummy) \
-	: "1" (__dummy)); \
-pc; })
 
 #endif
 
@@ -47,7 +29,7 @@ pc; })
 /* This decides where the kernel will search for a free chunk of vm
  * space during mmap's.
  */
-#define TASK_UNMAPPED_BASE	(TASK_SIZE / 3)
+#define TASK_UNMAPPED_BASE	PAGE_ALIGN(TASK_SIZE / 3)
 
 /*
  * Bit of SR register
@@ -126,6 +108,16 @@ struct thread_struct {
 
 	/* floating point info */
 	union thread_xstate *xstate;
+
+	/*
+	 * fpu_counter contains the number of consecutive context switches
+	 * that the FPU is used. If this is over a threshold, the lazy fpu
+	 * saving becomes unlazy to save the trap. This is an unsigned char
+	 * so that after 256 times the counter wraps and the behavior turns
+	 * lazy again; this to deal with bursty apps that only use FPU for
+	 * a short time
+	 */
+	unsigned char fpu_counter;
 };
 
 #define INIT_MMAP \
@@ -159,16 +151,7 @@ struct mm_struct;
 
 /* Free all resources held by a thread. */
 extern void release_thread(struct task_struct *);
-/*
- * create a kernel thread without removing it from tasklists
- */
-extern int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
 
-
-/* Copy and release all segment info associated with a VM */
-#define copy_segments(p, mm)	do { } while (0)
-#define release_segments(mm)	do { } while (0)
-#define forget_segments()	do { } while (0)
 /*
  * FPU lazy state save handling.
  */

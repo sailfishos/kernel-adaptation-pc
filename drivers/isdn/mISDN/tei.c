@@ -250,7 +250,7 @@ tei_debug(struct FsmInst *fi, char *fmt, ...)
 static int
 get_free_id(struct manager *mgr)
 {
-	u64		ids = 0;
+	DECLARE_BITMAP(ids, 64) = { [0 ... BITS_TO_LONGS(64) - 1] = 0 };
 	int		i;
 	struct layer2	*l2;
 
@@ -261,11 +261,11 @@ get_free_id(struct manager *mgr)
 			       __func__);
 			return -EBUSY;
 		}
-		test_and_set_bit(l2->ch.nr, (u_long *)&ids);
+		__set_bit(l2->ch.nr, ids);
 	}
-	for (i = 1; i < 64; i++)
-		if (!test_bit(i, (u_long *)&ids))
-			return i;
+	i = find_next_zero_bit(ids, 64, 1);
+	if (i < 64)
+		return i;
 	printk(KERN_WARNING "%s: more as 63 layer2 for one device\n",
 	       __func__);
 	return -EBUSY;
@@ -274,7 +274,7 @@ get_free_id(struct manager *mgr)
 static int
 get_free_tei(struct manager *mgr)
 {
-	u64		ids = 0;
+	DECLARE_BITMAP(ids, 64) = { [0 ... BITS_TO_LONGS(64) - 1] = 0 };
 	int		i;
 	struct layer2	*l2;
 
@@ -288,11 +288,11 @@ get_free_tei(struct manager *mgr)
 			continue;
 		i -= 64;
 
-		test_and_set_bit(i, (u_long *)&ids);
+		__set_bit(i, ids);
 	}
-	for (i = 0; i < 64; i++)
-		if (!test_bit(i, (u_long *)&ids))
-			return i + 64;
+	i = find_first_zero_bit(ids, 64);
+	if (i < 64)
+		return i + 64;
 	printk(KERN_WARNING "%s: more as 63 dynamic tei for one device\n",
 	       __func__);
 	return -1;
@@ -312,7 +312,7 @@ teiup_create(struct manager *mgr, u_int prim, int len, void *arg)
 	hh->prim = prim;
 	hh->id = (mgr->ch.nr << 16) | mgr->ch.addr;
 	if (len)
-		memcpy(skb_put(skb, len), arg, len);
+		skb_put_data(skb, arg, len);
 	err = mgr->up->send(mgr->up, skb);
 	if (err) {
 		printk(KERN_WARNING "%s: err=%d\n", __func__, err);
@@ -1180,8 +1180,7 @@ static int
 ctrl_teimanager(struct manager *mgr, void *arg)
 {
 	/* currently we only have one option */
-	int	*val = (int *)arg;
-	int	ret = 0;
+	unsigned int *val = (unsigned int *)arg;
 
 	switch (val[0]) {
 	case IMCLEAR_L2:
@@ -1197,9 +1196,9 @@ ctrl_teimanager(struct manager *mgr, void *arg)
 			test_and_clear_bit(OPTION_L1_HOLD, &mgr->options);
 		break;
 	default:
-		ret = -EINVAL;
+		return -EINVAL;
 	}
-	return ret;
+	return 0;
 }
 
 /* This function does create a L2 for fixed TEI in NT Mode */
@@ -1387,23 +1386,37 @@ create_teimanager(struct mISDNdevice *dev)
 
 int TEIInit(u_int *deb)
 {
+	int res;
 	debug = deb;
 	teifsmu.state_count = TEI_STATE_COUNT;
 	teifsmu.event_count = TEI_EVENT_COUNT;
 	teifsmu.strEvent = strTeiEvent;
 	teifsmu.strState = strTeiState;
-	mISDN_FsmNew(&teifsmu, TeiFnListUser, ARRAY_SIZE(TeiFnListUser));
+	res = mISDN_FsmNew(&teifsmu, TeiFnListUser, ARRAY_SIZE(TeiFnListUser));
+	if (res)
+		goto error;
 	teifsmn.state_count = TEI_STATE_COUNT;
 	teifsmn.event_count = TEI_EVENT_COUNT;
 	teifsmn.strEvent = strTeiEvent;
 	teifsmn.strState = strTeiState;
-	mISDN_FsmNew(&teifsmn, TeiFnListNet, ARRAY_SIZE(TeiFnListNet));
+	res = mISDN_FsmNew(&teifsmn, TeiFnListNet, ARRAY_SIZE(TeiFnListNet));
+	if (res)
+		goto error_smn;
 	deactfsm.state_count =  DEACT_STATE_COUNT;
 	deactfsm.event_count = DEACT_EVENT_COUNT;
 	deactfsm.strEvent = strDeactEvent;
 	deactfsm.strState = strDeactState;
-	mISDN_FsmNew(&deactfsm, DeactFnList, ARRAY_SIZE(DeactFnList));
+	res = mISDN_FsmNew(&deactfsm, DeactFnList, ARRAY_SIZE(DeactFnList));
+	if (res)
+		goto error_deact;
 	return 0;
+
+error_deact:
+	mISDN_FsmFree(&teifsmn);
+error_smn:
+	mISDN_FsmFree(&teifsmu);
+error:
+	return res;
 }
 
 void TEIFree(void)

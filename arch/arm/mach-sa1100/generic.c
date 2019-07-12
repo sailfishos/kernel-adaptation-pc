@@ -10,6 +10,7 @@
  * published by the Free Software Foundation.
  */
 #include <linux/gpio.h>
+#include <linux/gpio/machine.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -19,8 +20,14 @@
 #include <linux/cpufreq.h>
 #include <linux/ioport.h>
 #include <linux/platform_device.h>
+#include <linux/reboot.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
+#include <linux/irqchip/irq-sa11x0.h>
 
 #include <video/sa1100fb.h>
+
+#include <soc/sa1100/pwer.h>
 
 #include <asm/div64.h>
 #include <asm/mach/map.h>
@@ -30,8 +37,10 @@
 
 #include <mach/hardware.h>
 #include <mach/irqs.h>
+#include <mach/reset.h>
 
 #include "generic.h"
+#include <clocksource/pxa.h>
 
 unsigned int reset_status;
 EXPORT_SYMBOL(reset_status);
@@ -41,74 +50,31 @@ EXPORT_SYMBOL(reset_status);
 /*
  * This table is setup for a 3.6864MHz Crystal.
  */
-static const unsigned short cclk_frequency_100khz[NR_FREQS] = {
-	 590,	/*  59.0 MHz */
-	 737,	/*  73.7 MHz */
-	 885,	/*  88.5 MHz */
-	1032,	/* 103.2 MHz */
-	1180,	/* 118.0 MHz */
-	1327,	/* 132.7 MHz */
-	1475,	/* 147.5 MHz */
-	1622,	/* 162.2 MHz */
-	1769,	/* 176.9 MHz */
-	1917,	/* 191.7 MHz */
-	2064,	/* 206.4 MHz */
-	2212,	/* 221.2 MHz */
-	2359,	/* 235.9 MHz */
-	2507,	/* 250.7 MHz */
-	2654,	/* 265.4 MHz */
-	2802	/* 280.2 MHz */
+struct cpufreq_frequency_table sa11x0_freq_table[NR_FREQS+1] = {
+	{ .frequency = 59000,	/*  59.0 MHz */},
+	{ .frequency = 73700,	/*  73.7 MHz */},
+	{ .frequency = 88500,	/*  88.5 MHz */},
+	{ .frequency = 103200,	/* 103.2 MHz */},
+	{ .frequency = 118000,	/* 118.0 MHz */},
+	{ .frequency = 132700,	/* 132.7 MHz */},
+	{ .frequency = 147500,	/* 147.5 MHz */},
+	{ .frequency = 162200,	/* 162.2 MHz */},
+	{ .frequency = 176900,	/* 176.9 MHz */},
+	{ .frequency = 191700,	/* 191.7 MHz */},
+	{ .frequency = 206400,	/* 206.4 MHz */},
+	{ .frequency = 221200,	/* 221.2 MHz */},
+	{ .frequency = 235900,	/* 235.9 MHz */},
+	{ .frequency = 250700,	/* 250.7 MHz */},
+	{ .frequency = 265400,	/* 265.4 MHz */},
+	{ .frequency = 280200,	/* 280.2 MHz */},
+	{ .frequency = CPUFREQ_TABLE_END, },
 };
-
-/* rounds up(!)  */
-unsigned int sa11x0_freq_to_ppcr(unsigned int khz)
-{
-	int i;
-
-	khz /= 100;
-
-	for (i = 0; i < NR_FREQS; i++)
-		if (cclk_frequency_100khz[i] >= khz)
-			break;
-
-	return i;
-}
-
-unsigned int sa11x0_ppcr_to_freq(unsigned int idx)
-{
-	unsigned int freq = 0;
-	if (idx < NR_FREQS)
-		freq = cclk_frequency_100khz[idx] * 100;
-	return freq;
-}
-
-
-/* make sure that only the "userspace" governor is run -- anything else wouldn't make sense on
- * this platform, anyway.
- */
-int sa11x0_verify_speed(struct cpufreq_policy *policy)
-{
-	unsigned int tmp;
-	if (policy->cpu)
-		return -EINVAL;
-
-	cpufreq_verify_within_limits(policy, policy->cpuinfo.min_freq, policy->cpuinfo.max_freq);
-
-	/* make sure that at least one frequency is within the policy */
-	tmp = cclk_frequency_100khz[sa11x0_freq_to_ppcr(policy->min)] * 100;
-	if (tmp > policy->max)
-		policy->max = tmp;
-
-	cpufreq_verify_within_limits(policy, policy->cpuinfo.min_freq, policy->cpuinfo.max_freq);
-
-	return 0;
-}
 
 unsigned int sa11x0_getspeed(unsigned int cpu)
 {
 	if (cpu)
 		return 0;
-	return cclk_frequency_100khz[PPCR & 0xf] * 100;
+	return sa11x0_freq_table[PPCR & 0xf].frequency;
 }
 
 /*
@@ -131,9 +97,11 @@ static void sa1100_power_off(void)
 	PMCR = PMCR_SF;
 }
 
-void sa11x0_restart(char mode, const char *cmd)
+void sa11x0_restart(enum reboot_mode mode, const char *cmd)
 {
-	if (mode == 's') {
+	clear_reset_status(RESET_STATUS_ALL);
+
+	if (mode == REBOOT_SOFT) {
 		/* Jump into ROM at address 0 */
 		soft_restart(0);
 	} else {
@@ -267,10 +235,12 @@ void sa11x0_register_lcd(struct sa1100fb_mach_info *inf)
 	sa11x0_register_device(&sa11x0fb_device, inf);
 }
 
-static struct platform_device sa11x0pcmcia_device = {
-	.name		= "sa11x0-pcmcia",
-	.id		= -1,
-};
+void sa11x0_register_pcmcia(int socket, struct gpiod_lookup_table *table)
+{
+	if (table)
+		gpiod_add_lookup_table(table);
+	platform_device_register_simple("sa11x0-pcmcia", socket, NULL, 0);
+}
 
 static struct platform_device sa11x0mtd_device = {
 	.name		= "sa1100-mtd",
@@ -346,7 +316,6 @@ static struct platform_device *sa11x0_devices[] __initdata = {
 	&sa11x0uart1_device,
 	&sa11x0uart3_device,
 	&sa11x0ssp_device,
-	&sa11x0pcmcia_device,
 	&sa11x0rtc_device,
 	&sa11x0dma_device,
 };
@@ -354,6 +323,9 @@ static struct platform_device *sa11x0_devices[] __initdata = {
 static int __init sa1100_init(void)
 {
 	pm_power_off = sa1100_power_off;
+
+	regulator_has_full_constraints();
+
 	return platform_add_devices(sa11x0_devices, ARRAY_SIZE(sa11x0_devices));
 }
 
@@ -362,6 +334,32 @@ arch_initcall(sa1100_init);
 void __init sa11x0_init_late(void)
 {
 	sa11x0_pm_init();
+}
+
+int __init sa11x0_register_fixed_regulator(int n,
+	struct fixed_voltage_config *cfg,
+	struct regulator_consumer_supply *supplies, unsigned num_supplies,
+	bool uses_gpio)
+{
+	struct regulator_init_data *id;
+
+	cfg->init_data = id = kzalloc(sizeof(*cfg->init_data), GFP_KERNEL);
+	if (!cfg->init_data)
+		return -ENOMEM;
+
+	if (!uses_gpio)
+		id->constraints.always_on = 1;
+	id->constraints.name = cfg->supply_name;
+	id->constraints.min_uV = cfg->microvolts;
+	id->constraints.max_uV = cfg->microvolts;
+	id->constraints.valid_modes_mask = REGULATOR_MODE_NORMAL;
+	id->constraints.valid_ops_mask = REGULATOR_CHANGE_STATUS;
+	id->consumer_supplies = supplies;
+	id->num_consumer_supplies = num_supplies;
+
+	platform_device_register_resndata(NULL, "reg-fixed-voltage", n,
+					  NULL, 0, cfg, sizeof(*cfg));
+	return 0;
 }
 
 /*
@@ -411,6 +409,24 @@ void __init sa1100_map_io(void)
 	iotable_init(standard_io_desc, ARRAY_SIZE(standard_io_desc));
 }
 
+void __init sa1100_timer_init(void)
+{
+	pxa_timer_nodt_init(IRQ_OST0, io_p2v(0x90000000));
+}
+
+static struct resource irq_resource =
+	DEFINE_RES_MEM_NAMED(0x90050000, SZ_64K, "irqs");
+
+void __init sa1100_init_irq(void)
+{
+	request_resource(&iomem_resource, &irq_resource);
+
+	sa11x0_init_irq_nodt(IRQ_GPIO0_SC, irq_resource.start);
+
+	sa1100_init_gpio();
+	sa11xx_clk_init();
+}
+
 /*
  * Disable the memory bus request/grant signals on the SA1110 to
  * ensure that we don't receive spurious memory requests.  We set
@@ -452,3 +468,25 @@ void sa1110_mb_enable(void)
 	local_irq_restore(flags);
 }
 
+int sa11x0_gpio_set_wake(unsigned int gpio, unsigned int on)
+{
+	if (on)
+		PWER |= BIT(gpio);
+	else
+		PWER &= ~BIT(gpio);
+
+	return 0;
+}
+
+int sa11x0_sc_set_wake(unsigned int irq, unsigned int on)
+{
+	if (BIT(irq) != IC_RTCAlrm)
+		return -EINVAL;
+
+	if (on)
+		PWER |= PWER_RTC;
+	else
+		PWER &= ~PWER_RTC;
+
+	return 0;
+}

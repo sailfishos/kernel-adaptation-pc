@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * OHCI HCD(Host Controller Driver) for USB.
  *
@@ -18,16 +19,11 @@
  * Written from sparse documentation from Toshiba and Sharp's driver
  * for the 2.4 kernel,
  *	usb-ohci-tc6393.c(C) Copyright 2004 Lineo Solutions, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /*#include <linux/fs.h>
 #include <linux/mount.h>
 #include <linux/pagemap.h>
-#include <linux/init.h>
 #include <linux/namei.h>
 #include <linux/sched.h>*/
 #include <linux/platform_device.h>
@@ -59,7 +55,7 @@
 #define CCR_PM_CKRNEN    0x0002
 #define CCR_PM_USBPW1    0x0004
 #define CCR_PM_USBPW2    0x0008
-#define CCR_PM_USBPW3    0x0008
+#define CCR_PM_USBPW3    0x0010
 #define CCR_PM_PMEE      0x0100
 #define CCR_PM_PMES      0x8000
 
@@ -128,7 +124,8 @@ static void tmio_start_hc(struct platform_device *dev)
 	tmio_iowrite8(2, tmio->ccr + CCR_INTC);
 
 	dev_info(&dev->dev, "revision %d @ 0x%08llx, irq %d\n",
-			tmio_ioread8(tmio->ccr + CCR_REVID), hcd->rsrc_start, hcd->irq);
+			tmio_ioread8(tmio->ccr + CCR_REVID),
+			(u64) hcd->rsrc_start, hcd->irq);
 }
 
 static int ohci_tmio_start(struct usb_hcd *hcd)
@@ -184,7 +181,7 @@ static const struct hc_driver ohci_tmio_hc_driver = {
 /*-------------------------------------------------------------------------*/
 static struct platform_driver ohci_hcd_tmio_driver;
 
-static int __devinit ohci_hcd_tmio_drv_probe(struct platform_device *dev)
+static int ohci_hcd_tmio_drv_probe(struct platform_device *dev)
 {
 	const struct mfd_cell *cell = mfd_get_cell(dev);
 	struct resource *regs = platform_get_resource(dev, IORESOURCE_MEM, 0);
@@ -227,13 +224,10 @@ static int __devinit ohci_hcd_tmio_drv_probe(struct platform_device *dev)
 		goto err_ioremap_regs;
 	}
 
-	if (!dma_declare_coherent_memory(&dev->dev, sram->start,
-				sram->start,
-				resource_size(sram),
-				DMA_MEMORY_MAP | DMA_MEMORY_EXCLUSIVE)) {
-		ret = -EBUSY;
+	ret = dma_declare_coherent_memory(&dev->dev, sram->start, sram->start,
+				resource_size(sram), DMA_MEMORY_EXCLUSIVE);
+	if (ret)
 		goto err_dma_declare;
-	}
 
 	if (cell->enable) {
 		ret = cell->enable(dev);
@@ -249,6 +243,7 @@ static int __devinit ohci_hcd_tmio_drv_probe(struct platform_device *dev)
 	if (ret)
 		goto err_add_hcd;
 
+	device_wakeup_enable(hcd->self.controller);
 	if (ret == 0)
 		return ret;
 
@@ -271,7 +266,7 @@ err_usb_create_hcd:
 	return ret;
 }
 
-static int __devexit ohci_hcd_tmio_drv_remove(struct platform_device *dev)
+static int ohci_hcd_tmio_drv_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct tmio_hcd *tmio = hcd_to_tmio(hcd);
@@ -285,8 +280,6 @@ static int __devexit ohci_hcd_tmio_drv_remove(struct platform_device *dev)
 	iounmap(hcd->regs);
 	iounmap(tmio->ccr);
 	usb_put_hcd(hcd);
-
-	platform_set_drvdata(dev, NULL);
 
 	return 0;
 }
@@ -352,7 +345,7 @@ static int ohci_hcd_tmio_drv_resume(struct platform_device *dev)
 
 	spin_unlock_irqrestore(&tmio->lock, flags);
 
-	ohci_finish_controller_resume(hcd);
+	ohci_resume(hcd, false);
 
 	return 0;
 }
@@ -363,12 +356,11 @@ static int ohci_hcd_tmio_drv_resume(struct platform_device *dev)
 
 static struct platform_driver ohci_hcd_tmio_driver = {
 	.probe		= ohci_hcd_tmio_drv_probe,
-	.remove		= __devexit_p(ohci_hcd_tmio_drv_remove),
+	.remove		= ohci_hcd_tmio_drv_remove,
 	.shutdown	= usb_hcd_platform_shutdown,
 	.suspend	= ohci_hcd_tmio_drv_suspend,
 	.resume		= ohci_hcd_tmio_drv_resume,
 	.driver		= {
 		.name	= "tmio-ohci",
-		.owner	= THIS_MODULE,
 	},
 };

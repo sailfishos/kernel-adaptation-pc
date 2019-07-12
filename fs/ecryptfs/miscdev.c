@@ -38,11 +38,11 @@ static atomic_t ecryptfs_num_miscdev_opens;
  *
  * Returns the poll mask
  */
-static unsigned int
+static __poll_t
 ecryptfs_miscdev_poll(struct file *file, poll_table *pt)
 {
 	struct ecryptfs_daemon *daemon = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	mutex_lock(&daemon->mux);
 	if (daemon->flags & ECRYPTFS_DAEMON_ZOMBIE) {
@@ -59,7 +59,7 @@ ecryptfs_miscdev_poll(struct file *file, poll_table *pt)
 	poll_wait(file, &daemon->wait, pt);
 	mutex_lock(&daemon->mux);
 	if (!list_empty(&daemon->msg_ctx_out_queue))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 out_unlock_daemon:
 	daemon->flags &= ~ECRYPTFS_DAEMON_IN_POLL;
 	mutex_unlock(&daemon->mux);
@@ -80,13 +80,6 @@ ecryptfs_miscdev_open(struct inode *inode, struct file *file)
 	int rc;
 
 	mutex_lock(&ecryptfs_daemon_hash_mux);
-	rc = try_module_get(THIS_MODULE);
-	if (rc == 0) {
-		rc = -EIO;
-		printk(KERN_ERR "%s: Error attempting to increment module use "
-		       "count; rc = [%d]\n", __func__, rc);
-		goto out_unlock_daemon_list;
-	}
 	rc = ecryptfs_find_daemon_by_euid(&daemon);
 	if (!rc) {
 		rc = -EINVAL;
@@ -96,7 +89,7 @@ ecryptfs_miscdev_open(struct inode *inode, struct file *file)
 	if (rc) {
 		printk(KERN_ERR "%s: Error attempting to spawn daemon; "
 		       "rc = [%d]\n", __func__, rc);
-		goto out_module_put_unlock_daemon_list;
+		goto out_unlock_daemon_list;
 	}
 	mutex_lock(&daemon->mux);
 	if (daemon->flags & ECRYPTFS_DAEMON_MISCDEV_OPEN) {
@@ -108,9 +101,6 @@ ecryptfs_miscdev_open(struct inode *inode, struct file *file)
 	atomic_inc(&ecryptfs_num_miscdev_opens);
 out_unlock_daemon:
 	mutex_unlock(&daemon->mux);
-out_module_put_unlock_daemon_list:
-	if (rc)
-		module_put(THIS_MODULE);
 out_unlock_daemon_list:
 	mutex_unlock(&ecryptfs_daemon_hash_mux);
 	return rc;
@@ -147,7 +137,6 @@ ecryptfs_miscdev_release(struct inode *inode, struct file *file)
 		       "bug.\n", __func__, rc);
 		BUG();
 	}
-	module_put(THIS_MODULE);
 	return rc;
 }
 
@@ -174,12 +163,8 @@ int ecryptfs_send_miscdev(char *data, size_t data_size,
 	struct ecryptfs_message *msg;
 
 	msg = kmalloc((sizeof(*msg) + data_size), GFP_KERNEL);
-	if (!msg) {
-		printk(KERN_ERR "%s: Out of memory whilst attempting "
-		       "to kmalloc(%zd, GFP_KERNEL)\n", __func__,
-		       (sizeof(*msg) + data_size));
+	if (!msg)
 		return -ENOMEM;
-	}
 
 	mutex_lock(&msg_ctx->mux);
 	msg_ctx->msg = msg;
@@ -394,7 +379,7 @@ ecryptfs_miscdev_write(struct file *file, const char __user *buf,
 		goto memdup;
 	} else if (count < MIN_MSG_PKT_SIZE || count > MAX_MSG_PKT_SIZE) {
 		printk(KERN_WARNING "%s: Acceptable packet size range is "
-		       "[%d-%zu], but amount of data written is [%zu].",
+		       "[%d-%zu], but amount of data written is [%zu].\n",
 		       __func__, MIN_MSG_PKT_SIZE, MAX_MSG_PKT_SIZE, count);
 		return -EINVAL;
 	}
@@ -471,6 +456,7 @@ out_free:
 
 
 static const struct file_operations ecryptfs_miscdev_fops = {
+	.owner   = THIS_MODULE,
 	.open    = ecryptfs_miscdev_open,
 	.poll    = ecryptfs_miscdev_poll,
 	.read    = ecryptfs_miscdev_read,

@@ -239,8 +239,9 @@ static u8 sl82c105_bridge_revision(struct pci_dev *dev)
 	/*
 	 * The bridge should be part of the same device, but function 0.
 	 */
-	bridge = pci_get_bus_and_slot(dev->bus->number,
-			       PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
+	bridge = pci_get_domain_bus_and_slot(pci_domain_nr(dev->bus),
+					dev->bus->number,
+					PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
 	if (!bridge)
 		return -1;
 
@@ -299,7 +300,7 @@ static const struct ide_dma_ops sl82c105_dma_ops = {
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 
-static const struct ide_port_info sl82c105_chipset __devinitdata = {
+static const struct ide_port_info sl82c105_chipset = {
 	.name		= DRV_NAME,
 	.init_chipset	= init_chipset_sl82c105,
 	.enablebits	= {{0x40,0x01,0x01}, {0x40,0x10,0x10}},
@@ -313,7 +314,7 @@ static const struct ide_port_info sl82c105_chipset __devinitdata = {
 	.mwdma_mask	= ATA_MWDMA2,
 };
 
-static int __devinit sl82c105_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int sl82c105_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct ide_port_info d = sl82c105_chipset;
 	u8 rev = sl82c105_bridge_revision(dev);

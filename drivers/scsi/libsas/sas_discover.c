@@ -24,6 +24,7 @@
 
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
+#include <linux/async.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_eh.h>
 #include "sas_internal.h"
@@ -38,11 +39,11 @@
 void sas_init_dev(struct domain_device *dev)
 {
 	switch (dev->dev_type) {
-	case SAS_END_DEV:
+	case SAS_END_DEVICE:
 		INIT_LIST_HEAD(&dev->ssp_dev.eh_list_node);
 		break;
-	case EDGE_DEV:
-	case FANOUT_DEV:
+	case SAS_EDGE_EXPANDER_DEVICE:
+	case SAS_FANOUT_EXPANDER_DEVICE:
 		INIT_LIST_HEAD(&dev->ex_dev.children);
 		mutex_init(&dev->ex_dev.cmd_mutex);
 		break;
@@ -54,7 +55,7 @@ void sas_init_dev(struct domain_device *dev)
 /* ---------- Domain device discovery ---------- */
 
 /**
- * sas_get_port_device -- Discover devices which caused port creation
+ * sas_get_port_device - Discover devices which caused port creation
  * @port: pointer to struct sas_port of interest
  *
  * Devices directly attached to a HA port, have no parent.  This is
@@ -92,9 +93,9 @@ static int sas_get_port_device(struct asd_sas_port *port)
 		if (fis->interrupt_reason == 1 && fis->lbal == 1 &&
 		    fis->byte_count_low==0x69 && fis->byte_count_high == 0x96
 		    && (fis->device & ~0x10) == 0)
-			dev->dev_type = SATA_PM;
+			dev->dev_type = SAS_SATA_PM;
 		else
-			dev->dev_type = SATA_DEV;
+			dev->dev_type = SAS_SATA_DEV;
 		dev->tproto = SAS_PROTOCOL_SATA;
 	} else {
 		struct sas_identify_frame *id =
@@ -108,26 +109,26 @@ static int sas_get_port_device(struct asd_sas_port *port)
 
 	dev->port = port;
 	switch (dev->dev_type) {
-	case SATA_DEV:
+	case SAS_SATA_DEV:
 		rc = sas_ata_init(dev);
 		if (rc) {
 			rphy = NULL;
 			break;
 		}
 		/* fall through */
-	case SAS_END_DEV:
+	case SAS_END_DEVICE:
 		rphy = sas_end_device_alloc(port->port);
 		break;
-	case EDGE_DEV:
+	case SAS_EDGE_EXPANDER_DEVICE:
 		rphy = sas_expander_alloc(port->port,
 					  SAS_EDGE_EXPANDER_DEVICE);
 		break;
-	case FANOUT_DEV:
+	case SAS_FANOUT_EXPANDER_DEVICE:
 		rphy = sas_expander_alloc(port->port,
 					  SAS_FANOUT_EXPANDER_DEVICE);
 		break;
 	default:
-		printk("ERROR: Unidentified device type %d\n", dev->dev_type);
+		pr_warn("ERROR: Unidentified device type %d\n", dev->dev_type);
 		rphy = NULL;
 		break;
 	}
@@ -155,7 +156,7 @@ static int sas_get_port_device(struct asd_sas_port *port)
 	dev->rphy = rphy;
 	get_device(&dev->rphy->dev);
 
-	if (dev_is_sata(dev) || dev->dev_type == SAS_END_DEV)
+	if (dev_is_sata(dev) || dev->dev_type == SAS_END_DEVICE)
 		list_add_tail(&dev->disco_list_node, &port->disco_list);
 	else {
 		spin_lock_irq(&port->dev_list_lock);
@@ -180,16 +181,17 @@ int sas_notify_lldd_dev_found(struct domain_device *dev)
 	struct Scsi_Host *shost = sas_ha->core.shost;
 	struct sas_internal *i = to_sas_internal(shost->transportt);
 
-	if (i->dft->lldd_dev_found) {
-		res = i->dft->lldd_dev_found(dev);
-		if (res) {
-			printk("sas: driver on pcidev %s cannot handle "
-			       "device %llx, error:%d\n",
-			       dev_name(sas_ha->dev),
-			       SAS_ADDR(dev->sas_addr), res);
-		}
-		kref_get(&dev->kref);
+	if (!i->dft->lldd_dev_found)
+		return 0;
+
+	res = i->dft->lldd_dev_found(dev);
+	if (res) {
+		pr_warn("driver on host %s cannot handle device %llx, error:%d\n",
+			dev_name(sas_ha->dev),
+			SAS_ADDR(dev->sas_addr), res);
 	}
+	set_bit(SAS_DEV_FOUND, &dev->state);
+	kref_get(&dev->kref);
 	return res;
 }
 
@@ -200,19 +202,18 @@ void sas_notify_lldd_dev_gone(struct domain_device *dev)
 	struct Scsi_Host *shost = sas_ha->core.shost;
 	struct sas_internal *i = to_sas_internal(shost->transportt);
 
-	if (i->dft->lldd_dev_gone) {
+	if (!i->dft->lldd_dev_gone)
+		return;
+
+	if (test_and_clear_bit(SAS_DEV_FOUND, &dev->state)) {
 		i->dft->lldd_dev_gone(dev);
 		sas_put_device(dev);
 	}
 }
 
-static void sas_probe_devices(struct work_struct *work)
+static void sas_probe_devices(struct asd_sas_port *port)
 {
 	struct domain_device *dev, *n;
-	struct sas_discovery_event *ev = to_sas_discovery_event(work);
-	struct asd_sas_port *port = ev->port;
-
-	clear_bit(DISCE_PROBE, &port->disc.pending);
 
 	/* devices must be domain members before link recovery and probe */
 	list_for_each_entry(dev, &port->disco_list, disco_list_node) {
@@ -234,9 +235,50 @@ static void sas_probe_devices(struct work_struct *work)
 	}
 }
 
+static void sas_suspend_devices(struct work_struct *work)
+{
+	struct asd_sas_phy *phy;
+	struct domain_device *dev;
+	struct sas_discovery_event *ev = to_sas_discovery_event(work);
+	struct asd_sas_port *port = ev->port;
+	struct Scsi_Host *shost = port->ha->core.shost;
+	struct sas_internal *si = to_sas_internal(shost->transportt);
+
+	clear_bit(DISCE_SUSPEND, &port->disc.pending);
+
+	sas_suspend_sata(port);
+
+	/* lldd is free to forget the domain_device across the
+	 * suspension, we force the issue here to keep the reference
+	 * counts aligned
+	 */
+	list_for_each_entry(dev, &port->dev_list, dev_list_node)
+		sas_notify_lldd_dev_gone(dev);
+
+	/* we are suspending, so we know events are disabled and
+	 * phy_list is not being mutated
+	 */
+	list_for_each_entry(phy, &port->phy_list, port_phy_el) {
+		if (si->dft->lldd_port_deformed)
+			si->dft->lldd_port_deformed(phy);
+		phy->suspended = 1;
+		port->suspended = 1;
+	}
+}
+
+static void sas_resume_devices(struct work_struct *work)
+{
+	struct sas_discovery_event *ev = to_sas_discovery_event(work);
+	struct asd_sas_port *port = ev->port;
+
+	clear_bit(DISCE_RESUME, &port->disc.pending);
+
+	sas_resume_sata(port);
+}
+
 /**
- * sas_discover_end_dev -- discover an end device (SSP, etc)
- * @end: pointer to domain device of interest
+ * sas_discover_end_dev - discover an end device (SSP, etc)
+ * @dev: pointer to domain device of interest
  *
  * See comment in sas_discover_sata().
  */
@@ -247,7 +289,6 @@ int sas_discover_end_dev(struct domain_device *dev)
 	res = sas_notify_lldd_dev_found(dev);
 	if (res)
 		return res;
-	sas_discover_event(dev->port, DISCE_PROBE);
 
 	return 0;
 }
@@ -268,11 +309,14 @@ void sas_free_device(struct kref *kref)
 	dev->phy = NULL;
 
 	/* remove the phys and ports, everything else should be gone */
-	if (dev->dev_type == EDGE_DEV || dev->dev_type == FANOUT_DEV)
+	if (dev->dev_type == SAS_EDGE_EXPANDER_DEVICE || dev->dev_type == SAS_FANOUT_EXPANDER_DEVICE)
 		kfree(dev->ex_dev.ex_phy);
 
 	if (dev_is_sata(dev) && dev->sata_dev.ap) {
+		ata_sas_tport_delete(dev->sata_dev.ap);
 		ata_sas_port_destroy(dev->sata_dev.ap);
+		ata_host_put(dev->sata_dev.ata_host);
+		dev->sata_dev.ata_host = NULL;
 		dev->sata_dev.ap = NULL;
 	}
 
@@ -296,7 +340,7 @@ static void sas_unregister_common_dev(struct asd_sas_port *port, struct domain_d
 	spin_unlock_irq(&port->dev_list_lock);
 
 	spin_lock_irq(&ha->lock);
-	if (dev->dev_type == SAS_END_DEV &&
+	if (dev->dev_type == SAS_END_DEVICE &&
 	    !list_empty(&dev->ssp_dev.eh_list_node)) {
 		list_del_init(&dev->ssp_dev.eh_list_node);
 		ha->eh_active--;
@@ -306,13 +350,9 @@ static void sas_unregister_common_dev(struct asd_sas_port *port, struct domain_d
 	sas_put_device(dev);
 }
 
-static void sas_destruct_devices(struct work_struct *work)
+void sas_destruct_devices(struct asd_sas_port *port)
 {
 	struct domain_device *dev, *n;
-	struct sas_discovery_event *ev = to_sas_discovery_event(work);
-	struct asd_sas_port *port = ev->port;
-
-	clear_bit(DISCE_DESTRUCT, &port->disc.pending);
 
 	list_for_each_entry_safe(dev, n, &port->destroy_list, disco_list_node) {
 		list_del_init(&dev->disco_list_node);
@@ -320,6 +360,16 @@ static void sas_destruct_devices(struct work_struct *work)
 		sas_remove_children(&dev->rphy->dev);
 		sas_rphy_delete(dev->rphy);
 		sas_unregister_common_dev(port, dev);
+	}
+}
+
+static void sas_destruct_ports(struct asd_sas_port *port)
+{
+	struct sas_port *sas_port, *p;
+
+	list_for_each_entry_safe(sas_port, p, &port->sas_port_del_list, del_list) {
+		list_del_init(&sas_port->del_list);
+		sas_port_delete(sas_port);
 	}
 }
 
@@ -337,7 +387,6 @@ void sas_unregister_dev(struct asd_sas_port *port, struct domain_device *dev)
 	if (!test_and_set_bit(SAS_DEV_DESTROY, &dev->state)) {
 		sas_rphy_unlink(dev->rphy);
 		list_move_tail(&dev->disco_list_node, &port->destroy_list);
-		sas_discover_event(dev->port, DISCE_DESTRUCT);
 	}
 }
 
@@ -381,8 +430,8 @@ void sas_device_set_phy(struct domain_device *dev, struct sas_port *port)
 /* ---------- Discovery and Revalidation ---------- */
 
 /**
- * sas_discover_domain -- discover the domain
- * @port: port to the domain of interest
+ * sas_discover_domain - discover the domain
+ * @work: work structure embedded in port domain device.
  *
  * NOTE: this process _must_ quit (return) as soon as any connection
  * errors are encountered.  Connection recovery is done elsewhere.
@@ -406,29 +455,29 @@ static void sas_discover_domain(struct work_struct *work)
 		return;
 	dev = port->port_dev;
 
-	SAS_DPRINTK("DOING DISCOVERY on port %d, pid:%d\n", port->id,
-		    task_pid_nr(current));
+	pr_debug("DOING DISCOVERY on port %d, pid:%d\n", port->id,
+		 task_pid_nr(current));
 
 	switch (dev->dev_type) {
-	case SAS_END_DEV:
+	case SAS_END_DEVICE:
 		error = sas_discover_end_dev(dev);
 		break;
-	case EDGE_DEV:
-	case FANOUT_DEV:
+	case SAS_EDGE_EXPANDER_DEVICE:
+	case SAS_FANOUT_EXPANDER_DEVICE:
 		error = sas_discover_root_expander(dev);
 		break;
-	case SATA_DEV:
-	case SATA_PM:
+	case SAS_SATA_DEV:
+	case SAS_SATA_PM:
 #ifdef CONFIG_SCSI_SAS_ATA
 		error = sas_discover_sata(dev);
 		break;
 #else
-		SAS_DPRINTK("ATA device seen but CONFIG_SCSI_SAS_ATA=N so cannot attach\n");
+		pr_notice("ATA device seen but CONFIG_SCSI_SAS_ATA=N so cannot attach\n");
 		/* Fall through */
 #endif
 	default:
 		error = -ENXIO;
-		SAS_DPRINTK("unhandled device %d\n", dev->dev_type);
+		pr_err("unhandled device %d\n", dev->dev_type);
 		break;
 	}
 
@@ -443,8 +492,10 @@ static void sas_discover_domain(struct work_struct *work)
 		port->port_dev = NULL;
 	}
 
-	SAS_DPRINTK("DONE DISCOVERY on port %d, pid:%d, result:%d\n", port->id,
-		    task_pid_nr(current), error);
+	sas_probe_devices(port);
+
+	pr_debug("DONE DISCOVERY on port %d, pid:%d, result:%d\n", port->id,
+		 task_pid_nr(current), error);
 }
 
 static void sas_revalidate_domain(struct work_struct *work)
@@ -453,27 +504,33 @@ static void sas_revalidate_domain(struct work_struct *work)
 	struct sas_discovery_event *ev = to_sas_discovery_event(work);
 	struct asd_sas_port *port = ev->port;
 	struct sas_ha_struct *ha = port->ha;
+	struct domain_device *ddev = port->port_dev;
 
 	/* prevent revalidation from finding sata links in recovery */
 	mutex_lock(&ha->disco_mutex);
 	if (test_bit(SAS_HA_ATA_EH_ACTIVE, &ha->state)) {
-		SAS_DPRINTK("REVALIDATION DEFERRED on port %d, pid:%d\n",
-			    port->id, task_pid_nr(current));
+		pr_debug("REVALIDATION DEFERRED on port %d, pid:%d\n",
+			 port->id, task_pid_nr(current));
 		goto out;
 	}
 
 	clear_bit(DISCE_REVALIDATE_DOMAIN, &port->disc.pending);
 
-	SAS_DPRINTK("REVALIDATING DOMAIN on port %d, pid:%d\n", port->id,
-		    task_pid_nr(current));
+	pr_debug("REVALIDATING DOMAIN on port %d, pid:%d\n", port->id,
+		 task_pid_nr(current));
 
-	if (port->port_dev)
-		res = sas_ex_revalidate_domain(port->port_dev);
+	if (ddev && (ddev->dev_type == SAS_FANOUT_EXPANDER_DEVICE ||
+		     ddev->dev_type == SAS_EDGE_EXPANDER_DEVICE))
+		res = sas_ex_revalidate_domain(ddev);
 
-	SAS_DPRINTK("done REVALIDATING DOMAIN on port %d, pid:%d, res 0x%x\n",
-		    port->id, task_pid_nr(current), res);
+	pr_debug("done REVALIDATING DOMAIN on port %d, pid:%d, res 0x%x\n",
+		 port->id, task_pid_nr(current), res);
  out:
 	mutex_unlock(&ha->disco_mutex);
+
+	sas_destruct_devices(port);
+	sas_destruct_ports(port);
+	sas_probe_devices(port);
 }
 
 /* ---------- Events ---------- */
@@ -485,7 +542,7 @@ static void sas_chain_work(struct sas_ha_struct *ha, struct sas_work *sw)
 	 * workqueue, or known to be submitted from a context that is
 	 * not racing against draining
 	 */
-	scsi_queue_work(ha->core.shost, &sw->work);
+	queue_work(ha->disco_q, &sw->work);
 }
 
 static void sas_chain_event(int event, unsigned long *pending,
@@ -517,7 +574,8 @@ int sas_discover_event(struct asd_sas_port *port, enum discover_event ev)
 }
 
 /**
- * sas_init_disc -- initialize the discovery struct in the port
+ * sas_init_disc - initialize the discovery struct in the port
+ * @disc: port discovery structure
  * @port: pointer to struct port
  *
  * Called when the ports are being initialized.
@@ -529,8 +587,8 @@ void sas_init_disc(struct sas_discovery *disc, struct asd_sas_port *port)
 	static const work_func_t sas_event_fns[DISC_NUM_EVENTS] = {
 		[DISCE_DISCOVER_DOMAIN] = sas_discover_domain,
 		[DISCE_REVALIDATE_DOMAIN] = sas_revalidate_domain,
-		[DISCE_PROBE] = sas_probe_devices,
-		[DISCE_DESTRUCT] = sas_destruct_devices,
+		[DISCE_SUSPEND] = sas_suspend_devices,
+		[DISCE_RESUME] = sas_resume_devices,
 	};
 
 	disc->pending = 0;

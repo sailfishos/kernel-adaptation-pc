@@ -9,8 +9,6 @@
  *
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -23,9 +21,6 @@ static int genericbl_intensity;
 static struct backlight_device *generic_backlight_device;
 static struct generic_bl_info *bl_machinfo;
 
-/* Flag to signal when the battery is low */
-#define GENERICBL_BATTLOW       BL_CORE_DRIVER1
-
 static int genericbl_send_intensity(struct backlight_device *bd)
 {
 	int intensity = bd->props.brightness;
@@ -36,8 +31,6 @@ static int genericbl_send_intensity(struct backlight_device *bd)
 		intensity = 0;
 	if (bd->props.state & BL_CORE_SUSPENDED)
 		intensity = 0;
-	if (bd->props.state & GENERICBL_BATTLOW)
-		intensity &= bl_machinfo->limit_mask;
 
 	bl_machinfo->set_bl_intensity(intensity);
 
@@ -54,24 +47,6 @@ static int genericbl_get_intensity(struct backlight_device *bd)
 	return genericbl_intensity;
 }
 
-/*
- * Called when the battery is low to limit the backlight intensity.
- * If limit==0 clear any limit, otherwise limit the intensity
- */
-void genericbl_limit_intensity(int limit)
-{
-	struct backlight_device *bd = generic_backlight_device;
-
-	mutex_lock(&bd->ops_lock);
-	if (limit)
-		bd->props.state |= GENERICBL_BATTLOW;
-	else
-		bd->props.state &= ~GENERICBL_BATTLOW;
-	backlight_update_status(generic_backlight_device);
-	mutex_unlock(&bd->ops_lock);
-}
-EXPORT_SYMBOL(genericbl_limit_intensity);
-
 static const struct backlight_ops genericbl_ops = {
 	.options = BL_CORE_SUSPENDRESUME,
 	.get_brightness = genericbl_get_intensity,
@@ -81,7 +56,7 @@ static const struct backlight_ops genericbl_ops = {
 static int genericbl_probe(struct platform_device *pdev)
 {
 	struct backlight_properties props;
-	struct generic_bl_info *machinfo = pdev->dev.platform_data;
+	struct generic_bl_info *machinfo = dev_get_platdata(&pdev->dev);
 	const char *name = "generic-bl";
 	struct backlight_device *bd;
 
@@ -95,10 +70,10 @@ static int genericbl_probe(struct platform_device *pdev)
 	memset(&props, 0, sizeof(struct backlight_properties));
 	props.type = BACKLIGHT_RAW;
 	props.max_brightness = machinfo->max_intensity;
-	bd = backlight_device_register(name, &pdev->dev, NULL, &genericbl_ops,
-				       &props);
-	if (IS_ERR (bd))
-		return PTR_ERR (bd);
+	bd = devm_backlight_device_register(&pdev->dev, name, &pdev->dev,
+					NULL, &genericbl_ops, &props);
+	if (IS_ERR(bd))
+		return PTR_ERR(bd);
 
 	platform_set_drvdata(pdev, bd);
 
@@ -108,7 +83,7 @@ static int genericbl_probe(struct platform_device *pdev)
 
 	generic_backlight_device = bd;
 
-	pr_info("Generic Backlight Driver Initialized.\n");
+	dev_info(&pdev->dev, "Generic Backlight Driver Initialized.\n");
 	return 0;
 }
 
@@ -120,9 +95,7 @@ static int genericbl_remove(struct platform_device *pdev)
 	bd->props.brightness = 0;
 	backlight_update_status(bd);
 
-	backlight_device_unregister(bd);
-
-	pr_info("Generic Backlight Driver Unloaded\n");
+	dev_info(&pdev->dev, "Generic Backlight Driver Unloaded\n");
 	return 0;
 }
 

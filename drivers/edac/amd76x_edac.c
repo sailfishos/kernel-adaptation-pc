@@ -17,9 +17,8 @@
 #include <linux/pci.h>
 #include <linux/pci_ids.h>
 #include <linux/edac.h>
-#include "edac_core.h"
+#include "edac_module.h"
 
-#define AMD76X_REVISION	" Ver: 2.0.2"
 #define EDAC_MOD_STR	"amd76x_edac"
 
 #define amd76x_printk(level, fmt, arg...) \
@@ -263,7 +262,6 @@ static int amd76x_probe1(struct pci_dev *pdev, int dev_idx)
 	mci->edac_cap = ems_mode ?
 		(EDAC_FLAG_EC | EDAC_FLAG_SECDED) : EDAC_FLAG_NONE;
 	mci->mod_name = EDAC_MOD_STR;
-	mci->mod_ver = AMD76X_REVISION;
 	mci->ctl_name = amd76x_devs[dev_idx].ctl_name;
 	mci->dev_name = pci_name(pdev);
 	mci->edac_check = amd76x_check;
@@ -301,8 +299,8 @@ fail:
 }
 
 /* returns count (>= 0), or negative on error */
-static int __devinit amd76x_init_one(struct pci_dev *pdev,
-				const struct pci_device_id *ent)
+static int amd76x_init_one(struct pci_dev *pdev,
+			   const struct pci_device_id *ent)
 {
 	edac_dbg(0, "\n");
 
@@ -318,7 +316,7 @@ static int __devinit amd76x_init_one(struct pci_dev *pdev,
  *	structure for the device then delete the mci and free the
  *	resources.
  */
-static void __devexit amd76x_remove_one(struct pci_dev *pdev)
+static void amd76x_remove_one(struct pci_dev *pdev)
 {
 	struct mem_ctl_info *mci;
 
@@ -333,7 +331,7 @@ static void __devexit amd76x_remove_one(struct pci_dev *pdev)
 	edac_mc_free(mci);
 }
 
-static DEFINE_PCI_DEVICE_TABLE(amd76x_pci_tbl) = {
+static const struct pci_device_id amd76x_pci_tbl[] = {
 	{
 	 PCI_VEND_DEV(AMD, FE_GATE_700C), PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 	 AMD762},
@@ -350,7 +348,7 @@ MODULE_DEVICE_TABLE(pci, amd76x_pci_tbl);
 static struct pci_driver amd76x_driver = {
 	.name = EDAC_MOD_STR,
 	.probe = amd76x_init_one,
-	.remove = __devexit_p(amd76x_remove_one),
+	.remove = amd76x_remove_one,
 	.id_table = amd76x_pci_tbl,
 };
 

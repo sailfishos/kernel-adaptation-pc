@@ -21,7 +21,6 @@
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/serio.h>
-#include <linux/init.h>
 
 #define DRIVER_DESC	"PenMount serial touchscreen driver"
 
@@ -264,7 +263,7 @@ static int pm_connect(struct serio *serio, struct serio_driver *drv)
 	input_set_abs_params(pm->dev, ABS_Y, 0, max_y, 0, 0);
 
 	if (pm->maxcontacts > 1) {
-		input_mt_init_slots(pm->dev, pm->maxcontacts);
+		input_mt_init_slots(pm->dev, pm->maxcontacts, 0);
 		input_set_abs_params(pm->dev,
 				     ABS_MT_POSITION_X, 0, max_x, 0, 0);
 		input_set_abs_params(pm->dev,
@@ -294,7 +293,7 @@ static int pm_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static struct serio_device_id pm_serio_ids[] = {
+static const struct serio_device_id pm_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_PENMOUNT,

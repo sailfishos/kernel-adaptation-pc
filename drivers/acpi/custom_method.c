@@ -1,5 +1,5 @@
 /*
- * debugfs.c - ACPI debugfs interface to userspace.
+ * custom_method.c - debugfs interface for customizing ACPI control method
  */
 
 #include <linux/init.h>
@@ -7,7 +7,7 @@
 #include <linux/kernel.h>
 #include <linux/uaccess.h>
 #include <linux/debugfs.h>
-#include <acpi/acpi_drivers.h>
+#include <linux/acpi.h>
 
 #include "internal.h"
 
@@ -66,7 +66,7 @@ static ssize_t cm_write(struct file *file, const char __user * user_buf,
 		buf = NULL;
 		if (ACPI_FAILURE(status))
 			return -EINVAL;
-		add_taint(TAINT_OVERRIDDEN_ACPI_TABLE);
+		add_taint(TAINT_OVERRIDDEN_ACPI_TABLE, LOCKDEP_NOW_UNRELIABLE);
 	}
 
 	return count;
@@ -92,9 +92,8 @@ static int __init acpi_custom_method_init(void)
 
 static void __exit acpi_custom_method_exit(void)
 {
-	if (cm_dentry)
-		debugfs_remove(cm_dentry);
- }
+	debugfs_remove(cm_dentry);
+}
 
 module_init(acpi_custom_method_init);
 module_exit(acpi_custom_method_exit);

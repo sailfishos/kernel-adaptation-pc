@@ -108,6 +108,7 @@ ReadISAC(struct IsdnCardState *cs, u_char offset)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
+		/* fall through */
 	case R685:
 		return (readreg(cs->hw.gazel.isac, off2));
 	case R753:
@@ -125,6 +126,7 @@ WriteISAC(struct IsdnCardState *cs, u_char offset, u_char value)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
+		/* fall through */
 	case R685:
 		writereg(cs->hw.gazel.isac, off2, value);
 		break;
@@ -203,6 +205,7 @@ ReadHSCX(struct IsdnCardState *cs, int hscx, u_char offset)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
+		/* fall through */
 	case R685:
 		return (readreg(cs->hw.gazel.hscx[hscx], off2));
 	case R753:
@@ -220,6 +223,7 @@ WriteHSCX(struct IsdnCardState *cs, int hscx, u_char offset, u_char value)
 	switch (cs->subtyp) {
 	case R647:
 		off2 = ((off2 << 8 & 0xf000) | (off2 & 0xf));
+		/* fall through */
 	case R685:
 		writereg(cs->hw.gazel.hscx[hscx], off2, value);
 		break;
@@ -483,8 +487,7 @@ error:
 	return 1;
 }
 
-static int __devinit
-setup_gazelisa(struct IsdnCard *card, struct IsdnCardState *cs)
+static int setup_gazelisa(struct IsdnCard *card, struct IsdnCardState *cs)
 {
 	printk(KERN_INFO "Gazel: ISA PnP card automatic recognition\n");
 	// we got an irq parameter, assume it is an ISA card
@@ -532,10 +535,9 @@ setup_gazelisa(struct IsdnCard *card, struct IsdnCardState *cs)
 }
 
 #ifdef CONFIG_PCI
-static struct pci_dev *dev_tel __devinitdata = NULL;
+static struct pci_dev *dev_tel = NULL;
 
-static int __devinit
-setup_gazelpci(struct IsdnCardState *cs)
+static int setup_gazelpci(struct IsdnCardState *cs)
 {
 	u_int pci_ioaddr0 = 0, pci_ioaddr1 = 0;
 	u_char pci_irq = 0, found;
@@ -622,8 +624,7 @@ setup_gazelpci(struct IsdnCardState *cs)
 }
 #endif /* CONFIG_PCI */
 
-int __devinit
-setup_gazel(struct IsdnCard *card)
+int setup_gazel(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];

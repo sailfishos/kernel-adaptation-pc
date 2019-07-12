@@ -33,11 +33,10 @@
  *	1: choose feedback clk + delay value
  *	2: choose internal clk
  * @clk_delay_enable: enable clk_delay or not, used on pxa910
- * @ext_cd_gpio: gpio pin used for external CD line
- * @ext_cd_gpio_invert: invert values for external CD gpio line
  * @max_speed: the maximum speed supported
  * @host_caps: Standard MMC host capabilities bit field.
  * @quirks: quirks of platfrom
+ * @quirks2: quirks2 of platfrom
  * @pm_caps: pm_caps of platfrom
  */
 struct sdhci_pxa_platdata {
@@ -45,16 +44,11 @@ struct sdhci_pxa_platdata {
 	unsigned int	clk_delay_cycles;
 	unsigned int	clk_delay_sel;
 	bool		clk_delay_enable;
-	unsigned int	ext_cd_gpio;
-	bool		ext_cd_gpio_invert;
 	unsigned int	max_speed;
-	unsigned int	host_caps;
+	u32		host_caps;
+	u32		host_caps2;
 	unsigned int	quirks;
+	unsigned int	quirks2;
 	unsigned int	pm_caps;
-};
-
-struct sdhci_pxa {
-	u8	clk_enable;
-	u8	power_mode;
 };
 #endif /* _PXA_SDHCI_H_ */

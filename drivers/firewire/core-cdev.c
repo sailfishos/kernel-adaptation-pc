@@ -54,6 +54,7 @@
 #define FW_CDEV_KERNEL_VERSION			5
 #define FW_CDEV_VERSION_EVENT_REQUEST2		4
 #define FW_CDEV_VERSION_ALLOCATE_REGION_END	4
+#define FW_CDEV_VERSION_AUTO_FLUSH_ISO_OVERFLOW	5
 
 struct client {
 	u32 version;
@@ -220,7 +221,7 @@ struct inbound_phy_packet_event {
 #ifdef CONFIG_COMPAT
 static void __user *u64_to_uptr(u64 value)
 {
-	if (is_compat_task())
+	if (in_compat_syscall())
 		return compat_ptr(value);
 	else
 		return (void __user *)(unsigned long)value;
@@ -228,7 +229,7 @@ static void __user *u64_to_uptr(u64 value)
 
 static u64 uptr_to_u64(void __user *ptr)
 {
-	if (is_compat_task())
+	if (in_compat_syscall())
 		return ptr_to_compat(ptr);
 	else
 		return (u64)(unsigned long)ptr;
@@ -389,10 +390,8 @@ static void queue_bus_reset_event(struct client *client)
 	struct bus_reset_event *e;
 
 	e = kzalloc(sizeof(*e), GFP_KERNEL);
-	if (e == NULL) {
-		fw_notice(client->device->card, "out of memory when allocating event\n");
+	if (e == NULL)
 		return;
-	}
 
 	fill_bus_reset_event(&e->reset, client);
 
@@ -487,27 +486,28 @@ static int ioctl_get_info(struct client *client, union ioctl_arg *arg)
 static int add_client_resource(struct client *client,
 			       struct client_resource *resource, gfp_t gfp_mask)
 {
+	bool preload = gfpflags_allow_blocking(gfp_mask);
 	unsigned long flags;
 	int ret;
 
- retry:
-	if (idr_pre_get(&client->resource_idr, gfp_mask) == 0)
-		return -ENOMEM;
-
+	if (preload)
+		idr_preload(gfp_mask);
 	spin_lock_irqsave(&client->lock, flags);
+
 	if (client->in_shutdown)
 		ret = -ECANCELED;
 	else
-		ret = idr_get_new(&client->resource_idr, resource,
-				  &resource->handle);
+		ret = idr_alloc(&client->resource_idr, resource, 0, 0,
+				GFP_NOWAIT);
 	if (ret >= 0) {
+		resource->handle = ret;
 		client_get(client);
 		schedule_if_iso_resource(resource);
 	}
-	spin_unlock_irqrestore(&client->lock, flags);
 
-	if (ret == -EAGAIN)
-		goto retry;
+	spin_unlock_irqrestore(&client->lock, flags);
+	if (preload)
+		idr_preload_end();
 
 	return ret < 0 ? ret : 0;
 }
@@ -692,10 +692,9 @@ static void handle_request(struct fw_card *card, struct fw_request *request,
 
 	r = kmalloc(sizeof(*r), GFP_ATOMIC);
 	e = kmalloc(sizeof(*e), GFP_ATOMIC);
-	if (r == NULL || e == NULL) {
-		fw_notice(card, "out of memory when allocating event\n");
+	if (r == NULL || e == NULL)
 		goto failed;
-	}
+
 	r->card    = card;
 	r->request = request;
 	r->data    = payload;
@@ -929,10 +928,9 @@ static void iso_callback(struct fw_iso_context *context, u32 cycle,
 	struct iso_interrupt_event *e;
 
 	e = kmalloc(sizeof(*e) + header_length, GFP_ATOMIC);
-	if (e == NULL) {
-		fw_notice(context->card, "out of memory when allocating event\n");
+	if (e == NULL)
 		return;
-	}
+
 	e->interrupt.type      = FW_CDEV_EVENT_ISO_INTERRUPT;
 	e->interrupt.closure   = client->iso_closure;
 	e->interrupt.cycle     = cycle;
@@ -949,10 +947,9 @@ static void iso_mc_callback(struct fw_iso_context *context,
 	struct iso_interrupt_mc_event *e;
 
 	e = kmalloc(sizeof(*e), GFP_ATOMIC);
-	if (e == NULL) {
-		fw_notice(context->card, "out of memory when allocating event\n");
+	if (e == NULL)
 		return;
-	}
+
 	e->interrupt.type      = FW_CDEV_EVENT_ISO_INTERRUPT_MULTICHANNEL;
 	e->interrupt.closure   = client->iso_closure;
 	e->interrupt.completed = fw_iso_buffer_lookup(&client->buffer,
@@ -1009,6 +1006,8 @@ static int ioctl_create_iso_context(struct client *client, union ioctl_arg *arg)
 			a->channel, a->speed, a->header_size, cb, client);
 	if (IS_ERR(context))
 		return PTR_ERR(context);
+	if (client->version < FW_CDEV_VERSION_AUTO_FLUSH_ISO_OVERFLOW)
+		context->drop_overflow_headers = true;
 
 	/* We only support one context at this time. */
 	spin_lock_irq(&client->lock);
@@ -1095,7 +1094,7 @@ static int ioctl_queue_iso(struct client *client, union ioctl_arg *arg)
 		return -EINVAL;
 
 	p = (struct fw_cdev_iso_packet __user *)u64_to_uptr(a->packets);
-	if (!access_ok(VERIFY_READ, p, a->size))
+	if (!access_ok(p, a->size))
 		return -EFAULT;
 
 	end = (void __user *)p + a->size;
@@ -1206,7 +1205,7 @@ static int ioctl_get_cycle_timer2(struct client *client, union ioctl_arg *arg)
 {
 	struct fw_cdev_get_cycle_timer2 *a = &arg->get_cycle_timer2;
 	struct fw_card *card = client->device->card;
-	struct timespec ts = {0, 0};
+	struct timespec64 ts = {0, 0};
 	u32 cycle_time;
 	int ret = 0;
 
@@ -1215,9 +1214,9 @@ static int ioctl_get_cycle_timer2(struct client *client, union ioctl_arg *arg)
 	cycle_time = card->driver->read_csr(card, CSR_CYCLE_TIME);
 
 	switch (a->clk_id) {
-	case CLOCK_REALTIME:      getnstimeofday(&ts);                   break;
-	case CLOCK_MONOTONIC:     do_posix_clock_monotonic_gettime(&ts); break;
-	case CLOCK_MONOTONIC_RAW: getrawmonotonic(&ts);                  break;
+	case CLOCK_REALTIME:      ktime_get_real_ts64(&ts);	break;
+	case CLOCK_MONOTONIC:     ktime_get_ts64(&ts);		break;
+	case CLOCK_MONOTONIC_RAW: ktime_get_raw_ts64(&ts);	break;
 	default:
 		ret = -EINVAL;
 	}
@@ -1308,8 +1307,7 @@ static void iso_resource_work(struct work_struct *work)
 	 */
 	if (r->todo == ISO_RES_REALLOC && !success &&
 	    !client->in_shutdown &&
-	    idr_find(&client->resource_idr, r->resource.handle)) {
-		idr_remove(&client->resource_idr, r->resource.handle);
+	    idr_remove(&client->resource_idr, r->resource.handle)) {
 		client_put(client);
 		free = true;
 	}
@@ -1365,8 +1363,7 @@ static int init_iso_resource(struct client *client,
 	int ret;
 
 	if ((request->channels == 0 && request->bandwidth == 0) ||
-	    request->bandwidth > BANDWIDTH_AVAILABLE_INITIAL ||
-	    request->bandwidth < 0)
+	    request->bandwidth > BANDWIDTH_AVAILABLE_INITIAL)
 		return -EINVAL;
 
 	r  = kmalloc(sizeof(*r), GFP_KERNEL);
@@ -1581,10 +1578,9 @@ void fw_cdev_handle_phy_packet(struct fw_card *card, struct fw_packet *p)
 
 	list_for_each_entry(client, &card->phy_receiver_list, phy_receiver_link) {
 		e = kmalloc(sizeof(*e) + 8, GFP_ATOMIC);
-		if (e == NULL) {
-			fw_notice(card, "out of memory when allocating event\n");
+		if (e == NULL)
 			break;
-		}
+
 		e->phy_packet.closure	= client->phy_receiver_closure;
 		e->phy_packet.type	= FW_CDEV_EVENT_PHY_PACKET_RECEIVED;
 		e->phy_packet.rcode	= RCODE_COMPLETE;
@@ -1640,8 +1636,7 @@ static int dispatch_ioctl(struct client *client,
 	    _IOC_SIZE(cmd) > sizeof(buffer))
 		return -ENOTTY;
 
-	if (_IOC_DIR(cmd) == _IOC_READ)
-		memset(&buffer, 0, _IOC_SIZE(cmd));
+	memset(&buffer, 0, sizeof(buffer));
 
 	if (_IOC_DIR(cmd) & _IOC_WRITE)
 		if (copy_from_user(&buffer, arg, _IOC_SIZE(cmd)))
@@ -1779,7 +1774,6 @@ static int fw_device_op_release(struct inode *inode, struct file *file)
 	wait_event(client->tx_flush_wait, !has_outbound_transactions(client));
 
 	idr_for_each(&client->resource_idr, shutdown_resource, client);
-	idr_remove_all(&client->resource_idr);
 	idr_destroy(&client->resource_idr);
 
 	list_for_each_entry_safe(event, next_event, &client->event_list, link)
@@ -1790,17 +1784,17 @@ static int fw_device_op_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static unsigned int fw_device_op_poll(struct file *file, poll_table * pt)
+static __poll_t fw_device_op_poll(struct file *file, poll_table * pt)
 {
 	struct client *client = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	poll_wait(file, &client->wait, pt);
 
 	if (fw_device_is_shutdown(client->device))
-		mask |= POLLHUP | POLLERR;
+		mask |= EPOLLHUP | EPOLLERR;
 	if (!list_empty(&client->event_list))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	return mask;
 }

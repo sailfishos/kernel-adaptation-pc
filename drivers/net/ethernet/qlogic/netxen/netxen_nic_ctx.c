@@ -14,9 +14,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston,
- * MA  02111-1307, USA.
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  * The full GNU General Public License is included in this distribution
  * in the file called "COPYING".
@@ -131,14 +129,12 @@ netxen_get_minidump_template(struct netxen_adapter *adapter)
 		return NX_RCODE_INVALID_ARGS;
 	}
 
-	addr = pci_alloc_consistent(adapter->pdev, size, &md_template_addr);
-
+	addr = pci_zalloc_consistent(adapter->pdev, size, &md_template_addr);
 	if (!addr) {
 		dev_err(&adapter->pdev->dev, "Unable to allocate dmable memory for template.\n");
 		return -ENOMEM;
 	}
 
-	memset(addr, 0, size);
 	memset(&cmd, 0, sizeof(cmd));
 	memset(&cmd.rsp, 1, sizeof(struct _cdrp_cmd));
 	cmd.req.cmd = NX_CDRP_CMD_GET_TEMP_HDR;
@@ -150,8 +146,7 @@ netxen_get_minidump_template(struct netxen_adapter *adapter)
 	if ((cmd.rsp.cmd == NX_RCODE_SUCCESS) && (size == cmd.rsp.arg2)) {
 		memcpy(adapter->mdump.md_template, addr, size);
 	} else {
-		dev_err(&adapter->pdev->dev, "Failed to get minidump template, "
-			"err_code : %d, requested_size : %d, actual_size : %d\n ",
+		dev_err(&adapter->pdev->dev, "Failed to get minidump template, err_code : %d, requested_size : %d, actual_size : %d\n",
 			cmd.rsp.cmd, size, cmd.rsp.arg2);
 	}
 	pci_free_consistent(adapter->pdev, size, addr, md_template_addr);
@@ -178,15 +173,13 @@ netxen_setup_minidump(struct netxen_adapter *adapter)
 {
 	int err = 0, i;
 	u32 *template, *tmp_buf;
-	struct netxen_minidump_template_hdr *hdr;
 	err = netxen_get_minidump_template_size(adapter);
 	if (err) {
 		adapter->mdump.fw_supports_md = 0;
 		if ((err == NX_RCODE_CMD_INVALID) ||
 			(err == NX_RCODE_CMD_NOT_IMPL)) {
 			dev_info(&adapter->pdev->dev,
-				"Flashed firmware version does not support minidump, "
-				"minimum version required is [ %u.%u.%u ].\n ",
+				"Flashed firmware version does not support minidump, minimum version required is [ %u.%u.%u ]\n",
 				NX_MD_SUPPORT_MAJOR, NX_MD_SUPPORT_MINOR,
 				NX_MD_SUPPORT_SUBVERSION);
 		}
@@ -201,11 +194,8 @@ netxen_setup_minidump(struct netxen_adapter *adapter)
 	adapter->mdump.md_template =
 		kmalloc(adapter->mdump.md_template_size, GFP_KERNEL);
 
-	if (!adapter->mdump.md_template) {
-		dev_err(&adapter->pdev->dev, "Unable to allocate memory "
-			"for minidump template.\n");
+	if (!adapter->mdump.md_template)
 		return -ENOMEM;
-	}
 
 	err = netxen_get_minidump_template(adapter);
 	if (err) {
@@ -225,8 +215,6 @@ netxen_setup_minidump(struct netxen_adapter *adapter)
 	template = (u32 *) adapter->mdump.md_template;
 	for (i = 0; i < adapter->mdump.md_template_size/sizeof(u32); i++)
 		*template++ = __le32_to_cpu(*tmp_buf++);
-	hdr = (struct netxen_minidump_template_hdr *)
-				adapter->mdump.md_template;
 	adapter->mdump.md_capture_buff = NULL;
 	adapter->mdump.fw_supports_md = 1;
 	adapter->mdump.md_enabled = 0;
@@ -254,7 +242,7 @@ nx_fw_cmd_set_mtu(struct netxen_adapter *adapter, int mtu)
 	cmd.req.arg3 = 0;
 
 	if (recv_ctx->state == NX_HOST_CTX_STATE_ACTIVE)
-		netxen_issue_cmd(adapter, &cmd);
+		rcode = netxen_issue_cmd(adapter, &cmd);
 
 	if (rcode != NX_RCODE_SUCCESS)
 		return -EIO;

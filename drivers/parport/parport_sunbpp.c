@@ -265,7 +265,7 @@ static struct parport_operations parport_sunbpp_ops =
 	.owner		= THIS_MODULE,
 };
 
-static int __devinit bpp_probe(struct platform_device *op)
+static int bpp_probe(struct platform_device *op)
 {
 	struct parport_operations *ops;
 	struct bpp_regs __iomem *regs;
@@ -284,15 +284,18 @@ static int __devinit bpp_probe(struct platform_device *op)
 	size = resource_size(&op->resource[0]);
 	dma = PARPORT_DMA_NONE;
 
-	ops = kmalloc(sizeof(struct parport_operations), GFP_KERNEL);
-        if (!ops)
+	ops = kmemdup(&parport_sunbpp_ops, sizeof(struct parport_operations),
+		      GFP_KERNEL);
+	if (!ops) {
+		err = -ENOMEM;
 		goto out_unmap;
-
-        memcpy (ops, &parport_sunbpp_ops, sizeof(struct parport_operations));
+	}
 
 	dprintk(("register_port\n"));
-	if (!(p = parport_register_port((unsigned long)base, irq, dma, ops)))
+	if (!(p = parport_register_port((unsigned long)base, irq, dma, ops))) {
+		err = -ENOMEM;
 		goto out_free_ops;
+	}
 
 	p->size = size;
 	p->dev = &op->dev;
@@ -330,7 +333,7 @@ out_unmap:
 	return err;
 }
 
-static int __devexit bpp_remove(struct platform_device *op)
+static int bpp_remove(struct platform_device *op)
 {
 	struct parport *p = dev_get_drvdata(&op->dev);
 	struct parport_operations *ops = p->ops;
@@ -363,11 +366,10 @@ MODULE_DEVICE_TABLE(of, bpp_match);
 static struct platform_driver bpp_sbus_driver = {
 	.driver = {
 		.name = "bpp",
-		.owner = THIS_MODULE,
 		.of_match_table = bpp_match,
 	},
 	.probe		= bpp_probe,
-	.remove		= __devexit_p(bpp_remove),
+	.remove		= bpp_remove,
 };
 
 module_platform_driver(bpp_sbus_driver);

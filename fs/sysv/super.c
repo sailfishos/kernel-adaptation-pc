@@ -216,7 +216,7 @@ static int detect_sysv(struct sysv_sb_info *sbi, struct buffer_head *bh)
  	if (fs16_to_cpu(sbi, sbd->s_nfree) == 0xffff) {
  		sbi->s_type = FSTYPE_AFS;
 		sbi->s_forced_ro = 1;
- 		if (!(sb->s_flags & MS_RDONLY)) {
+ 		if (!sb_rdonly(sb)) {
  			printk("SysV FS: SCO EAFS on %s detected, " 
  				"forcing read-only mode.\n", 
  				sb->s_id);
@@ -333,7 +333,7 @@ static int complete_read_super(struct super_block *sb, int silent, int size)
 	/* set up enough so that it can read an inode */
 	sb->s_op = &sysv_sops;
 	if (sbi->s_forced_ro)
-		sb->s_flags |= MS_RDONLY;
+		sb->s_flags |= SB_RDONLY;
 	if (sbi->s_truncate)
 		sb->s_d_op = &sysv_dentry_operations;
 	root_inode = sysv_iget(sb, SYSV_ROOT_INO);
@@ -368,6 +368,7 @@ static int sysv_fill_super(struct super_block *sb, void *data, int silent)
 
 	sbi->s_sb = sb;
 	sbi->s_block_base = 0;
+	mutex_init(&sbi->s_lock);
 	sb->s_fs_info = sbi;
 
 	sb_set_blocksize(sb, BLOCK_SIZE);
@@ -486,6 +487,7 @@ static int v7_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->s_sb = sb;
 	sbi->s_block_base = 0;
 	sbi->s_type = FSTYPE_V7;
+	mutex_init(&sbi->s_lock);
 	sb->s_fs_info = sbi;
 	
 	sb_set_blocksize(sb, 512);
@@ -544,6 +546,7 @@ static struct file_system_type sysv_fs_type = {
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
+MODULE_ALIAS_FS("sysv");
 
 static struct file_system_type v7_fs_type = {
 	.owner		= THIS_MODULE,
@@ -552,6 +555,8 @@ static struct file_system_type v7_fs_type = {
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
+MODULE_ALIAS_FS("v7");
+MODULE_ALIAS("v7");
 
 static int __init init_sysv_fs(void)
 {
@@ -585,5 +590,4 @@ static void __exit exit_sysv_fs(void)
 
 module_init(init_sysv_fs)
 module_exit(exit_sysv_fs)
-MODULE_ALIAS("v7");
 MODULE_LICENSE("GPL");

@@ -282,7 +282,7 @@ static const struct wf_control_ops wf_fcu_fan_pwm_ops = {
 	.owner		= THIS_MODULE,
 };
 
-static void __devinit wf_fcu_get_pump_minmax(struct wf_fcu_fan *fan)
+static void wf_fcu_get_pump_minmax(struct wf_fcu_fan *fan)
 {
 	const struct mpu_data *mpu = wf_get_mpu(0);
 	u16 pump_min = 0, pump_max = 0xffff;
@@ -317,7 +317,7 @@ static void __devinit wf_fcu_get_pump_minmax(struct wf_fcu_fan *fan)
 	    fan->ctrl.name, pump_min, pump_max);
 }
 
-static void __devinit wf_fcu_get_rpmfan_minmax(struct wf_fcu_fan *fan)
+static void wf_fcu_get_rpmfan_minmax(struct wf_fcu_fan *fan)
 {
 	struct wf_fcu_priv *pv = fan->fcu_priv;
 	const struct mpu_data *mpu0 = wf_get_mpu(0);
@@ -359,9 +359,8 @@ static void __devinit wf_fcu_get_rpmfan_minmax(struct wf_fcu_fan *fan)
 	    fan->ctrl.name, fan->min, fan->max);
 }
 
-static void __devinit wf_fcu_add_fan(struct wf_fcu_priv *pv,
-				     const char *name,
-				     int type, int id)
+static void wf_fcu_add_fan(struct wf_fcu_priv *pv, const char *name,
+			   int type, int id)
 {
 	struct wf_fcu_fan *fan;
 
@@ -399,7 +398,7 @@ static void __devinit wf_fcu_add_fan(struct wf_fcu_priv *pv,
 	kref_get(&pv->ref);
 }
 
-static void __devinit wf_fcu_lookup_fans(struct wf_fcu_priv *pv)
+static void wf_fcu_lookup_fans(struct wf_fcu_priv *pv)
 {
 	/* Translation of device-tree location properties to
 	 * windfarm fan names
@@ -426,25 +425,25 @@ static void __devinit wf_fcu_lookup_fans(struct wf_fcu_priv *pv)
 		{ "CPU B 2",		"cpu-fan-b-1",		},
 		{ "CPU B 3",		"cpu-fan-c-1",		},
 	};
-	struct device_node *np = NULL, *fcu = pv->i2c->dev.of_node;
+	struct device_node *np, *fcu = pv->i2c->dev.of_node;
 	int i;
 
 	DBG("Looking up FCU controls in device-tree...\n");
 
-	while ((np = of_get_next_child(fcu, np)) != NULL) {
+	for_each_child_of_node(fcu, np) {
 		int id, type = -1;
 		const char *loc;
 		const char *name;
 		const u32 *reg;
 
-		DBG(" control: %s, type: %s\n", np->name, np->type);
+		DBG(" control: %pOFn, type: %s\n", np, of_node_get_device_type(np));
 
 		/* Detect control type */
-		if (!strcmp(np->type, "fan-rpm-control") ||
-		    !strcmp(np->type, "fan-rpm"))
+		if (of_node_is_type(np, "fan-rpm-control") ||
+		    of_node_is_type(np, "fan-rpm"))
 			type = FCU_FAN_RPM;
-		if (!strcmp(np->type, "fan-pwm-control") ||
-		    !strcmp(np->type, "fan-pwm"))
+		if (of_node_is_type(np, "fan-pwm-control") ||
+		    of_node_is_type(np, "fan-pwm"))
 			type = FCU_FAN_PWM;
 		/* Only care about fans for now */
 		if (type == -1)
@@ -471,8 +470,8 @@ static void __devinit wf_fcu_lookup_fans(struct wf_fcu_priv *pv)
 				id = ((*reg) - 0x30) / 2;
 			if (id > 7) {
 				pr_warning("wf_fcu: Can't parse "
-				       "fan ID in device-tree for %s\n",
-					   np->full_name);
+				       "fan ID in device-tree for %pOF\n",
+					   np);
 				break;
 			}
 			wf_fcu_add_fan(pv, name, type, id);
@@ -481,7 +480,7 @@ static void __devinit wf_fcu_lookup_fans(struct wf_fcu_priv *pv)
 	}
 }
 
-static void __devinit wf_fcu_default_fans(struct wf_fcu_priv *pv)
+static void wf_fcu_default_fans(struct wf_fcu_priv *pv)
 {
 	/* We only support the default fans for PowerMac7,2 */
 	if (!of_machine_is_compatible("PowerMac7,2"))
@@ -496,7 +495,7 @@ static void __devinit wf_fcu_default_fans(struct wf_fcu_priv *pv)
 	wf_fcu_add_fan(pv, "cpu-rear-fan-1",	FCU_FAN_RPM, 6);
 }
 
-static int __devinit wf_fcu_init_chip(struct wf_fcu_priv *pv)
+static int wf_fcu_init_chip(struct wf_fcu_priv *pv)
 {
 	unsigned char buf = 0xff;
 	int rc;
@@ -518,8 +517,8 @@ static int __devinit wf_fcu_init_chip(struct wf_fcu_priv *pv)
 	return 0;
 }
 
-static int __devinit wf_fcu_probe(struct i2c_client *client,
-				  const struct i2c_device_id *id)
+static int wf_fcu_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct wf_fcu_priv *pv;
 
@@ -564,7 +563,7 @@ static int __devinit wf_fcu_probe(struct i2c_client *client,
 	return 0;
 }
 
-static int __devexit wf_fcu_remove(struct i2c_client *client)
+static int wf_fcu_remove(struct i2c_client *client)
 {
 	struct wf_fcu_priv *pv = dev_get_drvdata(&client->dev);
 	struct wf_fcu_fan *fan;
@@ -593,19 +592,7 @@ static struct i2c_driver wf_fcu_driver = {
 	.id_table	= wf_fcu_id,
 };
 
-static int __init wf_fcu_init(void)
-{
-	return i2c_add_driver(&wf_fcu_driver);
-}
-
-static void __exit wf_fcu_exit(void)
-{
-	i2c_del_driver(&wf_fcu_driver);
-}
-
-
-module_init(wf_fcu_init);
-module_exit(wf_fcu_exit);
+module_i2c_driver(wf_fcu_driver);
 
 MODULE_AUTHOR("Benjamin Herrenschmidt <benh@kernel.crashing.org>");
 MODULE_DESCRIPTION("FCU control objects for PowerMacs thermal control");

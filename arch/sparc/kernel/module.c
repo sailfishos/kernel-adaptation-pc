@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* Kernel module help for sparc64.
  *
  * Copyright (C) 2001 Rusty Russell.
@@ -29,7 +30,7 @@ static void *module_map(unsigned long size)
 	if (PAGE_ALIGN(size) > MODULES_LEN)
 		return NULL;
 	return __vmalloc_node_range(size, 1, MODULES_VADDR, MODULES_END,
-				GFP_KERNEL, PAGE_KERNEL, -1,
+				GFP_KERNEL, PAGE_KERNEL, 0, NUMA_NO_NODE,
 				__builtin_return_address(0));
 }
 #else
@@ -42,10 +43,6 @@ static void *module_map(unsigned long size)
 void *module_alloc(unsigned long size)
 {
 	void *ret;
-
-	/* We handle the zero case fine, unlike vmalloc */
-	if (size == 0)
-		return NULL;
 
 	ret = module_map(size);
 	if (ret)

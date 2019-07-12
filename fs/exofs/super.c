@@ -2,7 +2,7 @@
  * Copyright (C) 2005, 2006
  * Avishay Traeger (avishay@gmail.com)
  * Copyright (C) 2008, 2009
- * Boaz Harrosh <bharrosh@panasas.com>
+ * Boaz Harrosh <ooo@electrozaur.com>
  *
  * Copyrights for code taken from ext2:
  *     Copyright (C) 1992, 1993, 1994, 1995
@@ -38,6 +38,7 @@
 #include <linux/module.h>
 #include <linux/exportfs.h>
 #include <linux/slab.h>
+#include <linux/iversion.h>
 
 #include "exofs.h"
 
@@ -100,6 +101,7 @@ static int parse_options(char *options, struct exofs_mountopt *opts)
 		token = match_token(p, tokens, args);
 		switch (token) {
 		case Opt_name:
+			kfree(opts->dev_name);
 			opts->dev_name = match_strdup(&args[0]);
 			if (unlikely(!opts->dev_name)) {
 				EXOFS_ERR("Error allocating dev_name");
@@ -116,13 +118,13 @@ static int parse_options(char *options, struct exofs_mountopt *opts)
 					  EXOFS_MIN_PID);
 				return -EINVAL;
 			}
-			s_pid = 1;
+			s_pid = true;
 			break;
 		case Opt_to:
 			if (match_int(&args[0], &option))
 				return -EINVAL;
 			if (option <= 0) {
-				EXOFS_ERR("Timout must be > 0");
+				EXOFS_ERR("Timeout must be > 0");
 				return -EINVAL;
 			}
 			opts->timeout = option * HZ;
@@ -159,7 +161,7 @@ static struct inode *exofs_alloc_inode(struct super_block *sb)
 	if (!oi)
 		return NULL;
 
-	oi->vfs_inode.i_version = 1;
+	inode_set_iversion(&oi->vfs_inode, 1);
 	return &oi->vfs_inode;
 }
 
@@ -192,9 +194,12 @@ static void exofs_init_once(void *foo)
  */
 static int init_inodecache(void)
 {
-	exofs_inode_cachep = kmem_cache_create("exofs_inode_cache",
+	exofs_inode_cachep = kmem_cache_create_usercopy("exofs_inode_cache",
 				sizeof(struct exofs_i_info), 0,
-				SLAB_RECLAIM_ACCOUNT | SLAB_MEM_SPREAD,
+				SLAB_RECLAIM_ACCOUNT | SLAB_MEM_SPREAD |
+				SLAB_ACCOUNT,
+				offsetof(struct exofs_i_info, i_data),
+				sizeof_field(struct exofs_i_info, i_data),
 				exofs_init_once);
 	if (exofs_inode_cachep == NULL)
 		return -ENOMEM;
@@ -206,6 +211,11 @@ static int init_inodecache(void)
  */
 static void destroy_inodecache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(exofs_inode_cachep);
 }
 
@@ -220,7 +230,7 @@ void exofs_make_credential(u8 cred_a[OSD_CAP_LEN], const struct osd_obj_id *obj)
 static int exofs_read_kern(struct osd_dev *od, u8 *cred, struct osd_obj_id *obj,
 		    u64 offset, void *p, unsigned length)
 {
-	struct osd_request *or = osd_start_request(od, GFP_KERNEL);
+	struct osd_request *or = osd_start_request(od);
 /*	struct osd_sense_info osi = {.key = 0};*/
 	int ret;
 
@@ -384,8 +394,6 @@ static int exofs_sync_fs(struct super_block *sb, int wait)
 	if (unlikely(ret))
 		goto out;
 
-	lock_super(sb);
-
 	ios->length = offsetof(struct exofs_fscb, s_dev_table_oid);
 	memset(fscb, 0, ios->length);
 	fscb->s_nextid = cpu_to_le64(sbi->s_nextid);
@@ -401,8 +409,6 @@ static int exofs_sync_fs(struct super_block *sb, int wait)
 	if (unlikely(ret))
 		EXOFS_ERR("%s: ore_write failed.\n", __func__);
 
-
-	unlock_super(sb);
 out:
 	EXOFS_DBGMSG("s_nextid=0x%llx ret=%d\n", _LLU(sbi->s_nextid), ret);
 	ore_put_io_state(ios);
@@ -463,7 +469,6 @@ static void exofs_put_super(struct super_block *sb)
 			    sbi->one_comp.obj.partition);
 
 	exofs_sysfs_sb_del(sbi);
-	bdi_destroy(&sbi->bdi);
 	exofs_free_sbi(sbi);
 	sb->s_fs_info = NULL;
 }
@@ -542,30 +547,29 @@ static int exofs_devs_2_odi(struct exofs_dt_device_info *dt_dev,
 	return !(odi->systemid_len || odi->osdname_len);
 }
 
-int __alloc_dev_table(struct exofs_sb_info *sbi, unsigned numdevs,
+static int __alloc_dev_table(struct exofs_sb_info *sbi, unsigned numdevs,
 		      struct exofs_dev **peds)
 {
-	struct __alloc_ore_devs_and_exofs_devs {
-		/* Twice bigger table: See exofs_init_comps() and comment at
-		 * exofs_read_lookup_dev_table()
-		 */
-		struct ore_dev *oreds[numdevs * 2 - 1];
-		struct exofs_dev eds[numdevs];
-	} *aoded;
+	/* Twice bigger table: See exofs_init_comps() and comment at
+	 * exofs_read_lookup_dev_table()
+	 */
+	const size_t numores = numdevs * 2 - 1;
 	struct exofs_dev *eds;
 	unsigned i;
 
-	aoded = kzalloc(sizeof(*aoded), GFP_KERNEL);
-	if (unlikely(!aoded)) {
+	sbi->oc.ods = kzalloc(numores * sizeof(struct ore_dev *) +
+			      numdevs * sizeof(struct exofs_dev), GFP_KERNEL);
+	if (unlikely(!sbi->oc.ods)) {
 		EXOFS_ERR("ERROR: failed allocating Device array[%d]\n",
 			  numdevs);
 		return -ENOMEM;
 	}
 
-	sbi->oc.ods = aoded->oreds;
-	*peds = eds = aoded->eds;
+	/* Start of allocated struct exofs_dev entries */
+	*peds = eds = (void *)sbi->oc.ods[numores];
+	/* Initialize pointers into struct exofs_dev */
 	for (i = 0; i < numdevs; ++i)
-		aoded->oreds[i] = &eds[i].ored;
+		sbi->oc.ods[i] = &eds[i].ored;
 	return 0;
 }
 
@@ -701,20 +705,17 @@ out:
 /*
  * Read the superblock from the OSD and fill in the fields
  */
-static int exofs_fill_super(struct super_block *sb, void *data, int silent)
+static int exofs_fill_super(struct super_block *sb,
+				struct exofs_mountopt *opts,
+				struct exofs_sb_info *sbi,
+				int silent)
 {
 	struct inode *root;
-	struct exofs_mountopt *opts = data;
-	struct exofs_sb_info *sbi;	/*extended info                  */
 	struct osd_dev *od;		/* Master device                 */
 	struct exofs_fscb fscb;		/*on-disk superblock info        */
 	struct ore_comp comp;
 	unsigned table_count;
 	int ret;
-
-	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
-	if (!sbi)
-		return -ENOMEM;
 
 	/* use mount options to fill superblock */
 	if (opts->is_osdname) {
@@ -808,8 +809,12 @@ static int exofs_fill_super(struct super_block *sb, void *data, int silent)
 	__sbi_read_stats(sbi);
 
 	/* set up operation vectors */
-	sbi->bdi.ra_pages = __ra_pages(&sbi->layout);
-	sb->s_bdi = &sbi->bdi;
+	ret = super_setup_bdi(sb);
+	if (ret) {
+		EXOFS_DBGMSG("Failed to super_setup_bdi\n");
+		goto free_sbi;
+	}
+	sb->s_bdi->ra_pages = __ra_pages(&sbi->layout);
 	sb->s_fs_info = sbi;
 	sb->s_op = &exofs_sops;
 	sb->s_export_op = &exofs_export_ops;
@@ -835,14 +840,6 @@ static int exofs_fill_super(struct super_block *sb, void *data, int silent)
 		goto free_sbi;
 	}
 
-	ret = bdi_setup_and_register(&sbi->bdi, "exofs", BDI_CAP_MAP_COPY);
-	if (ret) {
-		EXOFS_DBGMSG("Failed to bdi_setup_and_register\n");
-		dput(sb->s_root);
-		sb->s_root = NULL;
-		goto free_sbi;
-	}
-
 	exofs_sysfs_dbg_print();
 	_exofs_print_device("Mounting", opts->dev_name,
 			    ore_comp_dev(&sbi->oc, 0),
@@ -863,16 +860,42 @@ static struct dentry *exofs_mount(struct file_system_type *type,
 			  int flags, const char *dev_name,
 			  void *data)
 {
+	struct super_block *s;
 	struct exofs_mountopt opts;
+	struct exofs_sb_info *sbi;
 	int ret;
 
 	ret = parse_options(data, &opts);
-	if (ret)
+	if (ret) {
+		kfree(opts.dev_name);
 		return ERR_PTR(ret);
+	}
+
+	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
+	if (!sbi) {
+		kfree(opts.dev_name);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	s = sget(type, NULL, set_anon_super, flags, NULL);
+
+	if (IS_ERR(s)) {
+		kfree(opts.dev_name);
+		kfree(sbi);
+		return ERR_CAST(s);
+	}
 
 	if (!opts.dev_name)
 		opts.dev_name = dev_name;
-	return mount_nodev(type, flags, &opts, exofs_fill_super);
+
+
+	ret = exofs_fill_super(s, &opts, sbi, flags & SB_SILENT ? 1 : 0);
+	if (ret) {
+		deactivate_locked_super(s);
+		return ERR_PTR(ret);
+	}
+	s->s_flags |= SB_ACTIVE;
+	return dget(s->s_root);
 }
 
 /*
@@ -957,7 +980,7 @@ static struct dentry *exofs_get_parent(struct dentry *child)
 	if (!ino)
 		return ERR_PTR(-ESTALE);
 
-	return d_obtain_alias(exofs_iget(child->d_inode->i_sb, ino));
+	return d_obtain_alias(exofs_iget(child->d_sb, ino));
 }
 
 static struct inode *exofs_nfs_get_inode(struct super_block *sb,
@@ -1009,6 +1032,7 @@ static struct file_system_type exofs_type = {
 	.mount          = exofs_mount,
 	.kill_sb        = generic_shutdown_super,
 };
+MODULE_ALIAS_FS("exofs");
 
 static int __init init_exofs(void)
 {

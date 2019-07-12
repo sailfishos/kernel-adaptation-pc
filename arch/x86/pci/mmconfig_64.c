@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * mmconfig.c - Low-level direct PCI config space access via MMCONFIG
  *
@@ -10,7 +11,7 @@
 #include <linux/acpi.h>
 #include <linux/bitmap.h>
 #include <linux/rcupdate.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/pci_x86.h>
 
 #define PREFIX "PCI: "
@@ -95,7 +96,7 @@ const struct pci_raw_ops pci_mmcfg = {
 	.write =	pci_mmcfg_write,
 };
 
-static void __iomem * __devinit mcfg_ioremap(struct pci_mmcfg_region *cfg)
+static void __iomem *mcfg_ioremap(struct pci_mmcfg_region *cfg)
 {
 	void __iomem *addr;
 	u64 start, size;
@@ -133,7 +134,7 @@ void __init pci_mmcfg_arch_free(void)
 		pci_mmcfg_arch_unmap(cfg);
 }
 
-int __devinit pci_mmcfg_arch_map(struct pci_mmcfg_region *cfg)
+int pci_mmcfg_arch_map(struct pci_mmcfg_region *cfg)
 {
 	cfg->virt = mcfg_ioremap(cfg);
 	if (!cfg->virt) {

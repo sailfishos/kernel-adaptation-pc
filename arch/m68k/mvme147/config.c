@@ -26,20 +26,20 @@
 #include <linux/interrupt.h>
 
 #include <asm/bootinfo.h>
+#include <asm/bootinfo-vme.h>
+#include <asm/byteorder.h>
 #include <asm/pgtable.h>
 #include <asm/setup.h>
 #include <asm/irq.h>
 #include <asm/traps.h>
-#include <asm/rtc.h>
 #include <asm/machdep.h>
 #include <asm/mvme147hw.h>
 
 
 static void mvme147_get_model(char *model);
 extern void mvme147_sched_init(irq_handler_t handler);
-extern unsigned long mvme147_gettimeoffset (void);
+extern u32 mvme147_gettimeoffset(void);
 extern int mvme147_hwclk (int, struct rtc_time *);
-extern int mvme147_set_clock_mmss (unsigned long);
 extern void mvme147_reset (void);
 
 
@@ -51,9 +51,10 @@ static int bcd2int (unsigned char b);
 irq_handler_t tick_handler;
 
 
-int mvme147_parse_bootinfo(const struct bi_record *bi)
+int __init mvme147_parse_bootinfo(const struct bi_record *bi)
 {
-	if (bi->tag == BI_VME_TYPE || bi->tag == BI_VME_BRDINFO)
+	uint16_t tag = be16_to_cpu(bi->tag);
+	if (tag == BI_VME_TYPE || tag == BI_VME_BRDINFO)
 		return 0;
 	else
 		return 1;
@@ -61,7 +62,7 @@ int mvme147_parse_bootinfo(const struct bi_record *bi)
 
 void mvme147_reset(void)
 {
-	printk ("\r\n\nCalled mvme147_reset\r\n");
+	pr_info("\r\n\nCalled mvme147_reset\r\n");
 	m147_pcc->watchdog = 0x0a;	/* Clear timer */
 	m147_pcc->watchdog = 0xa5;	/* Enable watchdog - 100ms to reset */
 	while (1)
@@ -88,9 +89,8 @@ void __init config_mvme147(void)
 	mach_max_dma_address	= 0x01000000;
 	mach_sched_init		= mvme147_sched_init;
 	mach_init_IRQ		= mvme147_init_IRQ;
-	mach_gettimeoffset	= mvme147_gettimeoffset;
+	arch_gettimeoffset	= mvme147_gettimeoffset;
 	mach_hwclk		= mvme147_hwclk;
-	mach_set_clock_mmss	= mvme147_set_clock_mmss;
 	mach_reset		= mvme147_reset;
 	mach_get_model		= mvme147_get_model;
 
@@ -127,7 +127,7 @@ void mvme147_sched_init (irq_handler_t timer_routine)
 
 /* This is always executed with interrupts disabled.  */
 /* XXX There are race hazards in this code XXX */
-unsigned long mvme147_gettimeoffset (void)
+u32 mvme147_gettimeoffset(void)
 {
 	volatile unsigned short *cp = (volatile unsigned short *)0xfffe1012;
 	unsigned short n;
@@ -137,7 +137,7 @@ unsigned long mvme147_gettimeoffset (void)
 		n = *cp;
 
 	n -= PCC_TIMER_PRELOAD;
-	return (unsigned long)n * 25 / 4;
+	return ((unsigned long)n * 25 / 4) * 1000;
 }
 
 static int bcd2int (unsigned char b)
@@ -151,63 +151,14 @@ int mvme147_hwclk(int op, struct rtc_time *t)
 	if (!op) {
 		m147_rtc->ctrl = RTC_READ;
 		t->tm_year = bcd2int (m147_rtc->bcd_year);
-		t->tm_mon  = bcd2int (m147_rtc->bcd_mth);
+		t->tm_mon  = bcd2int(m147_rtc->bcd_mth) - 1;
 		t->tm_mday = bcd2int (m147_rtc->bcd_dom);
 		t->tm_hour = bcd2int (m147_rtc->bcd_hr);
 		t->tm_min  = bcd2int (m147_rtc->bcd_min);
 		t->tm_sec  = bcd2int (m147_rtc->bcd_sec);
 		m147_rtc->ctrl = 0;
+		if (t->tm_year < 70)
+			t->tm_year += 100;
 	}
 	return 0;
-}
-
-int mvme147_set_clock_mmss (unsigned long nowtime)
-{
-	return 0;
-}
-
-/*-------------------  Serial console stuff ------------------------*/
-
-static void scc_delay (void)
-{
-	int n;
-	volatile int trash;
-
-	for (n = 0; n < 20; n++)
-		trash = n;
-}
-
-static void scc_write (char ch)
-{
-	volatile char *p = (volatile char *)M147_SCC_A_ADDR;
-
-	do {
-		scc_delay();
-	}
-	while (!(*p & 4));
-	scc_delay();
-	*p = 8;
-	scc_delay();
-	*p = ch;
-}
-
-
-void m147_scc_write (struct console *co, const char *str, unsigned count)
-{
-	unsigned long flags;
-
-	local_irq_save(flags);
-
-	while (count--)
-	{
-		if (*str == '\n')
-			scc_write ('\r');
-		scc_write (*str++);
-	}
-	local_irq_restore(flags);
-}
-
-void mvme147_init_console_port (struct console *co, int cflag)
-{
-	co->write    = m147_scc_write;
 }

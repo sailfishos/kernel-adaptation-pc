@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* apollohw.h : some structures to access apollo HW */
 
 #ifndef _ASMm68k_APOLLOHW_H_
@@ -5,18 +6,11 @@
 
 #include <linux/types.h>
 
-/*
-   apollo models
-*/
+#include <asm/bootinfo-apollo.h>
+
 
 extern u_long apollo_model;
 
-#define APOLLO_UNKNOWN (0)
-#define APOLLO_DN3000 (1)
-#define APOLLO_DN3010 (2)
-#define APOLLO_DN3500 (3)
-#define APOLLO_DN4000 (4)
-#define APOLLO_DN4500 (5)
 
 /*
    see scn2681 data sheet for more info.
@@ -45,18 +39,6 @@ struct SCN2681 {
 	DECLARE_2681_FIELD(stopCnt_resetOutBit);
 
 };
-
-#if 0
-struct mc146818 {
-
-	unsigned int second1:4, second2:4, alarm_second1:4, alarm_second2:4,
-		     minute1:4, minute2:4, alarm_minute1:4, alarm_minute2:4;
-	unsigned int hours1:4, hours2:4, alarm_hours1:4, alarm_hours2:4,
-		     day_of_week1:4, day_of_week2:4, day_of_month1:4, day_of_month2:4;
-	unsigned int month1:4, month2:4, year1:4, year2:4, :16;
-
-};
-#endif
 
 struct mc146818 {
         unsigned char second, alarm_second;

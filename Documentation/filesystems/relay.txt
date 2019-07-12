@@ -31,7 +31,7 @@ Semantics
 
 Each relay channel has one buffer per CPU, each buffer has one or more
 sub-buffers.  Messages are written to the first sub-buffer until it is
-too full to contain a new message, in which case it it is written to
+too full to contain a new message, in which case it is written to
 the next (if available).  Messages are never split across sub-buffers.
 At this point, userspace can be notified so it empties the first
 sub-buffer, while the kernel continues writing to the next.
@@ -222,7 +222,7 @@ using debugfs:
  */
 static struct dentry *create_buf_file_handler(const char *filename,
                                               struct dentry *parent,
-                                              int mode,
+                                              umode_t mode,
                                               struct rchan_buf *buf,
                                               int *is_global)
 {
@@ -375,7 +375,7 @@ would be very similar:
 static int subbuf_start(struct rchan_buf *buf,
                         void *subbuf,
 			void *prev_subbuf,
-			unsigned int prev_padding)
+			size_t prev_padding)
 {
 	if (prev_subbuf)
 		*((unsigned *)prev_subbuf) = prev_padding;

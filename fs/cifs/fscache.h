@@ -27,6 +27,20 @@
 
 #ifdef CONFIG_CIFS_FSCACHE
 
+/*
+ * Auxiliary data attached to CIFS inode within the cache
+ */
+struct cifs_fscache_inode_auxdata {
+	u64 last_write_time_sec;
+	u64 last_change_time_sec;
+	u32 last_write_time_nsec;
+	u32 last_change_time_nsec;
+	u64 eof;
+};
+
+/*
+ * cache.c
+ */
 extern struct fscache_netfs cifs_fscache_netfs;
 extern const struct fscache_cookie_def cifs_fscache_server_index_def;
 extern const struct fscache_cookie_def cifs_fscache_super_index_def;
@@ -34,6 +48,7 @@ extern const struct fscache_cookie_def cifs_fscache_inode_object_def;
 
 extern int cifs_fscache_register(void);
 extern void cifs_fscache_unregister(void);
+extern char *extract_sharename(const char *);
 
 /*
  * fscache.c
@@ -54,6 +69,7 @@ extern int __cifs_readpages_from_fscache(struct inode *,
 					 struct address_space *,
 					 struct list_head *,
 					 unsigned *);
+extern void __cifs_fscache_readpages_cancel(struct inode *, struct list_head *);
 
 extern void __cifs_readpage_to_fscache(struct inode *, struct page *);
 
@@ -89,6 +105,13 @@ static inline void cifs_readpage_to_fscache(struct inode *inode,
 {
 	if (PageFsCache(page))
 		__cifs_readpage_to_fscache(inode, page);
+}
+
+static inline void cifs_fscache_readpages_cancel(struct inode *inode,
+						 struct list_head *pages)
+{
+	if (CIFS_I(inode)->fscache)
+		return __cifs_fscache_readpages_cancel(inode, pages);
 }
 
 #else /* CONFIG_CIFS_FSCACHE */
@@ -130,6 +153,11 @@ static inline int cifs_readpages_from_fscache(struct inode *inode,
 
 static inline void cifs_readpage_to_fscache(struct inode *inode,
 			struct page *page) {}
+
+static inline void cifs_fscache_readpages_cancel(struct inode *inode,
+						 struct list_head *pages)
+{
+}
 
 #endif /* CONFIG_CIFS_FSCACHE */
 

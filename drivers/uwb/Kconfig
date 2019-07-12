@@ -3,10 +3,9 @@
 #
 
 menuconfig UWB
-	tristate "Ultra Wideband devices (EXPERIMENTAL)"
-	depends on EXPERIMENTAL
-	depends on PCI
+	tristate "Ultra Wideband devices"
 	default n
+	select GENERIC_NET_UTILS
 	help
 	  UWB is a high-bandwidth, low-power, point-to-point radio
 	  technology using a wide spectrum (3.1-10.6GHz). It is

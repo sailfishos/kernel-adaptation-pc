@@ -1,17 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for Intel MSIC
  *
  * Copyright (C) 2011, Intel Corporation
  * Author: Mika Westerberg <mika.westerberg@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
+#include <linux/err.h>
 #include <linux/gpio.h>
 #include <linux/io.h>
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/intel_msic.h>
 #include <linux/platform_device.h>
@@ -26,7 +24,7 @@
 
 /*
  * MSIC interrupt tree is readable from SRAM at INTEL_MSIC_IRQ_PHYS_BASE.
- * Since IRQ block starts from address 0x002 we need to substract that from
+ * Since IRQ block starts from address 0x002 we need to subtract that from
  * the actual IRQ status register address.
  */
 #define MSIC_IRQ_STATUS(x)	(INTEL_MSIC_IRQ_PHYS_BASE + ((x) - 2))
@@ -53,68 +51,44 @@ struct intel_msic {
 };
 
 static struct resource msic_touch_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 static struct resource msic_adc_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 static struct resource msic_battery_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 static struct resource msic_gpio_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 static struct resource msic_audio_resources[] = {
-	{
-		.name		= "IRQ",
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ_NAMED(0, "IRQ"),
 	/*
 	 * We will pass IRQ_BASE to the driver now but this can be removed
 	 * when/if the driver starts to use intel_msic_irq_read().
 	 */
-	{
-		.name		= "IRQ_BASE",
-		.flags		= IORESOURCE_MEM,
-		.start		= MSIC_IRQ_STATUS_ACCDET,
-		.end		= MSIC_IRQ_STATUS_ACCDET,
-	},
+	DEFINE_RES_MEM_NAMED(MSIC_IRQ_STATUS_ACCDET, 1, "IRQ_BASE"),
 };
 
 static struct resource msic_hdmi_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 static struct resource msic_thermal_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 static struct resource msic_power_btn_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 static struct resource msic_ocd_resources[] = {
-	{
-		.flags		= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_IRQ(0),
 };
 
 /*
@@ -177,7 +151,7 @@ static struct mfd_cell msic_devs[] = {
  * These devices appear only after the MSIC driver itself is initialized so
  * we can guarantee that the SCU IPC interface is ready.
  */
-static struct mfd_cell msic_other_devs[] = {
+static const struct mfd_cell msic_other_devs[] = {
 	/* Audio codec in the MSIC */
 	{
 		.id			= -1,
@@ -306,10 +280,10 @@ int intel_msic_irq_read(struct intel_msic *msic, unsigned short reg, u8 *val)
 }
 EXPORT_SYMBOL_GPL(intel_msic_irq_read);
 
-static int __devinit intel_msic_init_devices(struct intel_msic *msic)
+static int intel_msic_init_devices(struct intel_msic *msic)
 {
 	struct platform_device *pdev = msic->pdev;
-	struct intel_msic_platform_data *pdata = pdev->dev.platform_data;
+	struct intel_msic_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	int ret, i;
 
 	if (pdata->gpio) {
@@ -322,7 +296,8 @@ static int __devinit intel_msic_init_devices(struct intel_msic *msic)
 	if (pdata->ocd) {
 		unsigned gpio = pdata->ocd->gpio;
 
-		ret = gpio_request_one(gpio, GPIOF_IN, "ocd_gpio");
+		ret = devm_gpio_request_one(&pdev->dev, gpio,
+					GPIOF_IN, "ocd_gpio");
 		if (ret) {
 			dev_err(&pdev->dev, "failed to register OCD GPIO\n");
 			return ret;
@@ -331,7 +306,6 @@ static int __devinit intel_msic_init_devices(struct intel_msic *msic)
 		ret = gpio_to_irq(gpio);
 		if (ret < 0) {
 			dev_err(&pdev->dev, "no IRQ number for OCD GPIO\n");
-			gpio_free(gpio);
 			return ret;
 		}
 
@@ -358,26 +332,20 @@ static int __devinit intel_msic_init_devices(struct intel_msic *msic)
 
 fail:
 	mfd_remove_devices(&pdev->dev);
-	if (pdata->ocd)
-		gpio_free(pdata->ocd->gpio);
 
 	return ret;
 }
 
-static void __devexit intel_msic_remove_devices(struct intel_msic *msic)
+static void intel_msic_remove_devices(struct intel_msic *msic)
 {
 	struct platform_device *pdev = msic->pdev;
-	struct intel_msic_platform_data *pdata = pdev->dev.platform_data;
 
 	mfd_remove_devices(&pdev->dev);
-
-	if (pdata->ocd)
-		gpio_free(pdata->ocd->gpio);
 }
 
-static int __devinit intel_msic_probe(struct platform_device *pdev)
+static int intel_msic_probe(struct platform_device *pdev)
 {
-	struct intel_msic_platform_data *pdata = pdev->dev.platform_data;
+	struct intel_msic_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct intel_msic *msic;
 	struct resource *res;
 	u8 id0, id1;
@@ -419,16 +387,9 @@ static int __devinit intel_msic_probe(struct platform_device *pdev)
 	 * the clients via intel_msic_irq_read().
 	 */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(&pdev->dev, "failed to get SRAM iomem resource\n");
-		return -ENODEV;
-	}
-
-	msic->irq_base = devm_request_and_ioremap(&pdev->dev, res);
-	if (!msic->irq_base) {
-		dev_err(&pdev->dev, "failed to map SRAM memory\n");
-		return -ENOMEM;
-	}
+	msic->irq_base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(msic->irq_base))
+		return PTR_ERR(msic->irq_base);
 
 	platform_set_drvdata(pdev, msic);
 
@@ -445,27 +406,20 @@ static int __devinit intel_msic_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int __devexit intel_msic_remove(struct platform_device *pdev)
+static int intel_msic_remove(struct platform_device *pdev)
 {
 	struct intel_msic *msic = platform_get_drvdata(pdev);
 
 	intel_msic_remove_devices(msic);
-	platform_set_drvdata(pdev, NULL);
 
 	return 0;
 }
 
 static struct platform_driver intel_msic_driver = {
 	.probe		= intel_msic_probe,
-	.remove		= __devexit_p(intel_msic_remove),
+	.remove		= intel_msic_remove,
 	.driver		= {
 		.name	= "intel_msic",
-		.owner	= THIS_MODULE,
 	},
 };
-
-module_platform_driver(intel_msic_driver);
-
-MODULE_DESCRIPTION("Driver for Intel MSIC");
-MODULE_AUTHOR("Mika Westerberg <mika.westerberg@linux.intel.com>");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(intel_msic_driver);

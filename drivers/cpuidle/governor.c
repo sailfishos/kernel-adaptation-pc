@@ -8,11 +8,15 @@
  * This code is licenced under the GPL.
  */
 
+#include <linux/cpu.h>
+#include <linux/cpuidle.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
-#include <linux/cpuidle.h>
+#include <linux/pm_qos.h>
 
 #include "cpuidle.h"
+
+char param_governor[CPUIDLE_NAME_LEN];
 
 LIST_HEAD(cpuidle_governors);
 struct cpuidle_governor *cpuidle_curr_governor;
@@ -28,7 +32,7 @@ static struct cpuidle_governor * __cpuidle_find_governor(const char *str)
 	struct cpuidle_governor *gov;
 
 	list_for_each_entry(gov, &cpuidle_governors, governor_list)
-		if (!strnicmp(str, gov->name, CPUIDLE_NAME_LEN))
+		if (!strncasecmp(str, gov->name, CPUIDLE_NAME_LEN))
 			return gov;
 
 	return NULL;
@@ -37,13 +41,14 @@ static struct cpuidle_governor * __cpuidle_find_governor(const char *str)
 /**
  * cpuidle_switch_governor - changes the governor
  * @gov: the new target governor
- *
- * NOTE: "gov" can be NULL to specify disabled
  * Must be called with cpuidle_lock acquired.
  */
 int cpuidle_switch_governor(struct cpuidle_governor *gov)
 {
 	struct cpuidle_device *dev;
+
+	if (!gov)
+		return -EINVAL;
 
 	if (gov == cpuidle_curr_governor)
 		return 0;
@@ -53,14 +58,11 @@ int cpuidle_switch_governor(struct cpuidle_governor *gov)
 	if (cpuidle_curr_governor) {
 		list_for_each_entry(dev, &cpuidle_detected_devices, device_list)
 			cpuidle_disable_device(dev);
-		module_put(cpuidle_curr_governor->owner);
 	}
 
 	cpuidle_curr_governor = gov;
 
 	if (gov) {
-		if (!try_module_get(cpuidle_curr_governor->owner))
-			return -EINVAL;
 		list_for_each_entry(dev, &cpuidle_detected_devices, device_list)
 			cpuidle_enable_device(dev);
 		cpuidle_install_idle_handler();
@@ -89,7 +91,10 @@ int cpuidle_register_governor(struct cpuidle_governor *gov)
 		ret = 0;
 		list_add_tail(&gov->governor_list, &cpuidle_governors);
 		if (!cpuidle_curr_governor ||
-		    cpuidle_curr_governor->rating < gov->rating)
+		    !strncasecmp(param_governor, gov->name, CPUIDLE_NAME_LEN) ||
+		    (cpuidle_curr_governor->rating < gov->rating &&
+		     strncasecmp(param_governor, cpuidle_curr_governor->name,
+				 CPUIDLE_NAME_LEN)))
 			cpuidle_switch_governor(gov);
 	}
 	mutex_unlock(&cpuidle_lock);
@@ -98,44 +103,14 @@ int cpuidle_register_governor(struct cpuidle_governor *gov)
 }
 
 /**
- * cpuidle_replace_governor - find a replacement governor
- * @exclude_rating: the rating that will be skipped while looking for
- * new governor.
+ * cpuidle_governor_latency_req - Compute a latency constraint for CPU
+ * @cpu: Target CPU
  */
-static struct cpuidle_governor *cpuidle_replace_governor(int exclude_rating)
+int cpuidle_governor_latency_req(unsigned int cpu)
 {
-	struct cpuidle_governor *gov;
-	struct cpuidle_governor *ret_gov = NULL;
-	unsigned int max_rating = 0;
+	int global_req = pm_qos_request(PM_QOS_CPU_DMA_LATENCY);
+	struct device *device = get_cpu_device(cpu);
+	int device_req = dev_pm_qos_raw_read_value(device);
 
-	list_for_each_entry(gov, &cpuidle_governors, governor_list) {
-		if (gov->rating == exclude_rating)
-			continue;
-		if (gov->rating > max_rating) {
-			max_rating = gov->rating;
-			ret_gov = gov;
-		}
-	}
-
-	return ret_gov;
+	return device_req < global_req ? device_req : global_req;
 }
-
-/**
- * cpuidle_unregister_governor - unregisters a governor
- * @gov: the governor
- */
-void cpuidle_unregister_governor(struct cpuidle_governor *gov)
-{
-	if (!gov)
-		return;
-
-	mutex_lock(&cpuidle_lock);
-	if (gov == cpuidle_curr_governor) {
-		struct cpuidle_governor *new_gov;
-		new_gov = cpuidle_replace_governor(gov->rating);
-		cpuidle_switch_governor(new_gov);
-	}
-	list_del(&gov->governor_list);
-	mutex_unlock(&cpuidle_lock);
-}
-

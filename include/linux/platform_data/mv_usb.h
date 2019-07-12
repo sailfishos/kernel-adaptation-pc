@@ -34,8 +34,6 @@ struct mv_usb_addon_irq {
 };
 
 struct mv_usb_platform_data {
-	unsigned int		clknum;
-	char			**clkname;
 	struct mv_usb_addon_irq	*id;	/* Only valid for OTG. ID pin change*/
 	struct mv_usb_addon_irq	*vbus;	/* valid for OTG/UDC. VBUS change*/
 
@@ -50,6 +48,5 @@ struct mv_usb_platform_data {
 	int	(*phy_init)(void __iomem *regbase);
 	void	(*phy_deinit)(void __iomem *regbase);
 	int	(*set_vbus)(unsigned int vbus);
-	int     (*private_init)(void __iomem *opregs, void __iomem *phyregs);
 };
 #endif

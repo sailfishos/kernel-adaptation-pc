@@ -207,14 +207,12 @@
 					interrupt-parent = <&ipic>;
 					interrupts = <17 0x8>;
 					reg = <0x1>;
-					device_type = "ethernet-phy";
 				};
 
 				phy1: ethernet-phy@1 {
 					interrupt-parent = <&ipic>;
 					interrupts = <18 0x8>;
 					reg = <0x2>;
-					device_type = "ethernet-phy";
 				};
 
 				tbi0: tbi-phy@11 {
@@ -306,7 +304,7 @@
 
 	chosen {
 		bootargs = "console=ttyS0,38400 root=/dev/mtdblock3 rootfstype=jffs2";
-		linux,stdout-path = &serial0;
+		stdout-path = &serial0;
 	};
 
 };

@@ -33,10 +33,8 @@
 #include <linux/swap.h>
 #include <linux/stddef.h>
 #include <linux/vmalloc.h>
-#include <linux/init.h>
-#include <linux/bootmem.h>
-#include <linux/memblock.h>
 #include <linux/slab.h>
+#include <linux/hugetlb.h>
 
 #include <asm/pgalloc.h>
 #include <asm/page.h>
@@ -51,122 +49,76 @@
 #include <asm/processor.h>
 #include <asm/cputable.h>
 #include <asm/sections.h>
-#include <asm/abs_addr.h>
 #include <asm/firmware.h>
+#include <asm/dma.h>
 
 #include "mmu_decl.h"
 
-unsigned long ioremap_bot = IOREMAP_BASE;
 
-
-#ifdef CONFIG_PPC_MMU_NOHASH
-static void *early_alloc_pgtable(unsigned long size)
-{
-	void *pt;
-
-	if (init_bootmem_done)
-		pt = __alloc_bootmem(size, size, __pa(MAX_DMA_ADDRESS));
-	else
-		pt = __va(memblock_alloc_base(size, size,
-					 __pa(MAX_DMA_ADDRESS)));
-	memset(pt, 0, size);
-
-	return pt;
-}
-#endif /* CONFIG_PPC_MMU_NOHASH */
-
+#ifdef CONFIG_PPC_BOOK3S_64
 /*
- * map_kernel_page currently only called by __ioremap
- * map_kernel_page adds an entry to the ioremap page table
- * and adds an entry to the HPT, possibly bolting it
+ * partition table and process table for ISA 3.0
  */
-int map_kernel_page(unsigned long ea, unsigned long pa, int flags)
-{
-	pgd_t *pgdp;
-	pud_t *pudp;
-	pmd_t *pmdp;
-	pte_t *ptep;
-
-	if (slab_is_available()) {
-		pgdp = pgd_offset_k(ea);
-		pudp = pud_alloc(&init_mm, pgdp, ea);
-		if (!pudp)
-			return -ENOMEM;
-		pmdp = pmd_alloc(&init_mm, pudp, ea);
-		if (!pmdp)
-			return -ENOMEM;
-		ptep = pte_alloc_kernel(pmdp, ea);
-		if (!ptep)
-			return -ENOMEM;
-		set_pte_at(&init_mm, ea, ptep, pfn_pte(pa >> PAGE_SHIFT,
-							  __pgprot(flags)));
-	} else {
-#ifdef CONFIG_PPC_MMU_NOHASH
-		/* Warning ! This will blow up if bootmem is not initialized
-		 * which our ppc64 code is keen to do that, we'll need to
-		 * fix it and/or be more careful
-		 */
-		pgdp = pgd_offset_k(ea);
-#ifdef PUD_TABLE_SIZE
-		if (pgd_none(*pgdp)) {
-			pudp = early_alloc_pgtable(PUD_TABLE_SIZE);
-			BUG_ON(pudp == NULL);
-			pgd_populate(&init_mm, pgdp, pudp);
-		}
-#endif /* PUD_TABLE_SIZE */
-		pudp = pud_offset(pgdp, ea);
-		if (pud_none(*pudp)) {
-			pmdp = early_alloc_pgtable(PMD_TABLE_SIZE);
-			BUG_ON(pmdp == NULL);
-			pud_populate(&init_mm, pudp, pmdp);
-		}
-		pmdp = pmd_offset(pudp, ea);
-		if (!pmd_present(*pmdp)) {
-			ptep = early_alloc_pgtable(PAGE_SIZE);
-			BUG_ON(ptep == NULL);
-			pmd_populate_kernel(&init_mm, pmdp, ptep);
-		}
-		ptep = pte_offset_kernel(pmdp, ea);
-		set_pte_at(&init_mm, ea, ptep, pfn_pte(pa >> PAGE_SHIFT,
-							  __pgprot(flags)));
-#else /* CONFIG_PPC_MMU_NOHASH */
-		/*
-		 * If the mm subsystem is not fully up, we cannot create a
-		 * linux page table entry for this mapping.  Simply bolt an
-		 * entry in the hardware page table.
-		 *
-		 */
-		if (htab_bolt_mapping(ea, ea + PAGE_SIZE, pa, flags,
-				      mmu_io_psize, mmu_kernel_ssize)) {
-			printk(KERN_ERR "Failed to do bolted mapping IO "
-			       "memory at %016lx !\n", pa);
-			return -ENOMEM;
-		}
-#endif /* !CONFIG_PPC_MMU_NOHASH */
-	}
-	return 0;
-}
-
+struct prtb_entry *process_tb;
+struct patb_entry *partition_tb;
+/*
+ * page table size
+ */
+unsigned long __pte_index_size;
+EXPORT_SYMBOL(__pte_index_size);
+unsigned long __pmd_index_size;
+EXPORT_SYMBOL(__pmd_index_size);
+unsigned long __pud_index_size;
+EXPORT_SYMBOL(__pud_index_size);
+unsigned long __pgd_index_size;
+EXPORT_SYMBOL(__pgd_index_size);
+unsigned long __pud_cache_index;
+EXPORT_SYMBOL(__pud_cache_index);
+unsigned long __pte_table_size;
+EXPORT_SYMBOL(__pte_table_size);
+unsigned long __pmd_table_size;
+EXPORT_SYMBOL(__pmd_table_size);
+unsigned long __pud_table_size;
+EXPORT_SYMBOL(__pud_table_size);
+unsigned long __pgd_table_size;
+EXPORT_SYMBOL(__pgd_table_size);
+unsigned long __pmd_val_bits;
+EXPORT_SYMBOL(__pmd_val_bits);
+unsigned long __pud_val_bits;
+EXPORT_SYMBOL(__pud_val_bits);
+unsigned long __pgd_val_bits;
+EXPORT_SYMBOL(__pgd_val_bits);
+unsigned long __kernel_virt_start;
+EXPORT_SYMBOL(__kernel_virt_start);
+unsigned long __kernel_virt_size;
+EXPORT_SYMBOL(__kernel_virt_size);
+unsigned long __vmalloc_start;
+EXPORT_SYMBOL(__vmalloc_start);
+unsigned long __vmalloc_end;
+EXPORT_SYMBOL(__vmalloc_end);
+unsigned long __kernel_io_start;
+EXPORT_SYMBOL(__kernel_io_start);
+struct page *vmemmap;
+EXPORT_SYMBOL(vmemmap);
+unsigned long __pte_frag_nr;
+EXPORT_SYMBOL(__pte_frag_nr);
+unsigned long __pte_frag_size_shift;
+EXPORT_SYMBOL(__pte_frag_size_shift);
+unsigned long ioremap_bot;
+#else /* !CONFIG_PPC_BOOK3S_64 */
+unsigned long ioremap_bot = IOREMAP_BASE;
+#endif
 
 /**
  * __ioremap_at - Low level function to establish the page tables
  *                for an IO mapping
  */
-void __iomem * __ioremap_at(phys_addr_t pa, void *ea, unsigned long size,
-			    unsigned long flags)
+void __iomem *__ioremap_at(phys_addr_t pa, void *ea, unsigned long size, pgprot_t prot)
 {
 	unsigned long i;
 
-	/* Make sure we have the base flags */
-	if ((flags & _PAGE_PRESENT) == 0)
-		flags |= pgprot_val(PAGE_KERNEL);
-
-	/* Non-cacheable page cannot be coherent */
-	if (flags & _PAGE_NO_CACHE)
-		flags &= ~_PAGE_COHERENT;
-
 	/* We don't support the 4K PFN hack with ioremap */
-	if (flags & _PAGE_4K_PFN)
+	if (pgprot_val(prot) & H_PAGE_4K_PFN)
 		return NULL;
 
 	WARN_ON(pa & ~PAGE_MASK);
@@ -174,7 +126,7 @@ void __iomem * __ioremap_at(phys_addr_t pa, void *ea, unsigned long size,
 	WARN_ON(size & ~PAGE_MASK);
 
 	for (i = 0; i < size; i += PAGE_SIZE)
-		if (map_kernel_page((unsigned long)ea+i, pa+i, flags))
+		if (map_kernel_page((unsigned long)ea + i, pa + i, prot))
 			return NULL;
 
 	return (void __iomem *)ea;
@@ -195,7 +147,7 @@ void __iounmap_at(void *ea, unsigned long size)
 }
 
 void __iomem * __ioremap_caller(phys_addr_t addr, unsigned long size,
-				unsigned long flags, void *caller)
+				pgprot_t prot, void *caller)
 {
 	phys_addr_t paligned;
 	void __iomem *ret;
@@ -215,7 +167,7 @@ void __iomem * __ioremap_caller(phys_addr_t addr, unsigned long size,
 	if ((size == 0) || (paligned == 0))
 		return NULL;
 
-	if (mem_init_done) {
+	if (slab_is_available()) {
 		struct vm_struct *area;
 
 		area = __get_vm_area_caller(size, VM_IOREMAP,
@@ -225,11 +177,11 @@ void __iomem * __ioremap_caller(phys_addr_t addr, unsigned long size,
 			return NULL;
 
 		area->phys_addr = paligned;
-		ret = __ioremap_at(paligned, area->addr, size, flags);
+		ret = __ioremap_at(paligned, area->addr, size, prot);
 		if (!ret)
 			vunmap(area->addr);
 	} else {
-		ret = __ioremap_at(paligned, (void *)ioremap_bot, size, flags);
+		ret = __ioremap_at(paligned, (void *)ioremap_bot, size, prot);
 		if (ret)
 			ioremap_bot += size;
 	}
@@ -242,52 +194,59 @@ void __iomem * __ioremap_caller(phys_addr_t addr, unsigned long size,
 void __iomem * __ioremap(phys_addr_t addr, unsigned long size,
 			 unsigned long flags)
 {
-	return __ioremap_caller(addr, size, flags, __builtin_return_address(0));
+	return __ioremap_caller(addr, size, __pgprot(flags), __builtin_return_address(0));
 }
 
 void __iomem * ioremap(phys_addr_t addr, unsigned long size)
 {
-	unsigned long flags = _PAGE_NO_CACHE | _PAGE_GUARDED;
+	pgprot_t prot = pgprot_noncached(PAGE_KERNEL);
 	void *caller = __builtin_return_address(0);
 
 	if (ppc_md.ioremap)
-		return ppc_md.ioremap(addr, size, flags, caller);
-	return __ioremap_caller(addr, size, flags, caller);
+		return ppc_md.ioremap(addr, size, prot, caller);
+	return __ioremap_caller(addr, size, prot, caller);
 }
 
 void __iomem * ioremap_wc(phys_addr_t addr, unsigned long size)
 {
-	unsigned long flags = _PAGE_NO_CACHE;
+	pgprot_t prot = pgprot_noncached_wc(PAGE_KERNEL);
 	void *caller = __builtin_return_address(0);
 
 	if (ppc_md.ioremap)
-		return ppc_md.ioremap(addr, size, flags, caller);
-	return __ioremap_caller(addr, size, flags, caller);
+		return ppc_md.ioremap(addr, size, prot, caller);
+	return __ioremap_caller(addr, size, prot, caller);
+}
+
+void __iomem *ioremap_coherent(phys_addr_t addr, unsigned long size)
+{
+	pgprot_t prot = pgprot_cached(PAGE_KERNEL);
+	void *caller = __builtin_return_address(0);
+
+	if (ppc_md.ioremap)
+		return ppc_md.ioremap(addr, size, prot, caller);
+	return __ioremap_caller(addr, size, prot, caller);
 }
 
 void __iomem * ioremap_prot(phys_addr_t addr, unsigned long size,
 			     unsigned long flags)
 {
+	pte_t pte = __pte(flags);
 	void *caller = __builtin_return_address(0);
 
 	/* writeable implies dirty for kernel addresses */
-	if (flags & _PAGE_RW)
-		flags |= _PAGE_DIRTY;
+	if (pte_write(pte))
+		pte = pte_mkdirty(pte);
 
-	/* we don't want to let _PAGE_USER and _PAGE_EXEC leak out */
-	flags &= ~(_PAGE_USER | _PAGE_EXEC);
-
-#ifdef _PAGE_BAP_SR
-	/* _PAGE_USER contains _PAGE_BAP_SR on BookE using the new PTE format
-	 * which means that we just cleared supervisor access... oops ;-) This
-	 * restores it
+	/* we don't want to let _PAGE_EXEC leak out */
+	pte = pte_exprotect(pte);
+	/*
+	 * Force kernel mapping.
 	 */
-	flags |= _PAGE_BAP_SR;
-#endif
+	pte = pte_mkprivileged(pte);
 
 	if (ppc_md.ioremap)
-		return ppc_md.ioremap(addr, size, flags, caller);
-	return __ioremap_caller(addr, size, flags, caller);
+		return ppc_md.ioremap(addr, size, pte_pgprot(pte), caller);
+	return __ioremap_caller(addr, size, pte_pgprot(pte), caller);
 }
 
 
@@ -299,7 +258,7 @@ void __iounmap(volatile void __iomem *token)
 {
 	void *addr;
 
-	if (!mem_init_done)
+	if (!slab_is_available())
 		return;
 	
 	addr = (void *) ((unsigned long __force)
@@ -328,3 +287,54 @@ EXPORT_SYMBOL(__ioremap_at);
 EXPORT_SYMBOL(iounmap);
 EXPORT_SYMBOL(__iounmap);
 EXPORT_SYMBOL(__iounmap_at);
+
+#ifndef __PAGETABLE_PUD_FOLDED
+/* 4 level page table */
+struct page *pgd_page(pgd_t pgd)
+{
+	if (pgd_huge(pgd))
+		return pte_page(pgd_pte(pgd));
+	return virt_to_page(pgd_page_vaddr(pgd));
+}
+#endif
+
+struct page *pud_page(pud_t pud)
+{
+	if (pud_huge(pud))
+		return pte_page(pud_pte(pud));
+	return virt_to_page(pud_page_vaddr(pud));
+}
+
+/*
+ * For hugepage we have pfn in the pmd, we use PTE_RPN_SHIFT bits for flags
+ * For PTE page, we have a PTE_FRAG_SIZE (4K) aligned virtual address.
+ */
+struct page *pmd_page(pmd_t pmd)
+{
+	if (pmd_large(pmd) || pmd_huge(pmd) || pmd_devmap(pmd))
+		return pte_page(pmd_pte(pmd));
+	return virt_to_page(pmd_page_vaddr(pmd));
+}
+
+#ifdef CONFIG_STRICT_KERNEL_RWX
+void mark_rodata_ro(void)
+{
+	if (!mmu_has_feature(MMU_FTR_KERNEL_RO)) {
+		pr_warn("Warning: Unable to mark rodata read only on this CPU.\n");
+		return;
+	}
+
+	if (radix_enabled())
+		radix__mark_rodata_ro();
+	else
+		hash__mark_rodata_ro();
+}
+
+void mark_initmem_nx(void)
+{
+	if (radix_enabled())
+		radix__mark_initmem_nx();
+	else
+		hash__mark_initmem_nx();
+}
+#endif

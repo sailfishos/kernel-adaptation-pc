@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM workqueue
 
@@ -24,10 +25,12 @@ DECLARE_EVENT_CLASS(workqueue_work,
 	TP_printk("work struct %p", __entry->work)
 );
 
+struct pool_workqueue;
+
 /**
  * workqueue_queue_work - called when a work gets queued
  * @req_cpu:	the requested cpu
- * @cwq:	pointer to struct cpu_workqueue_struct
+ * @pwq:	pointer to struct pool_workqueue
  * @work:	pointer to struct work_struct
  *
  * This event occurs when a work is queued immediately or once a
@@ -36,10 +39,10 @@ DECLARE_EVENT_CLASS(workqueue_work,
  */
 TRACE_EVENT(workqueue_queue_work,
 
-	TP_PROTO(unsigned int req_cpu, struct cpu_workqueue_struct *cwq,
+	TP_PROTO(unsigned int req_cpu, struct pool_workqueue *pwq,
 		 struct work_struct *work),
 
-	TP_ARGS(req_cpu, cwq, work),
+	TP_ARGS(req_cpu, pwq, work),
 
 	TP_STRUCT__entry(
 		__field( void *,	work	)
@@ -52,9 +55,9 @@ TRACE_EVENT(workqueue_queue_work,
 	TP_fast_assign(
 		__entry->work		= work;
 		__entry->function	= work->func;
-		__entry->workqueue	= cwq->wq;
+		__entry->workqueue	= pwq->wq;
 		__entry->req_cpu	= req_cpu;
-		__entry->cpu		= cwq->pool->gcwq->cpu;
+		__entry->cpu		= pwq->pool->cpu;
 	),
 
 	TP_printk("work struct=%p function=%pf workqueue=%p req_cpu=%u cpu=%u",

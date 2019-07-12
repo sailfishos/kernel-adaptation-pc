@@ -19,12 +19,10 @@
 
 KBUILD_DEFCONFIG := or1ksim_defconfig
 
-LDFLAGS         :=
 OBJCOPYFLAGS    := -O binary -R .note -R .comment -S
-LDFLAGS_vmlinux :=
 LIBGCC 		:= $(shell $(CC) $(KBUILD_CFLAGS) -print-libgcc-file-name)
 
-KBUILD_CFLAGS	+= -pipe -ffixed-r10
+KBUILD_CFLAGS	+= -pipe -ffixed-r10 -D__linux__
 
 ifeq ($(CONFIG_OPENRISC_HAVE_INST_MUL),y)
 	KBUILD_CFLAGS += $(call cc-option,-mhard-mul)
@@ -50,6 +48,4 @@ BUILTIN_DTB := y
 else
 BUILTIN_DTB := n
 endif
-core-$(BUILTIN_DTB) += arch/openrisc/boot/
-
-all: vmlinux
+core-$(BUILTIN_DTB) += arch/openrisc/boot/dts/

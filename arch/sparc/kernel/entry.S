@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* arch/sparc/kernel/entry.S:  Sparc trap low-level entry points.
  *
  * Copyright (C) 1995, 2007 David S. Miller (davem@davemloft.net)
@@ -29,6 +30,7 @@
 #include <asm/unistd.h>
 
 #include <asm/asmmacro.h>
+#include <asm/export.h>
 
 #define curptr      g6
 
@@ -799,46 +801,10 @@ SUN_PI_(lda	[%l4] ASI_M_MMUREGS, %l5)	! read sfsr last
 	RESTORE_ALL
 
 	.align	4
-	.globl	sys_nis_syscall
-sys_nis_syscall:
-	mov	%o7, %l5
-	add	%sp, STACKFRAME_SZ, %o0		! pt_regs *regs arg
-	call	c_sys_nis_syscall
-	 mov	%l5, %o7
-
-	.align	4
-	.globl	sys_execve
-sys_execve:
-	mov	%o7, %l5
-	add	%sp, STACKFRAME_SZ, %o0		! pt_regs *regs arg
-	call	sparc_execve
-	 mov	%l5, %o7
-
-	.globl	sunos_execv
 sunos_execv:
-	st	%g0, [%sp + STACKFRAME_SZ + PT_I2]
-
-	call	sparc_execve
-	 add	%sp, STACKFRAME_SZ, %o0
-
-	b	ret_sys_call
-	 ld	[%sp + STACKFRAME_SZ + PT_I0], %o0
-
-	.align	4
-	.globl	sys_sparc_pipe
-sys_sparc_pipe:
-	mov	%o7, %l5
-	add	%sp, STACKFRAME_SZ, %o0		! pt_regs *regs arg
-	call	sparc_pipe
-	 mov	%l5, %o7
-
-	.align	4
-	.globl	sys_sigaltstack
-sys_sigaltstack:
-	mov	%o7, %l5
-	mov	%fp, %o2
-	call	do_sigaltstack
-	 mov	%l5, %o7
+	.globl	sunos_execv
+	b	sys_execve
+	 clr	%i2
 
 	.align	4
 	.globl	sys_sigstack
@@ -860,7 +826,7 @@ sys_sigreturn:
 	 nop
 
 	call	syscall_trace
-	 nop
+	 mov	1, %o1
 
 1:
 	/* We don't want to muck with user registers like a
@@ -959,16 +925,8 @@ flush_patch_four:
         .align  4
 linux_sparc_ni_syscall:
 	sethi   %hi(sys_ni_syscall), %l7
-	b       syscall_is_too_hard
+	b       do_syscall
 	 or     %l7, %lo(sys_ni_syscall), %l7
-
-linux_fast_syscall:
-	andn	%l7, 3, %l7
-	mov	%i0, %o0
-	mov	%i1, %o1
-	mov 	%i2, %o2
-	jmpl	%l7 + %g0, %g0
-	 mov	%i3, %o3
 
 linux_syscall_trace:
 	add	%sp, STACKFRAME_SZ, %o0
@@ -977,7 +935,24 @@ linux_syscall_trace:
 	cmp	%o0, 0
 	bne	3f
 	 mov	-ENOSYS, %o0
+
+	/* Syscall tracing can modify the registers.  */
+	ld	[%sp + STACKFRAME_SZ + PT_G1], %g1
+	sethi	%hi(sys_call_table), %l7
+	ld	[%sp + STACKFRAME_SZ + PT_I0], %i0
+	or	%l7, %lo(sys_call_table), %l7
+	ld	[%sp + STACKFRAME_SZ + PT_I1], %i1
+	ld	[%sp + STACKFRAME_SZ + PT_I2], %i2
+	ld	[%sp + STACKFRAME_SZ + PT_I3], %i3
+	ld	[%sp + STACKFRAME_SZ + PT_I4], %i4
+	ld	[%sp + STACKFRAME_SZ + PT_I5], %i5
+	cmp	%g1, NR_syscalls
+	bgeu	3f
+	 mov	-ENOSYS, %o0
+
+	sll	%g1, 2, %l4
 	mov	%i0, %o0
+	ld	[%l7 + %l4], %l7
 	mov	%i1, %o1
 	mov	%i2, %o2
 	mov	%i3, %o3
@@ -991,6 +966,23 @@ ret_from_fork:
 	b	ret_sys_call
 	 ld	[%sp + STACKFRAME_SZ + PT_I0], %o0
 
+	.globl	ret_from_kernel_thread
+ret_from_kernel_thread:
+	call	schedule_tail
+	 ld	[%g3 + TI_TASK], %o0
+	ld	[%sp + STACKFRAME_SZ + PT_G1], %l0
+	call	%l0
+	 ld	[%sp + STACKFRAME_SZ + PT_G2], %o0
+	rd	%psr, %l1
+	ld	[%sp + STACKFRAME_SZ + PT_PSR], %l0
+	andn	%l0, PSR_CWP, %l0
+	nop
+	and	%l1, PSR_CWP, %l1
+	or	%l0, %l1, %l0
+	st	%l0, [%sp + STACKFRAME_SZ + PT_PSR]
+	b	ret_sys_call
+	 mov	0, %o0
+
 	/* Linux native system calls enter here... */
 	.align	4
 	.globl	linux_sparc_syscall
@@ -1002,11 +994,8 @@ linux_sparc_syscall:
 	bgeu	linux_sparc_ni_syscall
 	 sll	%g1, 2, %l4
 	ld	[%l7 + %l4], %l7
-	andcc	%l7, 1, %g0
-	bne	linux_fast_syscall
-	 /* Just do first insn from SAVE_ALL in the delay slot */
 
-syscall_is_too_hard:
+do_syscall:
 	SAVE_ALL_HEAD
 	 rd	%wim, %l3
 
@@ -1205,6 +1194,8 @@ delay_continue:
 	
 	ret
 	restore
+EXPORT_SYMBOL(__udelay)
+EXPORT_SYMBOL(__ndelay)
 
 	/* Handle a software breakpoint */
 	/* We have to inform parent that child has stopped */
@@ -1223,20 +1214,18 @@ breakpoint_trap:
 	RESTORE_ALL
 
 #ifdef CONFIG_KGDB
-	.align	4
-	.globl	kgdb_trap_low
-	.type	kgdb_trap_low,#function
-kgdb_trap_low:
+	ENTRY(kgdb_trap_low)
 	rd	%wim,%l3
 	SAVE_ALL
 	wr 	%l0, PSR_ET, %psr
 	WRITE_PAUSE
 
+	mov	%l7, %o0		! trap_level
 	call	kgdb_trap
-	 add	%sp, STACKFRAME_SZ, %o0
+	 add	%sp, STACKFRAME_SZ, %o1	! struct pt_regs *regs
 
 	RESTORE_ALL
-	.size	kgdb_trap_low,.-kgdb_trap_low
+	ENDPROC(kgdb_trap_low)
 #endif
 
 	.align	4
@@ -1253,7 +1242,7 @@ flush_patch_exception:
 kuw_patch1_7win:	sll	%o3, 6, %o3
 
 	/* No matter how much overhead this routine has in the worst
-	 * case scenerio, it is several times better than taking the
+	 * case scenario, it is several times better than taking the
 	 * traps with the old method of just doing flush_user_windows().
 	 */
 kill_user_windows:

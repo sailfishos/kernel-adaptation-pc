@@ -33,13 +33,13 @@
 #include <linux/input/sparse-keymap.h>
 #include <linux/dmi.h>
 #include <linux/fb.h>
-#include <acpi/acpi_bus.h>
+#include <linux/acpi.h>
 
 #include "asus-wmi.h"
 
 #define	EEEPC_WMI_FILE	"eeepc-wmi"
 
-MODULE_AUTHOR("Corentin Chary <corentincj@iksaif.net>");
+MODULE_AUTHOR("Corentin Chary <corentin.chary@gmail.com>");
 MODULE_DESCRIPTION("Eee PC WMI Hotkey Driver");
 MODULE_LICENSE("GPL");
 
@@ -63,6 +63,8 @@ MODULE_PARM_DESC(hotplug_wireless,
 #define HOME_RELEASE	0xe5
 
 static const struct key_entry eeepc_wmi_keymap[] = {
+	{ KE_KEY, ASUS_WMI_BRN_DOWN, { KEY_BRIGHTNESSDOWN } },
+	{ KE_KEY, ASUS_WMI_BRN_UP, { KEY_BRIGHTNESSUP } },
 	/* Sleep already handled via generic ACPI code */
 	{ KE_KEY, 0x30, { KEY_VOLUMEUP } },
 	{ KE_KEY, 0x31, { KEY_VOLUMEDOWN } },
@@ -143,7 +145,7 @@ static int dmi_matched(const struct dmi_system_id *dmi)
 	return 1;
 }
 
-static struct dmi_system_id asus_quirks[] = {
+static const struct dmi_system_id asus_quirks[] = {
 	{
 		.callback = dmi_matched,
 		.ident = "ASUSTeK Computer INC. 1000H",
@@ -202,30 +204,10 @@ static void eeepc_wmi_key_filter(struct asus_wmi_driver *asus_wmi, int *code,
 	}
 }
 
-static acpi_status eeepc_wmi_parse_device(acpi_handle handle, u32 level,
-						 void *context, void **retval)
-{
-	pr_warn("Found legacy ATKD device (%s)\n", EEEPC_ACPI_HID);
-	*(bool *)context = true;
-	return AE_CTRL_TERMINATE;
-}
-
-static int eeepc_wmi_check_atkd(void)
-{
-	acpi_status status;
-	bool found = false;
-
-	status = acpi_get_devices(EEEPC_ACPI_HID, eeepc_wmi_parse_device,
-				  &found, NULL);
-
-	if (ACPI_FAILURE(status) || !found)
-		return 0;
-	return -1;
-}
-
 static int eeepc_wmi_probe(struct platform_device *pdev)
 {
-	if (eeepc_wmi_check_atkd()) {
+	if (acpi_dev_found(EEEPC_ACPI_HID)) {
+		pr_warn("Found legacy ATKD device (%s)\n", EEEPC_ACPI_HID);
 		pr_warn("WMI device present, but legacy ATKD device is also "
 			"present and enabled\n");
 		pr_warn("You probably booted with acpi_osi=\"Linux\" or "

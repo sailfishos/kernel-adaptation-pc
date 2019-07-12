@@ -27,7 +27,6 @@
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/timer.h>
 #include <linux/completion.h>
@@ -70,7 +69,7 @@ static struct {
 
 /* generic helper functions */
 
-static void cpu5wdt_trigger(unsigned long unused)
+static void cpu5wdt_trigger(struct timer_list *unused)
 {
 	if (verbose > 2)
 		pr_debug("trigger at %i ticks\n", ticks);
@@ -215,7 +214,7 @@ static struct miscdevice cpu5wdt_misc = {
 
 /* init/exit function */
 
-static int __devinit cpu5wdt_init(void)
+static int cpu5wdt_init(void)
 {
 	unsigned int val;
 	int err;
@@ -225,7 +224,7 @@ static int __devinit cpu5wdt_init(void)
 
 	init_completion(&cpu5wdt_device.stop);
 	cpu5wdt_device.queue = 0;
-	setup_timer(&cpu5wdt_device.timer, cpu5wdt_trigger, 0);
+	timer_setup(&cpu5wdt_device.timer, cpu5wdt_trigger, 0);
 	cpu5wdt_device.default_ticks = ticks;
 
 	if (!request_region(port, CPU5WDT_EXTENT, PFX)) {
@@ -256,16 +255,17 @@ no_port:
 	return err;
 }
 
-static int __devinit cpu5wdt_init_module(void)
+static int cpu5wdt_init_module(void)
 {
 	return cpu5wdt_init();
 }
 
-static void __devexit cpu5wdt_exit(void)
+static void cpu5wdt_exit(void)
 {
 	if (cpu5wdt_device.queue) {
 		cpu5wdt_device.queue = 0;
 		wait_for_completion(&cpu5wdt_device.stop);
+		del_timer(&cpu5wdt_device.timer);
 	}
 
 	misc_deregister(&cpu5wdt_misc);
@@ -274,7 +274,7 @@ static void __devexit cpu5wdt_exit(void)
 
 }
 
-static void __devexit cpu5wdt_exit_module(void)
+static void cpu5wdt_exit_module(void)
 {
 	cpu5wdt_exit();
 }
@@ -288,9 +288,8 @@ MODULE_AUTHOR("Heiko Ronsdorf <hero@ihg.uni-duisburg.de>");
 MODULE_DESCRIPTION("sma cpu5 watchdog driver");
 MODULE_SUPPORTED_DEVICE("sma cpu5 watchdog");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
 
-module_param(port, int, 0);
+module_param_hw(port, int, ioport, 0);
 MODULE_PARM_DESC(port, "base address of watchdog card, default is 0x91");
 
 module_param(verbose, int, 0);

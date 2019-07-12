@@ -89,12 +89,11 @@ static int adt7316_spi_write(void *client, u8 reg, u8 val)
  * device probe and remove
  */
 
-static int __devinit adt7316_spi_probe(struct spi_device *spi_dev)
+static int adt7316_spi_probe(struct spi_device *spi_dev)
 {
 	struct adt7316_bus bus = {
 		.client = spi_dev,
 		.irq = spi_dev->irq,
-		.irq_flags = IRQF_TRIGGER_LOW,
 		.read = adt7316_spi_read,
 		.write = adt7316_spi_write,
 		.multi_read = adt7316_spi_multi_read,
@@ -116,11 +115,6 @@ static int __devinit adt7316_spi_probe(struct spi_device *spi_dev)
 	return adt7316_probe(&spi_dev->dev, &bus, spi_dev->modalias);
 }
 
-static int __devexit adt7316_spi_remove(struct spi_device *spi_dev)
-{
-	return adt7316_remove(&spi_dev->dev);
-}
-
 static const struct spi_device_id adt7316_spi_id[] = {
 	{ "adt7316", 0 },
 	{ "adt7317", 0 },
@@ -137,15 +131,12 @@ static struct spi_driver adt7316_driver = {
 	.driver = {
 		.name = "adt7316",
 		.pm = ADT7316_PM_OPS,
-		.owner = THIS_MODULE,
 	},
 	.probe = adt7316_spi_probe,
-	.remove = __devexit_p(adt7316_spi_remove),
 	.id_table = adt7316_spi_id,
 };
 module_spi_driver(adt7316_driver);
 
 MODULE_AUTHOR("Sonic Zhang <sonic.zhang@analog.com>");
-MODULE_DESCRIPTION("SPI bus driver for Analog Devices ADT7316/7/8 and"
-			"ADT7516/7/9 digital temperature sensor, ADC and DAC");
+MODULE_DESCRIPTION("SPI bus driver for Analog Devices ADT7316/7/8 and ADT7516/7/9 digital temperature sensor, ADC and DAC");
 MODULE_LICENSE("GPL v2");

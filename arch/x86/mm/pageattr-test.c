@@ -1,15 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * self test for change_page_attr.
  *
  * Clears the a test pte bit on random pages in the direct mapping,
  * then reverts and compares page tables forwards and afterwards.
  */
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/kthread.h>
 #include <linux/random.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/mm.h>
+#include <linux/vmalloc.h>
 
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
@@ -21,7 +23,8 @@
 static __read_mostly int print = 1;
 
 enum {
-	NTEST			= 400,
+	NTEST			= 3 * 100,
+	NPAGES			= 100,
 #ifdef CONFIG_X86_64
 	LPS			= (1 << PMD_SHIFT),
 #elif defined(CONFIG_X86_PAE)
@@ -36,7 +39,7 @@ enum {
 
 static int pte_testbit(pte_t pte)
 {
-	return pte_flags(pte) & _PAGE_UNUSED1;
+	return pte_flags(pte) & _PAGE_SOFTW1;
 }
 
 struct split_state {
@@ -68,7 +71,7 @@ static int print_split(struct split_state *s)
 			s->gpg++;
 			i += GPS/PAGE_SIZE;
 		} else if (level == PG_LEVEL_2M) {
-			if (!(pte_val(*pte) & _PAGE_PSE)) {
+			if ((pte_val(*pte) & _PAGE_PRESENT) && !(pte_val(*pte) & _PAGE_PSE)) {
 				printk(KERN_ERR
 					"%lx level %d but not PSE %Lx\n",
 					addr, level, (u64)pte_val(*pte));
@@ -108,6 +111,9 @@ static int print_split(struct split_state *s)
 static unsigned long addr[NTEST];
 static unsigned int len[NTEST];
 
+static struct page *pages[NPAGES];
+static unsigned long addrs[NPAGES];
+
 /* Change the global bit on random pages in the direct mapping */
 static int pageattr_test(void)
 {
@@ -118,7 +124,6 @@ static int pageattr_test(void)
 	unsigned int level;
 	int i, k;
 	int err;
-	unsigned long test_addr;
 
 	if (print)
 		printk(KERN_INFO "CPA self-test:\n");
@@ -130,13 +135,12 @@ static int pageattr_test(void)
 	}
 
 	failed += print_split(&sa);
-	srandom32(100);
 
 	for (i = 0; i < NTEST; i++) {
-		unsigned long pfn = random32() % max_pfn_mapped;
+		unsigned long pfn = prandom_u32() % max_pfn_mapped;
 
 		addr[i] = (unsigned long)__va(pfn << PAGE_SHIFT);
-		len[i] = random32() % 100;
+		len[i] = prandom_u32() % NPAGES;
 		len[i] = min_t(unsigned long, len[i], max_pfn_mapped - pfn - 1);
 
 		if (len[i] == 0)
@@ -166,14 +170,29 @@ static int pageattr_test(void)
 				break;
 			}
 			__set_bit(pfn + k, bm);
+			addrs[k] = addr[i] + k*PAGE_SIZE;
+			pages[k] = pfn_to_page(pfn + k);
 		}
 		if (!addr[i] || !pte || !k) {
 			addr[i] = 0;
 			continue;
 		}
 
-		test_addr = addr[i];
-		err = change_page_attr_set(&test_addr, len[i], PAGE_CPA_TEST, 0);
+		switch (i % 3) {
+		case 0:
+			err = change_page_attr_set(&addr[i], len[i], PAGE_CPA_TEST, 0);
+			break;
+
+		case 1:
+			err = change_page_attr_set(addrs, len[1], PAGE_CPA_TEST, 1);
+			break;
+
+		case 2:
+			err = cpa_set_pages_array(pages, len[i], PAGE_CPA_TEST);
+			break;
+		}
+
+
 		if (err < 0) {
 			printk(KERN_ERR "CPA %d failed %d\n", i, err);
 			failed++;
@@ -205,8 +224,7 @@ static int pageattr_test(void)
 			failed++;
 			continue;
 		}
-		test_addr = addr[i];
-		err = change_page_attr_clear(&test_addr, len[i], PAGE_CPA_TEST, 0);
+		err = change_page_attr_clear(&addr[i], len[i], PAGE_CPA_TEST, 0);
 		if (err < 0) {
 			printk(KERN_ERR "CPA reverting failed: %d\n", err);
 			failed++;
@@ -257,5 +275,4 @@ static int start_pageattr_test(void)
 
 	return 0;
 }
-
-module_init(start_pageattr_test);
+device_initcall(start_pageattr_test);

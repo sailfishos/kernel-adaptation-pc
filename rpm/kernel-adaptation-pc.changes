@@ -30,7 +30,7 @@
 - Build Intel network modules: CONFIG_E100, CONFIG_E1000, CONFIG_E1000E, CONFIG_IGB
 - Build broadcom network modules: CONFIG_BCMA, CONFIG_BRCMSMAC, CONFIG_BRCMFMAC_SDIO
 
-* Mon Dec 07 2012 Maciej Blomberg <maciej.blomberg@jollamobile.com> - 3.6.11
+* Fri Dec 07 2012 Maciej Blomberg <maciej.blomberg@jollamobile.com> - 3.6.11
 - updated kernel version to 3.6.11 - thanks to Islam Amer
 
 * Mon Nov 05 2012 Maciej Blomberg <maciej.blomberg@jollamobile.com> - 3.6.1

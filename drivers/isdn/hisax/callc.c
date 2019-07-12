@@ -35,7 +35,7 @@ static int chancount;
 /* experimental REJECT after ALERTING for CALLBACK to beat the 4s delay */
 #define ALERT_REJECT 0
 
-/* Value to delay the sending of the first B-channel paket after CONNECT
+/* Value to delay the sending of the first B-channel packet after CONNECT
  * here is no value given by ITU, but experience shows that 300 ms will
  * work on many networks, if you or your other side is behind local exchanges
  * a greater value may be recommented. If the delay is to short the first paket
@@ -1012,7 +1012,7 @@ dummy_pstack(struct PStack *st, int pr, void *arg) {
 
 static int
 init_PStack(struct PStack **stp) {
-	*stp = kmalloc(sizeof(struct PStack), GFP_ATOMIC);
+	*stp = kmalloc(sizeof(struct PStack), GFP_KERNEL);
 	if (!*stp)
 		return -ENOMEM;
 	(*stp)->next = NULL;
@@ -1369,6 +1369,7 @@ leased_l1l2(struct PStack *st, int pr, void *arg)
 	case (PH_ACTIVATE | INDICATION):
 	case (PH_ACTIVATE | CONFIRM):
 		event = EV_LEASED;
+		/* fall through */
 	case (PH_DEACTIVATE | INDICATION):
 	case (PH_DEACTIVATE | CONFIRM):
 		if (test_bit(FLG_TWO_DCHAN, &chanp->cs->HW_Flags))

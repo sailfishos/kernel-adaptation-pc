@@ -86,46 +86,25 @@ static struct phy_driver ste10xp_pdriver[] = {
 	.phy_id = STE101P_PHY_ID,
 	.phy_id_mask = 0xfffffff0,
 	.name = "STe101p",
-	.features = PHY_BASIC_FEATURES | SUPPORTED_Pause,
-	.flags = PHY_HAS_INTERRUPT,
+	.features = PHY_BASIC_FEATURES,
 	.config_init = ste10Xp_config_init,
-	.config_aneg = genphy_config_aneg,
-	.read_status = genphy_read_status,
 	.ack_interrupt = ste10Xp_ack_interrupt,
 	.config_intr = ste10Xp_config_intr,
 	.suspend = genphy_suspend,
 	.resume = genphy_resume,
-	.driver = {.owner = THIS_MODULE,}
 }, {
 	.phy_id = STE100P_PHY_ID,
 	.phy_id_mask = 0xffffffff,
 	.name = "STe100p",
-	.features = PHY_BASIC_FEATURES | SUPPORTED_Pause,
-	.flags = PHY_HAS_INTERRUPT,
+	.features = PHY_BASIC_FEATURES,
 	.config_init = ste10Xp_config_init,
-	.config_aneg = genphy_config_aneg,
-	.read_status = genphy_read_status,
 	.ack_interrupt = ste10Xp_ack_interrupt,
 	.config_intr = ste10Xp_config_intr,
 	.suspend = genphy_suspend,
 	.resume = genphy_resume,
-	.driver = {.owner = THIS_MODULE,}
 } };
 
-static int __init ste10Xp_init(void)
-{
-	return phy_drivers_register(ste10xp_pdriver,
-		ARRAY_SIZE(ste10xp_pdriver));
-}
-
-static void __exit ste10Xp_exit(void)
-{
-	phy_drivers_unregister(ste10xp_pdriver,
-		ARRAY_SIZE(ste10xp_pdriver));
-}
-
-module_init(ste10Xp_init);
-module_exit(ste10Xp_exit);
+module_phy_driver(ste10xp_pdriver);
 
 static struct mdio_device_id __maybe_unused ste10Xp_tbl[] = {
 	{ STE101P_PHY_ID, 0xfffffff0 },

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #  Makefile for the Hexagon arch
 
 KBUILD_DEFCONFIG = comet_defconfig
@@ -11,30 +12,17 @@ KBUILD_CFLAGS += -fno-short-enums
 
 # Modules must use either long-calls, or use pic/plt.
 # Use long-calls for now, it's easier.  And faster.
-# CFLAGS_MODULE += -fPIC
-# LDFLAGS_MODULE += -shared
-CFLAGS_MODULE += -mlong-calls
+# KBUILD_CFLAGS_MODULE += -fPIC
+# KBUILD_LDFLAGS_MODULE += -shared
+KBUILD_CFLAGS_MODULE += -mlong-calls
 
-cflags-$(CONFIG_HEXAGON_ARCH_V1) += $(call cc-option,-mv1)
-cflags-$(CONFIG_HEXAGON_ARCH_V2) += $(call cc-option,-mv2)
-cflags-$(CONFIG_HEXAGON_ARCH_V3) += $(call cc-option,-mv3)
-cflags-$(CONFIG_HEXAGON_ARCH_V4) += $(call cc-option,-mv4)
-
-aflags-$(CONFIG_HEXAGON_ARCH_V1) += $(call cc-option,-mv1)
-aflags-$(CONFIG_HEXAGON_ARCH_V2) += $(call cc-option,-mv2)
-aflags-$(CONFIG_HEXAGON_ARCH_V3) += $(call cc-option,-mv3)
-aflags-$(CONFIG_HEXAGON_ARCH_V4) += $(call cc-option,-mv4)
-
-ldflags-$(CONFIG_HEXAGON_ARCH_V1) += $(call cc-option,-mv1)
-ldflags-$(CONFIG_HEXAGON_ARCH_V2) += $(call cc-option,-mv2)
-ldflags-$(CONFIG_HEXAGON_ARCH_V3) += $(call cc-option,-mv3)
-ldflags-$(CONFIG_HEXAGON_ARCH_V4) += $(call cc-option,-mv4)
+cflags-y += $(call cc-option,-mv${CONFIG_HEXAGON_ARCH_VERSION})
+aflags-y += $(call cc-option,-mv${CONFIG_HEXAGON_ARCH_VERSION})
+ldflags-y += $(call cc-option,-mv${CONFIG_HEXAGON_ARCH_VERSION})
 
 KBUILD_CFLAGS += $(cflags-y)
 KBUILD_AFLAGS += $(aflags-y)
-
-#  no KBUILD_LDFLAGS?
-LDFLAGS += $(ldflags-y)
+KBUILD_LDFLAGS += $(ldflags-y)
 
 # Thread-info register will be r19.  This value is not configureable;
 # it is hard-coded in several files.

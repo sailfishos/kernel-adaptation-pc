@@ -53,7 +53,7 @@ int ocfs2_prepare_refcount_change_for_del(struct inode *inode,
 					  int *credits,
 					  int *ref_blocks);
 int ocfs2_refcount_cow(struct inode *inode,
-		       struct file *filep, struct buffer_head *di_bh,
+		       struct buffer_head *di_bh,
 		       u32 cpos, u32 write_len, u32 max_cpos);
 
 typedef int (ocfs2_post_refcount_func)(struct inode *inode,
@@ -85,11 +85,11 @@ int ocfs2_refcount_cow_xattr(struct inode *inode,
 			     u32 cpos, u32 write_len,
 			     struct ocfs2_post_refcount *post);
 int ocfs2_duplicate_clusters_by_page(handle_t *handle,
-				     struct file *file,
+				     struct inode *inode,
 				     u32 cpos, u32 old_cluster,
 				     u32 new_cluster, u32 new_len);
 int ocfs2_duplicate_clusters_by_jbd(handle_t *handle,
-				    struct file *file,
+				    struct inode *inode,
 				    u32 cpos, u32 old_cluster,
 				    u32 new_cluster, u32 new_len);
 int ocfs2_cow_sync_writeback(struct super_block *sb,
@@ -115,4 +115,23 @@ int ocfs2_reflink_ioctl(struct inode *inode,
 			const char __user *oldname,
 			const char __user *newname,
 			bool preserve);
+loff_t ocfs2_reflink_remap_blocks(struct inode *s_inode,
+				  struct buffer_head *s_bh,
+				  loff_t pos_in,
+				  struct inode *t_inode,
+				  struct buffer_head *t_bh,
+				  loff_t pos_out,
+				  loff_t len);
+int ocfs2_reflink_inodes_lock(struct inode *s_inode,
+			      struct buffer_head **bh1,
+			      struct inode *t_inode,
+			      struct buffer_head **bh2);
+void ocfs2_reflink_inodes_unlock(struct inode *s_inode,
+				 struct buffer_head *s_bh,
+				 struct inode *t_inode,
+				 struct buffer_head *t_bh);
+int ocfs2_reflink_update_dest(struct inode *dest,
+			      struct buffer_head *d_bh,
+			      loff_t newlen);
+
 #endif /* OCFS2_REFCOUNTTREE_H */

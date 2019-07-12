@@ -28,11 +28,14 @@
  */
 struct eeh_event {
 	struct list_head	list;	/* to form event queue	*/
-	struct eeh_dev		*edev;	/* EEH device		*/
+	struct eeh_pe		*pe;	/* EEH PE		*/
 };
 
-int eeh_send_failure_event(struct eeh_dev *edev);
-struct eeh_dev *handle_eeh_events(struct eeh_event *);
+int eeh_event_init(void);
+int eeh_send_failure_event(struct eeh_pe *pe);
+void eeh_remove_event(struct eeh_pe *pe, bool force);
+void eeh_handle_normal_event(struct eeh_pe *pe);
+void eeh_handle_special_event(void);
 
 #endif /* __KERNEL__ */
 #endif /* ASM_POWERPC_EEH_EVENT_H */

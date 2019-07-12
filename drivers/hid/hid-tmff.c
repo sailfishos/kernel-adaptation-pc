@@ -30,7 +30,6 @@
 #include <linux/hid.h>
 #include <linux/input.h>
 #include <linux/slab.h>
-#include <linux/usb.h>
 #include <linux/module.h>
 
 #include "hid-ids.h"
@@ -46,7 +45,6 @@ static const signed short ff_joystick[] = {
 };
 
 #ifdef CONFIG_THRUSTMASTER_FF
-#include "usbhid/usbhid.h"
 
 /* Usages for thrustmaster devices I know about */
 #define THRUSTMASTER_USAGE_FF	(HID_UP_GENDESK | 0xbb)
@@ -103,7 +101,7 @@ static int tmff_play(struct input_dev *dev, void *data,
 		dbg_hid("(x, y)=(%04x, %04x)\n", x, y);
 		ff_field->value[0] = x;
 		ff_field->value[1] = y;
-		usbhid_submit_report(hid, tmff->report, USB_DIR_OUT);
+		hid_hw_request(hid, tmff->report, HID_REQ_SET_REPORT);
 		break;
 
 	case FF_RUMBLE:
@@ -117,7 +115,7 @@ static int tmff_play(struct input_dev *dev, void *data,
 		dbg_hid("(left,right)=(%08x, %08x)\n", left, right);
 		ff_field->value[0] = left;
 		ff_field->value[1] = right;
-		usbhid_submit_report(hid, tmff->report, USB_DIR_OUT);
+		hid_hw_request(hid, tmff->report, HID_REQ_SET_REPORT);
 		break;
 	}
 	return 0;
@@ -244,6 +242,8 @@ static const struct hid_device_id tm_devices[] = {
 		.driver_data = (unsigned long)ff_rumble },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb324),   /* Dual Trigger 3-in-1 (PS3 Mode) */
 		.driver_data = (unsigned long)ff_rumble },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb605),   /* NASCAR PRO FF2 Wheel */
+		.driver_data = (unsigned long)ff_joystick },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb651),	/* FGT Rumble Force Wheel */
 		.driver_data = (unsigned long)ff_rumble },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_THRUSTMASTER, 0xb653),	/* RGT Force Feedback CLUTCH Raging Wheel */
@@ -261,17 +261,6 @@ static struct hid_driver tm_driver = {
 	.id_table = tm_devices,
 	.probe = tm_probe,
 };
+module_hid_driver(tm_driver);
 
-static int __init tm_init(void)
-{
-	return hid_register_driver(&tm_driver);
-}
-
-static void __exit tm_exit(void)
-{
-	hid_unregister_driver(&tm_driver);
-}
-
-module_init(tm_init);
-module_exit(tm_exit);
 MODULE_LICENSE("GPL");
