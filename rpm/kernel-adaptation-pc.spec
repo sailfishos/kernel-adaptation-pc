@@ -1,8 +1,8 @@
 Name:       kernel-adaptation-pc
 
-%define kernel_version_build %{version}-%{release}
+%define kernel_version %{lua:print((rpm.expand("%{version}"):gsub("\+.+", "")))}
+%define kernel_version_build %{kernel_version}-%{release}
 %define kernel_devel_dir %{_prefix}/src/kernels/%{kernel_version_build}
-%define kernel_version %{version}
 %define kernel_arch x86
 
 Summary:    Kernel Adaptation PC
