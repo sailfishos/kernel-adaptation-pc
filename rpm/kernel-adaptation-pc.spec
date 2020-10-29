@@ -17,6 +17,7 @@ BuildRequires:  bison
 BuildRequires:  flex
 BuildRequires:  pkgconfig(libssl)
 BuildRequires:  pkgconfig(ncurses)
+BuildRequires:  bc
 Provides:   kernel = %{kernel_version}
 
 %description
